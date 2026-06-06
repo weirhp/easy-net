@@ -1,0 +1,12 @@
+{
+  "name": "easy-net-server",
+  "version": "1.0.0",
+  "description": "WebSocket SOCKS5 Proxy Server for Render/HuggingFace",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

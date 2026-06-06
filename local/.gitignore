@@ -1,0 +1,13 @@
+tmp/
+tmp2/
+bin/
+proxy/
+local-config.json
+
+*.exe
+proxy-mac-*
+proxy-linux-*
+# 忽略临时运行日志
+*.log
+
+Proxy使用说明.docx

@@ -1,0 +1,5 @@
+{
+  "workerHost": "部署服务的域名",
+  "localPort": 1080,
+  "secret": "easy-net-secret-key-12345"
+}

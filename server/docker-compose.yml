@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  easy-netserver:
+    build: .
+    container_name: easy-net-server
+    restart: always
+    ports:
+      - "${HOST_PORT:-3100}:3000"
+    environment:
+      - PORT=3000
+      # 访问凭证白名单，多个凭证以逗号分隔
+      - SECRETS=${SECRETS}
+      # 流量统计查询凭证
+      - ADMIN_KEY=${ADMIN_KEY}

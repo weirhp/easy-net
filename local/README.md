@@ -1,66 +1,158 @@
-# Easy-Net Go Client - SOCKS5 加密代理客户端
+# Easy-Net Local Manager
 
-本项目是 Easy-Net SOCKS5 代理客户端的 Go 语言实现版本。它可以作为 Node.js 客户端的直接替代品。
+本地管理器用于统一管理：
 
-## 准备工作
+- 多个 Easy-Net 本地 SOCKS5 监听实例。
+- Mihomo 内核下载、配置生成、启动、停止和重启。
+- 外部 SOCKS5 节点。
+- Mihomo relay 链式代理和每条链的本地 SOCKS5 listener。
+- TUN 模式下按进程名强制分流。
 
-请确保您的系统上已安装了 [Go 编译器](https://go.dev/)（推荐版本 1.21 或更高）。
+## 快速启动
 
-## 目录结构
+```powershell
+.\scripts\build.bat
+.\dist\easy-net-manager.exe
+```
 
-* `main.go` - Go 客户端核心代码。
-* `go.mod` - Go 模块管理文件。
-* `local-config.json` - 客户端配置文件。
+打开：
 
-## 配置说明
+```text
+http://127.0.0.1:18080
+```
 
-配置文件为 `local-config.json`，格式与 Node.js 客户端完全一致：
+Windows 下程序会常驻系统托盘。关闭浏览器标签页只会收起管理界面，不会停止本地代理；需要停止 Mihomo、停止所有本地 SOCKS5 并退出程序时，请使用：
+
+- 托盘菜单中的 `退出程序`。
+- 管理界面右上角的 `退出程序`。
+
+托盘菜单中的 `打开管理界面` 可以重新打开浏览器页面。
+
+目录结构：
+
+```text
+src\       源代码和 ui.html
+scripts\   构建脚本
+dist\      编译输出
+```
+
+管理界面的 HTML 放在 `src\ui.html`。程序运行时会优先读取工作目录下的 `ui.html` 或 `src\ui.html`，如果文件不存在，会使用编译进二进制里的兜底版本。
+
+也可以直接运行：
+
+```powershell
+.\scripts\build.bat
+```
+
+## 配置文件
+
+配置文件仍然是 `local-config.json`。如果检测到旧版格式：
 
 ```json
 {
-  "workerHost": "部署服务的域名",
+  "workerHost": "your-server-domain.com",
   "localPort": 1080,
   "secret": "easy-net-secret-key-12345"
 }
 ```
 
-* `workerHost`: Cloudflare Worker 绑定的域名，或者 AWS CloudFront 分发域名。
-* `localPort`: 本地监听端口，客户端将开启一个 SOCKS5 服务。
-* `secret`: 服务端预共享密钥，用于底层隧道安全认证。
+管理器启动时会自动迁移成新版多实例格式。
 
-## 运行与编译说明
+## Mihomo
 
-在 `proxy-go` 目录中：
+界面中的 `下载 Mihomo` 会从 MetaCubeX/mihomo 最新 release 下载 Windows AMD64 zip，并解压为：
 
-### 1. 下载外部依赖
-
-由于我们使用了最成熟的 Gorilla WebSocket 库，运行以下命令获取依赖：
-
-```bash
-go mod tidy
+```text
+local\mihomo\mihomo.exe
 ```
 
-### 2. 直接运行
+生成的配置默认写到：
 
-如果您只想快速运行客户端而无需编译：
-
-```bash
-go run main.go
+```text
+local\mihomo\config.yaml
 ```
 
-### 3. 编译成独立二进制程序
+勾选 `保存后自动启动` 后，每次保存配置都会尝试启动 Mihomo。TUN 模式通常需要管理员权限，如果启动失败，请用管理员权限运行 `easy-net-manager.exe`。
 
-如果您希望编译成一个独立的、无任何依赖的轻量级可执行文件：
+Mihomo 区域提供三个控制入口：
 
-```bash
-# 编译出当前系统的二进制文件
-go build -o easy-net-client.exe main.go
+- `打开 API`：打开 `http://127.0.0.1:<controllerPort>/version`。
+- `打开面板`：打开 `http://127.0.0.1:<controllerPort>/ui`。
+- `更新面板`：调用 Mihomo `/upgrade/ui` 下载或更新 MetaCubeXD 面板资源。
 
-# 运行编译出来的程序
-./easy-net-client.exe
+生成的 Mihomo 配置会自动包含：
+
+```yaml
+external-ui: ui
+external-ui-name: xd
+external-ui-url: "https://github.com/MetaCubeX/metacubexd/archive/refs/heads/gh-pages.zip"
 ```
 
-## 代码特性
+## 多 SOCKS5
 
-1. **防 403 阻断**：已内置浏览器 User-Agent 标头参数，彻底解决空 User-Agent 导致的 AWS CloudFront WAF 拦截阻断。
-2. **并发安全与高性能**：利用 Go 原生并发特性的 Goroutine 和 `sync.WaitGroup` 结构，高效、双向零拷贝转发底层 TCP 与 WebSocket 流量。
+在 `Easy-Net 本地 SOCKS5` 区域可以新增多个本地监听，例如：
+
+```text
+127.0.0.1:1080
+127.0.0.1:1081
+127.0.0.1:1082
+```
+
+每个实例可以单独启动或停止。启用的实例会被写入 Mihomo 的 `proxies`。
+
+## 订阅地址
+
+管理器会根据当前运行/启用的 SOCKS5 生成本地订阅地址：
+
+```text
+Clash / Clash Verge: http://127.0.0.1:18080/sub/clash.yaml
+v2rayN:              http://127.0.0.1:18080/sub/v2rayn.txt
+SOCKS 明文链接:      http://127.0.0.1:18080/sub/socks.txt
+```
+
+节点来源：
+
+- 已运行的 Easy-Net 本地 SOCKS5。
+- 已启用的外部 SOCKS5。
+- Mihomo 正在运行时，已启用的链式代理本地 listener。
+
+`/sub/clash.yaml` 返回 Clash YAML 订阅；`/sub/v2rayn.txt` 返回 base64 编码后的 `socks://base64(Configuration)` 分享链接列表；`/sub/socks.txt` 返回明文 SOCKS 分享链接，方便排查。
+
+## 外部 SOCKS5
+
+在 `外部 SOCKS5` 区域可以添加其它本地或远程 SOCKS5，例如：
+
+```text
+127.0.0.1:2080
+10.0.0.2:1080
+```
+
+支持用户名、密码和 UDP 开关。
+
+## 链式代理
+
+在 `链式代理` 区域创建链，`链路` 字段填写节点名称，按顺序用逗号分隔：
+
+```text
+Easy-Net 1080, Upstream SOCKS5
+```
+
+管理器会生成 Mihomo `relay` 策略组，并可为该链开放一个本地 SOCKS5 listener，例如：
+
+```text
+127.0.0.1:12080
+```
+
+注意：Mihomo 的 `relay` 已有逐步废弃趋势，后续更推荐使用 `dialer-proxy` 方式表达链路。当前版本先保留 `relay + listeners`，方便快速落地。
+
+## 按进程强制走代理
+
+在 `进程规则` 中按行填写：
+
+```text
+Telegram.exe,PROXY
+Discord.exe,PROXY
+chrome.exe,DIRECT
+```
+
+保存后会生成到 Mihomo `rules` 中。默认 `MATCH,DIRECT`，因此只有配置的进程会被强制走 `PROXY` 组。

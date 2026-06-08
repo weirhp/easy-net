@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# 切换到脚本所在目录，确保 docker compose 能读取同目录下的 docker-compose.yml 和 .env。
+cd "$(dirname "$0")" || exit 1
+
 # 获取 Docker Compose 执行基础命令
 get_docker_compose_base() {
     if docker compose version &> /dev/null; then
@@ -31,7 +34,7 @@ print_help() {
     echo ""
     echo "可选参数 (options):"
     echo "  -p [project]  指定 Docker Compose 项目名称 (Project Name)"
-    echo "  --port [port] 指定宿主机映射端口 (默认: 3000)"
+    echo "  --port [port] 指定宿主机映射端口 (默认: 使用 .env 中的 HOST_PORT，其次为 3100)"
     echo "  -h, --help    显示帮助信息"
     echo ""
     echo "示例:"
@@ -90,19 +93,24 @@ if [ -n "$PROJECT_NAME" ]; then
     echo "已指定 Docker Compose 项目名称: $PROJECT_NAME"
 fi
 
-# 处理端口映射
+# 处理端口映射。未传 --port 时不要导出 HOST_PORT，否则会覆盖 compose 自动读取的 .env。
 if [ -n "$CUSTOM_PORT" ]; then
     export HOST_PORT="$CUSTOM_PORT"
     echo "已指定外部端口: $HOST_PORT"
 else
-    if [ -z "$HOST_PORT" ]; then
-        export HOST_PORT="3000"
+    if [ -n "$HOST_PORT" ]; then
+        echo "使用当前环境变量 HOST_PORT: $HOST_PORT"
+    elif [ -f ".env" ] && grep -Eq '^[[:space:]]*HOST_PORT=' ".env"; then
+        DISPLAY_PORT=$(grep -E '^[[:space:]]*HOST_PORT=' ".env" | tail -n 1 | cut -d '=' -f 2- | tr -d '[:space:]"')
+        echo "使用 .env 中的外部端口: $DISPLAY_PORT"
+    else
+        echo "未指定外部端口，将使用 docker-compose.yml 默认端口: 3100"
     fi
 fi
 
 case "$COMMAND" in
     start)
-        echo "正在构建并运行服务 (端口: $HOST_PORT)..."
+        echo "正在构建并运行服务..."
         $COMPOSE_CMD up -d --build
         echo "================================================="
         echo "服务已成功启动！"

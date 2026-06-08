@@ -1,5 +1,60 @@
 {
-  "workerHost": "部署服务的域名",
-  "localPort": 1080,
-  "secret": "easy-net-secret-key-12345"
+  "managerPort": 18080,
+  "mihomo": {
+    "enabled": false,
+    "executablePath": "mihomo\\mihomo.exe",
+    "configPath": "mihomo\\config.yaml",
+    "mixedPort": 7890,
+    "socksPort": 7891,
+    "controllerPort": 9090,
+    "dnsPort": 1053,
+    "tunEnabled": true,
+    "allowLan": false,
+    "rawConfig": ""
+  },
+  "easyNetServers": [
+    {
+      "id": "easy-net-1080",
+      "name": "Easy-Net 1080",
+      "enabled": false,
+      "workerHost": "your-server-domain.com",
+      "localPort": 1080,
+      "secret": "easy-net-secret-key-12345",
+      "endpointIP": ""
+    }
+  ],
+  "externalSocks5": [
+    {
+      "id": "socks5-upstream",
+      "name": "Upstream SOCKS5",
+      "enabled": false,
+      "host": "127.0.0.1",
+      "port": 1081,
+      "username": "",
+      "password": "",
+      "udp": false
+    }
+  ],
+  "chains": [
+    {
+      "id": "chain-demo",
+      "name": "Chain Demo",
+      "enabled": false,
+      "listenPort": 12080,
+      "proxies": [
+        "Easy-Net 1080",
+        "Upstream SOCKS5"
+      ]
+    }
+  ],
+  "processRules": [
+    {
+      "processName": "Telegram.exe",
+      "policy": "PROXY"
+    },
+    {
+      "processName": "Discord.exe",
+      "policy": "PROXY"
+    }
+  ]
 }

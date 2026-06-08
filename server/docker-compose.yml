@@ -13,3 +13,11 @@ services:
       - SECRETS=${SECRETS}
       # 流量统计查询凭证
       - ADMIN_KEY=${ADMIN_KEY}
+      # 定时监控日志间隔秒数，0 表示关闭
+      - MONITOR_INTERVAL_SECONDS=${MONITOR_INTERVAL_SECONDS:-0}
+      # WebSocket 单条消息大小限制，默认 1 MiB
+      - MAX_WS_PAYLOAD_BYTES=${MAX_WS_PAYLOAD_BYTES:-1048576}
+      # 单连接 WebSocket 待发送缓冲超过该值时暂停读取目标 TCP，默认 4 MiB
+      - WS_BACKPRESSURE_LIMIT_BYTES=${WS_BACKPRESSURE_LIMIT_BYTES:-4194304}
+      # 单连接 WebSocket 待发送缓冲低于该值时恢复读取目标 TCP，默认 2 MiB
+      - WS_BACKPRESSURE_RESUME_BYTES=${WS_BACKPRESSURE_RESUME_BYTES:-2097152}

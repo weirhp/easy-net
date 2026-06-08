@@ -1,6 +1,7 @@
 tmp/
 tmp2/
 bin/
+dist/
 proxy/
 local-config.json
 

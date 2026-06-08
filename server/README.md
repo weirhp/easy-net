@@ -115,6 +115,10 @@ chmod +x deploy.sh
 | `ADMIN_KEY` | 用于访问流量统计的管理员凭证。若未配置，**流量统计接口将安全禁用**。 | 选填 (建议配置) |
 | `PORT` | 容器内部 Node.js 服务端监听的端口，默认为 `3000` (由 Docker 内部使用，无需手动修改)。 | 选填 |
 | `HOST_PORT` | 映射到宿主机的端口。您可在 `deploy.sh` 启动时通过 `--port` 指定，或修改 `.env` 配置文件。 | 选填 |
+| `MONITOR_INTERVAL_SECONDS` | 定时输出监控日志的间隔秒数。默认 `0` 表示关闭；例如设置为 `60` 后每分钟输出一次 RSS、容器内存、连接数与缓冲区指标。 | 选填 |
+| `MAX_WS_PAYLOAD_BYTES` | WebSocket 单条消息大小限制，默认 `1048576` (1 MiB)。本地客户端默认分片较小，通常无需修改。 | 选填 |
+| `WS_BACKPRESSURE_LIMIT_BYTES` | 单连接 WebSocket 待发送缓冲超过该值时暂停读取目标 TCP，默认 `4194304` (4 MiB)。 | 选填 |
+| `WS_BACKPRESSURE_RESUME_BYTES` | 单连接 WebSocket 待发送缓冲低于该值时恢复读取目标 TCP，默认 `2097152` (2 MiB)。 | 选填 |
 
 ---
 
@@ -149,12 +153,61 @@ chmod +x deploy.sh
   {
     "status": "success",
     "timestamp": "2026-06-06T14:00:00.000Z",
+    "runtime": {
+      "pid": 1,
+      "nodeVersion": "v22.22.1",
+      "uptimeSeconds": 86400,
+      "limits": {
+        "maxWsPayloadBytes": 1048576,
+        "wsBackpressureLimitBytes": 4194304,
+        "wsBackpressureResumeBytes": 2097152
+      },
+      "memory": {
+        "rss": 67108864,
+        "heapTotal": 8388608,
+        "heapUsed": 5242880,
+        "external": 2097152,
+        "arrayBuffers": 1048576
+      },
+      "containerMemory": {
+        "currentBytes": 322961408,
+        "limitBytes": 3848290697,
+        "stat": {
+          "anon": 67108864,
+          "file": 251658240,
+          "sock": 0
+        }
+      },
+      "connections": {
+        "totalConnections": 120,
+        "activeConnections": 1,
+        "maxActiveConnections": 18,
+        "rejectedUpgrades": 3,
+        "targetErrors": 2,
+        "websocketErrors": 0,
+        "deadConnectionsTerminated": 1
+      },
+      "websocket": {
+        "backpressureEvents": 0,
+        "totalWsBufferedAmount": 0,
+        "maxWsBufferedAmount": 0,
+        "maxWsBufferedAmountSeen": 0,
+        "pausedTargetReads": 0,
+        "resumedTargetReads": 0,
+        "openTargetSockets": 1,
+        "totalTargetWritableLength": 0
+      }
+    },
     "stats": {
       "your-custom-secret-key-1": {
         "uploadBytes": 10240,
         "downloadBytes": 20480,
-        "activeConnections": 1
+        "activeConnections": 1,
+        "totalConnections": 10,
+        "failedConnections": 0
       }
     }
   }
   ```
+
+  其中 `runtime.memory.rss` 是 Node 主进程 RSS，`runtime.containerMemory.currentBytes` 对应容器 cgroup 当前内存，通常更接近 `docker stats`。如果 `containerMemory.stat.file` 很高，说明主要是文件缓存；如果 `anon` 或 `memory.rss` 持续增长，才更像应用实际内存增长。

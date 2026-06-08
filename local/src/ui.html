@@ -1,0 +1,1005 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Easy-Net Manager</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --panel-2: #eef3f8;
+      --line: #d9e1ea;
+      --text: #1f2933;
+      --muted: #607083;
+      --accent: #1267b3;
+      --accent-2: #0b8f73;
+      --danger: #b42318;
+      --shadow: 0 8px 24px rgba(31, 41, 51, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      background: rgba(245, 247, 251, 0.94);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(10px);
+    }
+    .bar {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: 0; }
+    h2 { margin: 0 0 12px; font-size: 16px; font-weight: 650; letter-spacing: 0; }
+    main {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 20px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 16px;
+    }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 16px;
+    }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+    input, textarea, select {
+      width: 100%;
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 9px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+    }
+    textarea { min-height: 160px; resize: vertical; font-family: Consolas, "Courier New", monospace; font-size: 12px; }
+    .row {
+      display: grid;
+      grid-template-columns: 28px minmax(130px, 1.2fr) minmax(120px, 1fr) 90px minmax(150px, 1fr) minmax(110px, 1fr) 112px;
+      gap: 8px;
+      align-items: end;
+      padding: 8px 0;
+      border-top: 1px solid var(--line);
+    }
+    .row.external {
+      grid-template-columns: 28px minmax(140px, 1.2fr) minmax(140px, 1fr) 90px minmax(110px, 1fr) minmax(110px, 1fr) 78px 92px;
+    }
+    .row.chain {
+      grid-template-columns: 28px minmax(150px, 1fr) 100px minmax(260px, 2fr) 110px;
+    }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    button {
+      min-height: 34px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 7px 11px;
+      cursor: pointer;
+      background: var(--accent);
+      color: #fff;
+      font: inherit;
+      white-space: nowrap;
+    }
+    button.secondary { background: var(--panel-2); color: var(--text); border-color: var(--line); }
+    button.good { background: var(--accent-2); }
+    button.danger { background: var(--danger); }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 10px;
+      background: var(--panel-2);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .pill.run { color: #067647; background: #ecfdf3; border-color: #abefc6; }
+    .pill.stop { color: #92400e; background: #fffbeb; border-color: #fde68a; }
+    .statusline { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .muted { color: var(--muted); }
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    .data-table th {
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-weight: 500;
+      text-align: left;
+    }
+    .data-table td {
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: middle;
+      word-break: break-word;
+    }
+    .data-table tr:last-child td { border-bottom: 0; }
+    .cell-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      align-items: center;
+    }
+    .switch {
+      position: relative;
+      display: inline-flex;
+      width: 46px;
+      height: 26px;
+      flex: 0 0 auto;
+    }
+    .switch input {
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      position: absolute;
+    }
+    .slider {
+      position: absolute;
+      inset: 0;
+      border-radius: 999px;
+      background: #cbd5e1;
+      cursor: pointer;
+      transition: background .16s ease;
+    }
+    .slider::before {
+      content: "";
+      position: absolute;
+      width: 20px;
+      height: 20px;
+      left: 3px;
+      top: 3px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 4px rgba(16, 24, 40, .25);
+      transition: transform .16s ease;
+    }
+    .switch input:checked + .slider { background: var(--accent-2); }
+    .switch input:checked + .slider::before { transform: translateX(20px); }
+    .error-text {
+      margin-top: 6px;
+      color: var(--danger);
+      font-size: 12px;
+    }
+    .masked { color: var(--muted); font-family: Consolas, "Courier New", monospace; }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: rgba(15, 23, 42, .42);
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      width: min(760px, 100%);
+      max-height: calc(100vh - 48px);
+      overflow: auto;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 18px 54px rgba(16, 24, 40, .22);
+      padding: 18px;
+    }
+    .modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .modal-head h2 { margin: 0; }
+    .empty {
+      margin-top: 12px;
+      padding: 18px 8px;
+      color: var(--muted);
+      border-top: 1px solid var(--line);
+    }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .summary-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fbfdff;
+      min-height: 64px;
+    }
+    .summary-item .label {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+    .summary-item .value {
+      font-weight: 600;
+      word-break: break-word;
+    }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #101828;
+      color: #d0d5dd;
+      border-radius: 8px;
+      padding: 12px;
+      max-height: 220px;
+      overflow: auto;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+    }
+    #yamlPreview {
+      min-height: 420px;
+      max-height: 560px;
+    }
+    #clashVergeScript {
+      min-height: 320px;
+      max-height: 520px;
+    }
+    .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+    .toast {
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      max-width: 520px;
+      padding: 12px 14px;
+      border-radius: 8px;
+      background: #101828;
+      color: #fff;
+      box-shadow: var(--shadow);
+      display: none;
+    }
+    @media (max-width: 900px) {
+      .grid, .grid-2, .split, .summary-grid { grid-template-columns: 1fr; }
+      .row, .row.external, .row.chain { grid-template-columns: 1fr; }
+      .bar { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div>
+      <h1>Easy-Net Manager</h1>
+      <div class="muted">Mihomo TUN / 多 SOCKS5 / 链式代理</div>
+    </div>
+    <div class="actions">
+      <span id="mihomoStatus" class="pill">loading</span>
+      <button class="secondary" onclick="loadState()">刷新</button>
+      <button class="danger" onclick="appQuit()">退出程序</button>
+    </div>
+  </div>
+</header>
+<main>
+  <section>
+    <div class="actions" style="justify-content:space-between">
+      <h2>Mihomo 内核</h2>
+      <div class="actions">
+        <button class="secondary" onclick="openEditor('mihomo', 0)">编辑</button>
+        <button onclick="mihomoAction('download')">下载 Mihomo</button>
+        <button class="secondary" onclick="mihomoAction('generate')">生成 YAML</button>
+        <button class="secondary" onclick="openMihomoAPI()">打开 API</button>
+        <button class="secondary" onclick="openMihomoPanel()">打开面板</button>
+        <button class="secondary" onclick="mihomoAction('upgrade-ui')">更新面板</button>
+      </div>
+    </div>
+    <div class="summary-grid" id="mihomoSummary"></div>
+    <div class="actions" style="margin-top:12px">
+      <span>内核运行</span>
+      <span id="mihomoSwitch"></span>
+    </div>
+  </section>
+
+  <section>
+    <div class="actions" style="justify-content:space-between">
+      <h2>Easy-Net 本地 SOCKS5</h2>
+      <button class="secondary" onclick="addEasyNet()">新增</button>
+    </div>
+    <div id="easyNetList"></div>
+  </section>
+
+  <section>
+    <div class="actions" style="justify-content:space-between">
+      <h2>外部 SOCKS5</h2>
+      <button class="secondary" onclick="addExternal()">新增</button>
+    </div>
+    <div id="externalList"></div>
+  </section>
+
+  <section>
+    <div class="actions" style="justify-content:space-between">
+      <h2>链式代理</h2>
+      <button class="secondary" onclick="addChain()">新增</button>
+    </div>
+    <div id="chainList"></div>
+  </section>
+
+  <section>
+    <div class="actions" style="justify-content:space-between">
+      <h2>进程规则</h2>
+      <div class="actions">
+        <button class="secondary" onclick="setProcessRuleMode('table')">表格模式</button>
+        <button class="secondary" onclick="setProcessRuleMode('text')">文本模式</button>
+        <button class="secondary" onclick="addProcessRule()">新增</button>
+        <button class="good" onclick="saveConfig()">保存进程规则</button>
+      </div>
+    </div>
+    <div id="processRulesTable" style="margin-top:12px"></div>
+    <textarea id="processRules" style="margin-top:12px" placeholder="Telegram.exe,PROXY&#10;Discord.exe,PROXY"></textarea>
+  </section>
+
+  <section class="split">
+    <div>
+      <h2>生成预览</h2>
+      <pre id="yamlPreview"></pre>
+    </div>
+    <div>
+      <h2>Mihomo 日志</h2>
+      <pre id="logs"></pre>
+    </div>
+  </section>
+  <section>
+    <div class="actions" style="justify-content:space-between">
+      <h2>Clash Verge 集成脚本</h2>
+      <button class="secondary" onclick="copyClashVergeScript()">复制脚本</button>
+    </div>
+    <pre id="clashVergeScript"></pre>
+  </section>
+  <section>
+    <div class="actions" style="justify-content:space-between">
+      <h2>订阅地址</h2>
+      <button class="secondary" onclick="copyAllSubscriptionLinks()">复制全部</button>
+    </div>
+    <div class="summary-grid" id="subscriptionLinks"></div>
+  </section>
+</main>
+<div id="editModal" class="modal-backdrop">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="modalTitle">编辑</h2>
+      <button class="secondary" onclick="closeEditor()">关闭</button>
+    </div>
+    <div id="modalBody" class="grid-2"></div>
+    <div class="actions" style="justify-content:flex-end;margin-top:16px">
+      <button class="secondary" onclick="closeEditor()">取消</button>
+      <button class="good" onclick="saveEditor()">保存</button>
+    </div>
+  </div>
+</div>
+<div id="toast" class="toast"></div>
+<script>
+let state = null;
+let editor = null;
+let processRuleMode = 'table';
+
+async function request(url, options = {}) {
+  const res = await fetch(url, options);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+async function loadState() {
+  state = await request('/api/state');
+  render();
+}
+
+function render() {
+  const cfg = state.config;
+  document.getElementById('processRules').value = processRulesToText(cfg.processRules || []);
+  document.getElementById('yamlPreview').textContent = state.mihomoYaml || '';
+  document.getElementById('logs').textContent = (state.mihomo.logs || []).join('\n');
+  document.getElementById('clashVergeScript').textContent = generateClashVergeScript();
+  renderSubscriptionLinks();
+
+  const status = document.getElementById('mihomoStatus');
+  status.textContent = state.mihomo.running ? 'Mihomo 运行中' : 'Mihomo 已停止';
+  status.className = 'pill ' + (state.mihomo.running ? 'run' : 'stop');
+
+  renderMihomoSummary(cfg);
+  renderEasyNet(cfg.easyNetServers || []);
+  renderExternal(cfg.externalSocks5 || []);
+  renderChains(cfg.chains || []);
+  renderProcessRules();
+}
+
+function renderMihomoSummary(cfg) {
+  const m = cfg.mihomo;
+  document.getElementById('mihomoSwitch').innerHTML = switchHTML(state.mihomo.running, 'toggleMihomo(this.checked)');
+  document.getElementById('mihomoSummary').innerHTML =
+    summaryItem('启动时自动运行', m.enabled ? '是' : '否') +
+    summaryItem('TUN 模式', m.tunEnabled ? '开启' : '关闭') +
+    summaryItem('端口', 'Mixed ' + m.mixedPort + ' / SOCKS ' + m.socksPort) +
+    summaryItem('Controller / DNS', m.controllerPort + ' / ' + m.dnsPort) +
+    summaryItem('允许局域网访问', m.allowLan ? '是' : '否') +
+    summaryItem('管理端口', cfg.managerPort) +
+    summaryItem('mihomo.exe', m.executablePath || '-') +
+    summaryItem('配置文件', m.configPath || '-') +
+    summaryItem('API 入口', controllerBase() + '/version') +
+    summaryItem('面板入口', controllerBase() + '/ui');
+}
+
+function renderEasyNet(items) {
+  const box = document.getElementById('easyNetList');
+  if (!items.length) {
+    box.innerHTML = '<div class="empty">暂无 Easy-Net SOCKS5</div>';
+    return;
+  }
+  box.innerHTML = '<table class="data-table"><thead><tr>' +
+    '<th style="width:76px">启用</th><th>名称</th><th>中继域名</th><th style="width:90px">端口</th><th>Secret</th><th>优选 IP</th><th style="width:150px"></th>' +
+    '</tr></thead><tbody>' + items.map((item, i) => {
+      const running = state.easyNet && state.easyNet[item.id] === 'running';
+      const err = state.easyNetErrors && state.easyNetErrors[item.id];
+      return '<tr>' +
+        '<td>' + switchHTML(running, 'toggleEasyNet(' + i + ', this.checked)') + '</td>' +
+        '<td>' + esc(item.name) + statusLine(running, err) + '</td>' +
+        '<td>' + esc(item.workerHost || '-') + '</td>' +
+        '<td>' + esc(item.localPort || '-') + '</td>' +
+        '<td><span class="masked">' + maskSecret(item.secret) + '</span></td>' +
+        '<td>' + esc(item.endpointIP || '-') + '</td>' +
+        '<td><div class="cell-actions"><button class="secondary" onclick="openEditor(\'easy\', ' + i + ')">编辑</button><button class="secondary" onclick="removeEasyNet(' + i + ')">删除</button></div></td>' +
+        '</tr>';
+    }).join('') + '</tbody></table>';
+}
+
+function renderExternal(items) {
+  const box = document.getElementById('externalList');
+  if (!items.length) {
+    box.innerHTML = '<div class="empty">暂无外部 SOCKS5</div>';
+    return;
+  }
+  box.innerHTML = '<table class="data-table"><thead><tr>' +
+    '<th style="width:76px">启用</th><th>名称</th><th>Host</th><th style="width:90px">端口</th><th>用户名</th><th>密码</th><th style="width:70px">UDP</th><th style="width:150px"></th>' +
+    '</tr></thead><tbody>' + items.map((item, i) => {
+      return '<tr>' +
+        '<td>' + switchHTML(item.enabled, 'toggleExternal(' + i + ', this.checked)') + '</td>' +
+        '<td>' + esc(item.name) + statusLine(item.enabled, '') + '</td>' +
+        '<td>' + esc(item.host || '-') + '</td>' +
+        '<td>' + esc(item.port || '-') + '</td>' +
+        '<td>' + esc(item.username || '-') + '</td>' +
+        '<td><span class="masked">' + maskSecret(item.password) + '</span></td>' +
+        '<td>' + (item.udp ? '是' : '否') + '</td>' +
+        '<td><div class="cell-actions"><button class="secondary" onclick="openEditor(\'external\', ' + i + ')">编辑</button><button class="secondary" onclick="removeExternal(' + i + ')">删除</button></div></td>' +
+        '</tr>';
+    }).join('') + '</tbody></table>';
+}
+
+function renderChains(items) {
+  const box = document.getElementById('chainList');
+  if (!items.length) {
+    box.innerHTML = '<div class="empty">暂无链式代理</div>';
+    return;
+  }
+  box.innerHTML = '<table class="data-table"><thead><tr>' +
+    '<th style="width:76px">启用</th><th>名称</th><th style="width:110px">监听端口</th><th>链路</th><th style="width:150px"></th>' +
+    '</tr></thead><tbody>' + items.map((item, i) => {
+      return '<tr>' +
+        '<td>' + switchHTML(item.enabled, 'toggleChain(' + i + ', this.checked)') + '</td>' +
+        '<td>' + esc(item.name) + statusLine(item.enabled, '') + '</td>' +
+        '<td>' + esc(item.listenPort || '-') + '</td>' +
+        '<td>' + esc((item.proxies || []).join(' -> ') || '-') + '</td>' +
+        '<td><div class="cell-actions"><button class="secondary" onclick="openEditor(\'chain\', ' + i + ')">编辑</button><button class="secondary" onclick="removeChain(' + i + ')">删除</button></div></td>' +
+        '</tr>';
+    }).join('') + '</tbody></table>';
+}
+
+function renderProcessRules() {
+  const tableBox = document.getElementById('processRulesTable');
+  const textBox = document.getElementById('processRules');
+  const rules = state.config.processRules || [];
+  tableBox.style.display = processRuleMode === 'table' ? 'block' : 'none';
+  textBox.style.display = processRuleMode === 'text' ? 'block' : 'none';
+
+  if (processRuleMode !== 'table') return;
+  if (!rules.length) {
+    tableBox.innerHTML = '<div class="empty">暂无进程规则</div>';
+    return;
+  }
+  tableBox.innerHTML = '<table class="data-table"><thead><tr>' +
+    '<th>程序名</th><th>使用节点</th><th style="width:130px"></th>' +
+    '</tr></thead><tbody>' + rules.map((rule, i) => {
+      return '<tr>' +
+        '<td><input value="' + esc(rule.processName || '') + '" onchange="updateProcessName(' + i + ', this.value)"></td>' +
+        '<td>' + policySelectHTML(rule.policy || 'PROXY', i) + '</td>' +
+        '<td><div class="cell-actions"><button class="secondary" onclick="removeProcessRule(' + i + ')">删除</button></div></td>' +
+        '</tr>';
+    }).join('') + '</tbody></table>';
+}
+
+function collectConfig() {
+  const cfg = state.config;
+  if (processRuleMode === 'text') {
+    cfg.processRules = parseProcessRulesText(document.getElementById('processRules').value);
+  } else {
+    cfg.processRules = (cfg.processRules || []).filter(x => (x.processName || '').trim()).map(x => ({
+      processName: x.processName.trim(),
+      policy: (x.policy || 'PROXY').trim()
+    }));
+  }
+  return cfg;
+}
+
+async function saveConfig() {
+  await request('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(collectConfig()) });
+  toast('已保存');
+  await loadState();
+}
+
+function setProcessRuleMode(mode) {
+  if (processRuleMode === 'text' && mode === 'table') {
+    state.config.processRules = parseProcessRulesText(document.getElementById('processRules').value);
+  }
+  if (processRuleMode === 'table' && mode === 'text') {
+    document.getElementById('processRules').value = processRulesToText(state.config.processRules || []);
+  }
+  processRuleMode = mode;
+  renderProcessRules();
+}
+
+function addProcessRule() {
+  if (processRuleMode === 'text') {
+    const text = document.getElementById('processRules').value.trimEnd();
+    document.getElementById('processRules').value = text + (text ? '\n' : '') + 'app.exe,PROXY';
+    return;
+  }
+  state.config.processRules = state.config.processRules || [];
+  state.config.processRules.push({ processName: 'app.exe', policy: 'PROXY' });
+  renderProcessRules();
+}
+
+function removeProcessRule(index) {
+  state.config.processRules.splice(index, 1);
+  renderProcessRules();
+}
+
+function updateProcessName(index, value) {
+  state.config.processRules[index].processName = value;
+}
+
+function updateProcessPolicy(index, value) {
+  state.config.processRules[index].policy = value;
+}
+
+function parseProcessRulesText(text) {
+  return text.split('\n').map(line => {
+    const parts = line.split(',');
+    return { processName: (parts[0] || '').trim(), policy: (parts[1] || 'PROXY').trim() };
+  }).filter(x => x.processName);
+}
+
+function processRulesToText(rules) {
+  return (rules || []).map(r => (r.processName || '') + ',' + (r.policy || 'PROXY')).join('\n');
+}
+
+function policyOptions() {
+  const options = ['PROXY', 'DIRECT'];
+  (state.config.easyNetServers || []).forEach(x => { if (x.enabled || state.easyNet?.[x.id] === 'running') options.push(x.name); });
+  (state.config.externalSocks5 || []).forEach(x => { if (x.enabled) options.push(x.name); });
+  (state.config.chains || []).forEach(x => { if (x.enabled) options.push(x.name); });
+  return Array.from(new Set(options.filter(Boolean)));
+}
+
+function policySelectHTML(value, index) {
+  const options = policyOptions();
+  if (value && !options.includes(value)) options.push(value);
+  return '<select onchange="updateProcessPolicy(' + index + ', this.value)">' +
+    options.map(x => '<option value="' + esc(x) + '"' + (x === value ? ' selected' : '') + '>' + esc(x) + '</option>').join('') +
+    '</select>';
+}
+
+function clashVergeNodes() {
+  const nodes = [];
+  (state.config.easyNetServers || []).forEach(item => {
+    if (state.easyNet && state.easyNet[item.id] === 'running') {
+      nodes.push({ name: item.name || ('Easy-Net ' + item.localPort), type: 'socks5', server: '127.0.0.1', port: item.localPort, udp: false });
+    }
+  });
+  (state.config.externalSocks5 || []).forEach(item => {
+    if (item.enabled) {
+      const node = { name: item.name || ('SOCKS5 ' + item.port), type: 'socks5', server: item.host || '127.0.0.1', port: item.port, udp: !!item.udp };
+      if (item.username) node.username = item.username;
+      if (item.password) node.password = item.password;
+      nodes.push(node);
+    }
+  });
+  (state.config.chains || []).forEach(item => {
+    if (state.mihomo.running && item.enabled && item.listenPort) {
+      nodes.push({ name: item.name || ('Chain ' + item.listenPort), type: 'socks5', server: '127.0.0.1', port: item.listenPort, udp: false });
+    }
+  });
+  return nodes;
+}
+
+function generateClashVergeScript() {
+  const nodes = clashVergeNodes();
+  const nodeText = nodes.length
+    ? nodes.map(node => '    ' + JSON.stringify(node)).join(',\n')
+    : '    // 当前没有检测到已运行或已启用的 SOCKS5';
+  return `function main(config, profileName) {
+  const localNodes = [
+${nodeText}
+  ].filter(Boolean);
+
+  if (!config.proxies) config.proxies = [];
+  for (const node of [...localNodes].reverse()) {
+    config.proxies = config.proxies.filter(item => item.name !== node.name);
+    config.proxies.unshift(node);
+  }
+
+  if (config["proxy-groups"]) {
+    for (const group of config["proxy-groups"]) {
+      if (group.proxies && Array.isArray(group.proxies)) {
+        const names = localNodes.map(node => node.name);
+        group.proxies = group.proxies.filter(name => !names.includes(name));
+        for (const node of [...localNodes].reverse()) {
+          group.proxies.unshift(node.name);
+        }
+      }
+    }
+  }
+
+  const prependRules = [
+    'PROCESS-NAME,easy-net-manager.exe,DIRECT',
+    'PROCESS-NAME,easy-net-manager-silent.exe,DIRECT',
+    'PROCESS-NAME,easy-net-manager-windows-amd64.exe,DIRECT',
+    'PROCESS-NAME,easy-net-manager-windows-amd64-silent.exe,DIRECT',
+    'PROCESS-NAME,proxy-mac-arm64,DIRECT',
+    'PROCESS-NAME,proxy-mac-amd64,DIRECT',
+    'PROCESS-NAME,proxy-windows-amd64.exe,DIRECT',
+    'PROCESS-NAME,proxy-windows-amd64-silent.exe,DIRECT',
+    'PROCESS-NAME,pritunl.exe,DIRECT'
+  ];
+  config.rules = prependRules.concat(config.rules || []);
+  return config;
+}`;
+}
+
+async function copyClashVergeScript() {
+  const text = document.getElementById('clashVergeScript').textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('已复制 Clash Verge 集成脚本');
+  } catch (err) {
+    toast('复制失败：' + err.message);
+  }
+}
+
+function subscriptionURLs() {
+  const base = window.location.origin;
+  return {
+    clash: base + '/sub/clash.yaml',
+    v2rayn: base + '/sub/v2rayn.txt',
+    socks: base + '/sub/socks.txt'
+  };
+}
+
+function renderSubscriptionLinks() {
+  const urls = subscriptionURLs();
+  document.getElementById('subscriptionLinks').innerHTML =
+    subscriptionItem('Clash / Clash Verge', urls.clash, 'copySubscriptionLink(\'clash\')') +
+    subscriptionItem('v2rayN', urls.v2rayn, 'copySubscriptionLink(\'v2rayn\')') +
+    subscriptionItem('SOCKS 明文链接', urls.socks, 'copySubscriptionLink(\'socks\')');
+}
+
+function subscriptionItem(label, value, copyAction) {
+  return '<div class="summary-item">' +
+    '<div class="label">' + esc(label) + '</div>' +
+    '<div class="value" style="font-size:12px;font-weight:500">' + esc(value) + '</div>' +
+    '<div style="margin-top:10px"><button class="secondary" onclick="' + copyAction + '">复制</button></div>' +
+    '</div>';
+}
+
+async function copySubscriptionLink(kind) {
+  const urls = subscriptionURLs();
+  await navigator.clipboard.writeText(urls[kind]);
+  toast('已复制订阅地址');
+}
+
+async function copyAllSubscriptionLinks() {
+  const urls = subscriptionURLs();
+  await navigator.clipboard.writeText([
+    'Clash / Clash Verge: ' + urls.clash,
+    'v2rayN: ' + urls.v2rayn,
+    'SOCKS 明文链接: ' + urls.socks
+  ].join('\n'));
+  toast('已复制全部订阅地址');
+}
+
+async function easyNetAction(id, action) {
+  await request('/api/easy-net/' + encodeURIComponent(id) + '/' + action, { method: 'POST' });
+  await loadState();
+}
+
+async function toggleEasyNet(index, checked) {
+  const item = state.config.easyNetServers[index];
+  try {
+    await request('/api/easy-net/' + encodeURIComponent(item.id) + '/' + (checked ? 'start' : 'stop'), { method: 'POST' });
+    await loadState();
+  } catch (err) {
+    toast((checked ? '启动失败：' : '停止失败：') + err.message);
+    state.easyNetErrors = state.easyNetErrors || {};
+    state.easyNetErrors[item.id] = err.message;
+    render();
+  }
+}
+
+async function toggleExternal(index, checked) {
+  state.config.externalSocks5[index].enabled = checked;
+  await saveConfig();
+}
+
+async function toggleChain(index, checked) {
+  state.config.chains[index].enabled = checked;
+  await saveConfig();
+}
+
+async function toggleMihomo(checked) {
+  try {
+    await request('/api/mihomo/' + (checked ? 'start' : 'stop'), { method: 'POST' });
+    state.config.mihomo.enabled = checked;
+    await request('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(collectConfig()) });
+    await loadState();
+  } catch (err) {
+    toast((checked ? 'Mihomo 启动失败：' : 'Mihomo 停止失败：') + err.message);
+    await loadState();
+  }
+}
+
+async function mihomoAction(action) {
+  if (action !== 'download') await request('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(collectConfig()) });
+  const result = await request('/api/mihomo/' + action, { method: 'POST' });
+  toast(action === 'download' ? ('下载完成：' + result.path) : '操作完成');
+  await loadState();
+}
+
+function controllerBase() {
+  const port = state?.config?.mihomo?.controllerPort || 9090;
+  return 'http://127.0.0.1:' + port;
+}
+
+function openMihomoAPI() {
+  window.open(controllerBase() + '/version', '_blank');
+}
+
+function openMihomoPanel() {
+  window.open(controllerBase() + '/ui', '_blank');
+}
+
+async function appQuit() {
+  if (!confirm('退出程序会停止 Mihomo 和所有本地 SOCKS5，确定退出吗？')) return;
+  await request('/api/app/quit', { method: 'POST' });
+  toast('正在退出程序');
+}
+
+function openEditor(type, index) {
+  const item = getItem(type, index);
+  if (isActive(type, item)) {
+    toast('请先关闭开关，再编辑');
+    return;
+  }
+  editor = { type, index, draft: JSON.parse(JSON.stringify(item)) };
+  const titleMap = { mihomo: '编辑 Mihomo 内核', easy: '编辑 Easy-Net SOCKS5', external: '编辑外部 SOCKS5', chain: '编辑链式代理' };
+  document.getElementById('modalTitle').textContent = titleMap[type] || '编辑';
+  document.getElementById('modalBody').innerHTML = editorFields(type, editor.draft);
+  document.getElementById('editModal').classList.add('open');
+}
+
+function closeEditor() {
+  editor = null;
+  document.getElementById('editModal').classList.remove('open');
+}
+
+async function saveEditor() {
+  if (!editor) return;
+  const draft = readEditor(editor.type);
+  if (editor.type === 'mihomo') state.config.mihomo = draft;
+  if (editor.type === 'easy') state.config.easyNetServers[editor.index] = draft;
+  if (editor.type === 'external') state.config.externalSocks5[editor.index] = draft;
+  if (editor.type === 'chain') state.config.chains[editor.index] = draft;
+  closeEditor();
+  await saveConfig();
+}
+
+function editorFields(type, item) {
+  if (type === 'mihomo') {
+    return field('管理端口', 'editManagerPort', state.config.managerPort, 'number') +
+      selectField('启动时自动运行', 'editMihomoEnabled', item.enabled) +
+      selectField('TUN 模式', 'editTunEnabled', item.tunEnabled) +
+      field('Mixed 端口', 'editMixedPort', item.mixedPort, 'number') +
+      field('SOCKS 端口', 'editSocksPort', item.socksPort, 'number') +
+      field('Controller 端口', 'editControllerPort', item.controllerPort, 'number') +
+      field('DNS 端口', 'editDNSPort', item.dnsPort, 'number') +
+      selectField('允许局域网访问', 'editAllowLan', item.allowLan) +
+      field('mihomo.exe 路径', 'editMihomoExe', item.executablePath) +
+      field('生成配置路径', 'editMihomoConfig', item.configPath) +
+      textAreaField('YAML 覆盖', 'editRawConfig', item.rawConfig || '');
+  }
+  if (type === 'easy') {
+    return field('名称', 'editName', item.name) +
+      field('中继域名', 'editWorkerHost', item.workerHost) +
+      field('端口', 'editLocalPort', item.localPort, 'number') +
+      field('Secret', 'editSecret', item.secret, 'password') +
+      field('优选 IP', 'editEndpointIP', item.endpointIP || '');
+  }
+  if (type === 'external') {
+    return field('名称', 'editName', item.name) +
+      field('Host', 'editHost', item.host) +
+      field('端口', 'editPort', item.port, 'number') +
+      field('用户名', 'editUsername', item.username || '') +
+      field('密码', 'editPassword', item.password || '', 'password') +
+      selectField('UDP', 'editUDP', item.udp);
+  }
+  return field('名称', 'editName', item.name) +
+    field('监听端口', 'editListenPort', item.listenPort, 'number') +
+    field('链路，按顺序用逗号分隔节点名称', 'editProxies', (item.proxies || []).join(', '));
+}
+
+function readEditor(type) {
+  const original = getItem(type, editor.index);
+  if (type === 'mihomo') {
+    state.config.managerPort = num(value('editManagerPort'));
+    return {
+      enabled: document.getElementById('editMihomoEnabled').value === 'true',
+      executablePath: value('editMihomoExe'),
+      configPath: value('editMihomoConfig'),
+      mixedPort: num(value('editMixedPort')),
+      socksPort: num(value('editSocksPort')),
+      controllerPort: num(value('editControllerPort')),
+      dnsPort: num(value('editDNSPort')),
+      tunEnabled: document.getElementById('editTunEnabled').value === 'true',
+      allowLan: document.getElementById('editAllowLan').value === 'true',
+      rawConfig: document.getElementById('editRawConfig').value
+    };
+  }
+  if (type === 'easy') {
+    return {
+      id: original.id,
+      enabled: false,
+      name: value('editName'),
+      workerHost: value('editWorkerHost'),
+      localPort: num(value('editLocalPort')),
+      secret: value('editSecret'),
+      endpointIP: value('editEndpointIP')
+    };
+  }
+  if (type === 'external') {
+    return {
+      id: original.id,
+      enabled: false,
+      name: value('editName'),
+      host: value('editHost'),
+      port: num(value('editPort')),
+      username: value('editUsername'),
+      password: value('editPassword'),
+      udp: document.getElementById('editUDP').value === 'true'
+    };
+  }
+  return {
+    id: original.id,
+    enabled: false,
+    name: value('editName'),
+    listenPort: num(value('editListenPort')),
+    proxies: value('editProxies').split(',').map(x => x.trim()).filter(Boolean)
+  };
+}
+
+function addEasyNet() {
+  state.config.easyNetServers.push({ id: 'easy-net-' + Date.now(), name: 'Easy-Net ' + Date.now().toString().slice(-4), enabled: false, workerHost: '', localPort: 1080 + state.config.easyNetServers.length, secret: '', endpointIP: '' });
+  openEditor('easy', state.config.easyNetServers.length - 1);
+}
+async function removeEasyNet(i) {
+  const item = state.config.easyNetServers[i];
+  if (isActive('easy', item)) return toast('请先关闭开关，再删除');
+  state.config.easyNetServers.splice(i, 1);
+  await saveConfig();
+}
+function addExternal() {
+  state.config.externalSocks5.push({ id: 'socks5-' + Date.now(), name: 'SOCKS5 ' + Date.now().toString().slice(-4), enabled: true, host: '127.0.0.1', port: 1080, username: '', password: '', udp: false });
+  state.config.externalSocks5[state.config.externalSocks5.length - 1].enabled = false;
+  openEditor('external', state.config.externalSocks5.length - 1);
+}
+async function removeExternal(i) {
+  const item = state.config.externalSocks5[i];
+  if (isActive('external', item)) return toast('请先关闭开关，再删除');
+  state.config.externalSocks5.splice(i, 1);
+  await saveConfig();
+}
+function addChain() {
+  state.config.chains.push({ id: 'chain-' + Date.now(), name: 'Chain ' + Date.now().toString().slice(-4), enabled: true, listenPort: 12080 + state.config.chains.length, proxies: [] });
+  state.config.chains[state.config.chains.length - 1].enabled = false;
+  openEditor('chain', state.config.chains.length - 1);
+}
+async function removeChain(i) {
+  const item = state.config.chains[i];
+  if (isActive('chain', item)) return toast('请先关闭开关，再删除');
+  state.config.chains.splice(i, 1);
+  await saveConfig();
+}
+
+function getItem(type, index) {
+  if (type === 'mihomo') return state.config.mihomo;
+  if (type === 'easy') return state.config.easyNetServers[index];
+  if (type === 'external') return state.config.externalSocks5[index];
+  return state.config.chains[index];
+}
+
+function isActive(type, item) {
+  if (type === 'mihomo') return state.mihomo && state.mihomo.running;
+  if (type === 'easy') return state.easyNet && state.easyNet[item.id] === 'running';
+  return !!item.enabled;
+}
+
+function switchHTML(checked, handler) {
+  return '<label class="switch"><input type="checkbox" onchange="' + handler + '" ' + (checked ? 'checked' : '') + '><span class="slider"></span></label>';
+}
+
+function statusLine(active, err) {
+  const status = '<div style="margin-top:4px"><span class="pill ' + (active ? 'run' : 'stop') + '">' + (active ? '已开启' : '已关闭') + '</span></div>';
+  return status + (err ? '<div class="error-text">' + esc(err) + '</div>' : '');
+}
+
+function maskSecret(value) {
+  if (!value) return '-';
+  return '••••••';
+}
+
+function field(label, id, value, type = 'text') {
+  return '<label><span>' + label + '</span><input id="' + id + '" type="' + type + '" value="' + esc(value ?? '') + '"></label>';
+}
+
+function textAreaField(label, id, value) {
+  return '<label style="grid-column:1/-1"><span>' + label + '</span><textarea id="' + id + '">' + esc(value ?? '') + '</textarea></label>';
+}
+
+function selectField(label, id, value) {
+  return '<label><span>' + label + '</span><select id="' + id + '"><option value="false"' + (!value ? ' selected' : '') + '>否</option><option value="true"' + (value ? ' selected' : '') + '>是</option></select></label>';
+}
+
+function summaryItem(label, value) {
+  return '<div class="summary-item"><div class="label">' + esc(label) + '</div><div class="value">' + esc(value) + '</div></div>';
+}
+
+function value(id) {
+  return document.getElementById(id).value.trim();
+}
+
+function num(v) { return Number.parseInt(v || '0', 10) || 0; }
+function esc(v) { return String(v ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
+function escapeHtml(v) { return esc(v); }
+function toast(text) {
+  const el = document.getElementById('toast');
+  el.textContent = text;
+  el.style.display = 'block';
+  setTimeout(() => el.style.display = 'none', 3000);
+}
+
+loadState().catch(err => toast(err.message));
+</script>
+</body>
+</html>

@@ -305,8 +305,6 @@
         <button class="secondary" onclick="openEditor('mihomo', 0)">编辑</button>
         <button onclick="mihomoAction('download')">下载 Mihomo</button>
         <button class="secondary" onclick="mihomoAction('generate')">生成 YAML</button>
-        <button class="secondary" onclick="openMihomoAPI()">打开 API</button>
-        <button class="secondary" onclick="openMihomoPanel()">打开面板</button>
         <button class="secondary" onclick="mihomoAction('upgrade-ui')">更新面板</button>
       </div>
     </div>
@@ -441,8 +439,8 @@ function renderMihomoSummary(cfg) {
     summaryItem('管理端口', cfg.managerPort) +
     summaryItem('mihomo.exe', m.executablePath || '-') +
     summaryItem('配置文件', m.configPath || '-') +
-    summaryItem('API 入口', controllerBase() + '/version') +
-    summaryItem('面板入口', controllerBase() + '/ui');
+    summaryLinkItem('API 入口', mihomoAPIURL()) +
+    summaryLinkItem('面板入口', mihomoPanelURL());
 }
 
 function renderEasyNet(items) {
@@ -452,14 +450,14 @@ function renderEasyNet(items) {
     return;
   }
   box.innerHTML = '<table class="data-table"><thead><tr>' +
-    '<th style="width:76px">启用</th><th>名称</th><th>中继域名</th><th style="width:90px">端口</th><th>Secret</th><th>优选 IP</th><th style="width:150px"></th>' +
+    '<th style="width:76px">启用</th><th>名称</th><th>WebSocket 地址</th><th style="width:120px">本地端口</th><th>密钥</th><th>优选 IP（选填）</th><th style="width:150px"></th>' +
     '</tr></thead><tbody>' + items.map((item, i) => {
       const running = state.easyNet && state.easyNet[item.id] === 'running';
       const err = state.easyNetErrors && state.easyNetErrors[item.id];
       return '<tr>' +
         '<td>' + switchHTML(running, 'toggleEasyNet(' + i + ', this.checked)') + '</td>' +
-        '<td>' + esc(item.name) + statusLine(running, err) + '</td>' +
-        '<td>' + esc(item.workerHost || '-') + '</td>' +
+        '<td>' + esc(item.name) + statusLine(running, err) + trafficLine(item.id) + '</td>' +
+        '<td>' + esc(item.serverWsUrl || item.workerHost || '-') + '</td>' +
         '<td>' + esc(item.localPort || '-') + '</td>' +
         '<td><span class="masked">' + maskSecret(item.secret) + '</span></td>' +
         '<td>' + esc(item.endpointIP || '-') + '</td>' +
@@ -641,6 +639,7 @@ function generateClashVergeScript() {
   const nodeText = nodes.length
     ? nodes.map(node => '    ' + JSON.stringify(node)).join(',\n')
     : '    // 当前没有检测到已运行或已启用的 SOCKS5';
+  const directRuleText = directProcessNames().map(name => '    ' + JSON.stringify('PROCESS-NAME,' + name + ',DIRECT')).join(',\n');
   return `function main(config, profileName) {
   const localNodes = [
 ${nodeText}
@@ -664,20 +663,46 @@ ${nodeText}
     }
   }
 
+  const groups = Array.isArray(config["proxy-groups"]) ? config["proxy-groups"] : [];
+  const proxyPolicy = groups.some(group => group.name === "PROXY")
+    ? "PROXY"
+    : (groups[0] && groups[0].name ? groups[0].name : "DIRECT");
+  const geoProxyRules = proxyPolicy === "DIRECT" ? [] : [
+    "GEOSITE,geolocation-!cn," + proxyPolicy
+  ];
   const prependRules = [
-    'PROCESS-NAME,easy-net-manager.exe,DIRECT',
-    'PROCESS-NAME,easy-net-manager-silent.exe,DIRECT',
-    'PROCESS-NAME,easy-net-manager-windows-amd64.exe,DIRECT',
-    'PROCESS-NAME,easy-net-manager-windows-amd64-silent.exe,DIRECT',
-    'PROCESS-NAME,proxy-mac-arm64,DIRECT',
-    'PROCESS-NAME,proxy-mac-amd64,DIRECT',
-    'PROCESS-NAME,proxy-windows-amd64.exe,DIRECT',
-    'PROCESS-NAME,proxy-windows-amd64-silent.exe,DIRECT',
-    'PROCESS-NAME,pritunl.exe,DIRECT'
+${directRuleText},
+    "GEOSITE,private,DIRECT",
+    "GEOSITE,cn,DIRECT",
+    ...geoProxyRules,
+    "GEOIP,CN,DIRECT"
   ];
   config.rules = prependRules.concat(config.rules || []);
   return config;
 }`;
+}
+
+function directProcessNames() {
+  const fallback = [
+    'mihomo.exe',
+    'mihomo',
+    'easy-net-manager.exe',
+    'easy-net-manager-silent.exe',
+    'easy-net-manager-windows-amd64.exe',
+    'easy-net-manager-windows-amd64-silent.exe',
+    'easy-net-manager-mac-arm64',
+    'easy-net-manager-mac-amd64',
+    'easy-net-manager-linux-amd64'
+  ];
+  const names = [...(state.directProcessNames || []), ...fallback];
+  const seen = new Set();
+  return names.filter(name => {
+    const normalized = String(name || '').trim();
+    const key = normalized.toLowerCase();
+    if (!normalized || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 async function copyClashVergeScript() {
@@ -783,12 +808,12 @@ function controllerBase() {
   return 'http://127.0.0.1:' + port;
 }
 
-function openMihomoAPI() {
-  window.open(controllerBase() + '/version', '_blank');
+function mihomoAPIURL() {
+  return controllerBase() + '/version';
 }
 
-function openMihomoPanel() {
-  window.open(controllerBase() + '/ui', '_blank');
+function mihomoPanelURL() {
+  return controllerBase() + '/ui/xd/';
 }
 
 async function appQuit() {
@@ -836,16 +861,16 @@ function editorFields(type, item) {
       field('Controller 端口', 'editControllerPort', item.controllerPort, 'number') +
       field('DNS 端口', 'editDNSPort', item.dnsPort, 'number') +
       selectField('允许局域网访问', 'editAllowLan', item.allowLan) +
-      field('mihomo.exe 路径', 'editMihomoExe', item.executablePath) +
-      field('生成配置路径', 'editMihomoConfig', item.configPath) +
+      readOnlyInfo('mihomo.exe 路径', item.executablePath || 'mihomo/mihomo.exe') +
+      readOnlyInfo('生成配置路径', item.configPath || 'mihomo/config.yaml') +
       textAreaField('YAML 覆盖', 'editRawConfig', item.rawConfig || '');
   }
   if (type === 'easy') {
     return field('名称', 'editName', item.name) +
-      field('中继域名', 'editWorkerHost', item.workerHost) +
-      field('端口', 'editLocalPort', item.localPort, 'number') +
-      field('Secret', 'editSecret', item.secret, 'password') +
-      field('优选 IP', 'editEndpointIP', item.endpointIP || '');
+      field('WebSocket 地址', 'editServerWsUrl', item.serverWsUrl || '') +
+      fieldHint('本地 SOCKS5 端口', 'editLocalPort', item.localPort, 'number', '本机应用连接 127.0.0.1:此端口，即可通过该 Easy-Net 节点转发。') +
+      field('密钥', 'editSecret', item.secret, 'password') +
+      fieldHint('优选 IP（选填）', 'editEndpointIP', item.endpointIP || '', 'text', '可填写中继服务器解析出的优选 IP；留空则自动解析 WebSocket 地址中的域名。');
   }
   if (type === 'external') {
     return field('名称', 'editName', item.name) +
@@ -866,8 +891,8 @@ function readEditor(type) {
     state.config.managerPort = num(value('editManagerPort'));
     return {
       enabled: document.getElementById('editMihomoEnabled').value === 'true',
-      executablePath: value('editMihomoExe'),
-      configPath: value('editMihomoConfig'),
+      executablePath: original.executablePath,
+      configPath: original.configPath,
       mixedPort: num(value('editMixedPort')),
       socksPort: num(value('editSocksPort')),
       controllerPort: num(value('editControllerPort')),
@@ -882,7 +907,8 @@ function readEditor(type) {
       id: original.id,
       enabled: false,
       name: value('editName'),
-      workerHost: value('editWorkerHost'),
+      serverWsUrl: value('editServerWsUrl'),
+      workerHost: original.workerHost || '',
       localPort: num(value('editLocalPort')),
       secret: value('editSecret'),
       endpointIP: value('editEndpointIP')
@@ -910,7 +936,7 @@ function readEditor(type) {
 }
 
 function addEasyNet() {
-  state.config.easyNetServers.push({ id: 'easy-net-' + Date.now(), name: 'Easy-Net ' + Date.now().toString().slice(-4), enabled: false, workerHost: '', localPort: 1080 + state.config.easyNetServers.length, secret: '', endpointIP: '' });
+  state.config.easyNetServers.push({ id: 'easy-net-' + Date.now(), name: 'Easy-Net ' + Date.now().toString().slice(-4), enabled: false, serverWsUrl: '', workerHost: '', localPort: 1080 + state.config.easyNetServers.length, secret: '', endpointIP: '' });
   openEditor('easy', state.config.easyNetServers.length - 1);
 }
 async function removeEasyNet(i) {
@@ -964,6 +990,29 @@ function statusLine(active, err) {
   return status + (err ? '<div class="error-text">' + esc(err) + '</div>' : '');
 }
 
+function trafficLine(id) {
+  const item = state.easyNetTraffic && state.easyNetTraffic[id];
+  if (!item) return '';
+  return '<div class="muted" style="margin-top:6px;font-size:12px;line-height:1.5">' +
+    '今日 ↑ ' + formatBytes(item.upBytes) +
+    ' / ↓ ' + formatBytes(item.downBytes) +
+    ' / 合计 ' + formatBytes(item.totalBytes) +
+    '</div>';
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (value < 1024) return value + ' B';
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let size = value / 1024;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index++;
+  }
+  return size.toFixed(size >= 100 ? 0 : size >= 10 ? 1 : 2) + ' ' + units[index];
+}
+
 function maskSecret(value) {
   if (!value) return '-';
   return '••••••';
@@ -971,6 +1020,14 @@ function maskSecret(value) {
 
 function field(label, id, value, type = 'text') {
   return '<label><span>' + label + '</span><input id="' + id + '" type="' + type + '" value="' + esc(value ?? '') + '"></label>';
+}
+
+function readOnlyInfo(label, value) {
+  return '<div class="summary-item"><div class="label">' + esc(label) + '</div><div class="value">' + esc(value || '-') + '</div></div>';
+}
+
+function fieldHint(label, id, value, type = 'text', hint = '') {
+  return '<label><span>' + label + '</span><input id="' + id + '" type="' + type + '" value="' + esc(value ?? '') + '"><span class="muted" style="font-size:12px;line-height:1.45">' + esc(hint) + '</span></label>';
 }
 
 function textAreaField(label, id, value) {
@@ -983,6 +1040,10 @@ function selectField(label, id, value) {
 
 function summaryItem(label, value) {
   return '<div class="summary-item"><div class="label">' + esc(label) + '</div><div class="value">' + esc(value) + '</div></div>';
+}
+
+function summaryLinkItem(label, value) {
+  return '<div class="summary-item"><div class="label">' + esc(label) + '</div><div class="value"><a href="' + esc(value) + '" target="_blank" rel="noopener noreferrer">' + esc(value) + '</a></div></div>';
 }
 
 function value(id) {

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,14 +20,15 @@ import (
 )
 
 type SocksServer struct {
-	cfg      EasyNetConfig
-	listener net.Listener
-	running  atomic.Bool
-	stopOnce sync.Once
+	cfg           EasyNetConfig
+	reportTraffic func(id string, upBytes uint64, downBytes uint64)
+	listener      net.Listener
+	running       atomic.Bool
+	stopOnce      sync.Once
 }
 
-func NewSocksServer(cfg EasyNetConfig) *SocksServer {
-	return &SocksServer{cfg: cfg}
+func NewSocksServer(cfg EasyNetConfig, reportTraffic func(id string, upBytes uint64, downBytes uint64)) *SocksServer {
+	return &SocksServer{cfg: cfg, reportTraffic: reportTraffic}
 }
 
 func (s *SocksServer) Start() error {
@@ -46,7 +48,7 @@ func (s *SocksServer) Start() error {
 				}
 				return
 			}
-			go handleClient(conn, &s.cfg)
+			go handleClient(conn, &s.cfg, s.reportTraffic)
 		}
 	}()
 	return nil
@@ -66,7 +68,7 @@ func (s *SocksServer) Running() bool {
 	return s.running.Load()
 }
 
-func handleClient(conn net.Conn, config *EasyNetConfig) {
+func handleClient(conn net.Conn, config *EasyNetConfig, reportTraffic func(id string, upBytes uint64, downBytes uint64)) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(15 * time.Second))
 
@@ -113,6 +115,9 @@ func handleClient(conn net.Conn, config *EasyNetConfig) {
 					log.Printf("[Easy-Net] ws write error: %v", err)
 					break
 				}
+				if reportTraffic != nil {
+					reportTraffic(config.ID, uint64(n), 0)
+				}
 			}
 		}
 	}()
@@ -126,9 +131,13 @@ func handleClient(conn net.Conn, config *EasyNetConfig) {
 				break
 			}
 			if msgType == websocket.BinaryMessage || msgType == websocket.TextMessage {
-				if _, err := conn.Write(p); err != nil {
+				n, err := conn.Write(p)
+				if err != nil {
 					log.Printf("[Easy-Net] local write error: %v", err)
 					break
+				}
+				if n > 0 && reportTraffic != nil {
+					reportTraffic(config.ID, 0, uint64(n))
 				}
 			}
 		}
@@ -210,13 +219,19 @@ func socks5ParseRequest(conn net.Conn) (string, uint16, error) {
 }
 
 func connectToWorker(host string, port uint16, config *EasyNetConfig) (*websocket.Conn, error) {
-	resolvedHost := config.WorkerHost
+	u, originalHost, tlsServerName, err := buildTunnelURL(config)
+	if err != nil {
+		return nil, err
+	}
 
+	resolvedHost := u.Host
+	relayHostName := u.Hostname()
+	relayPort := u.Port()
 	if config.EndpointIP != "" {
-		resolvedHost = config.EndpointIP
+		resolvedHost = joinHostPortIfNeeded(config.EndpointIP, relayPort)
 		log.Printf("[Easy-Net] using configured endpoint IP: %s", resolvedHost)
-	} else if !isIP(config.WorkerHost) {
-		log.Printf("[Easy-Net] resolving relay host through 223.5.5.5: %s", config.WorkerHost)
+	} else if relayHostName != "" && !isIP(relayHostName) {
+		log.Printf("[Easy-Net] resolving relay host through 223.5.5.5: %s", relayHostName)
 		r := &net.Resolver{
 			PreferGo: true,
 			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -224,16 +239,16 @@ func connectToWorker(host string, port uint16, config *EasyNetConfig) (*websocke
 				return d.DialContext(ctx, "udp", "223.5.5.5:53")
 			},
 		}
-		ips, err := r.LookupHost(context.Background(), config.WorkerHost)
+		ips, err := r.LookupHost(context.Background(), relayHostName)
 		if err == nil && len(ips) > 0 {
-			resolvedHost = ips[0]
-			log.Printf("[Easy-Net] resolved: %s -> %s", config.WorkerHost, resolvedHost)
+			resolvedHost = joinHostPortIfNeeded(ips[0], relayPort)
+			log.Printf("[Easy-Net] resolved: %s -> %s", relayHostName, resolvedHost)
 		} else {
 			log.Printf("[Easy-Net] direct DNS failed, fallback to system DNS: %v", err)
 		}
 	}
 
-	u := url.URL{Scheme: "wss", Host: resolvedHost, Path: "/tunnel"}
+	u.Host = resolvedHost
 	q := u.Query()
 	q.Set("secret", config.Secret)
 	q.Set("host", host)
@@ -242,14 +257,20 @@ func connectToWorker(host string, port uint16, config *EasyNetConfig) (*websocke
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
-		TLSClientConfig: &tls.Config{
-			ServerName: config.WorkerHost,
-		},
+	}
+	if u.Scheme == "wss" {
+		tlsConfig := &tls.Config{}
+		if tlsServerName != "" && !isIP(tlsServerName) {
+			tlsConfig.ServerName = tlsServerName
+		}
+		dialer.TLSClientConfig = tlsConfig
 	}
 
 	headers := make(http.Header)
 	headers.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	headers.Set("Host", config.WorkerHost)
+	if originalHost != "" {
+		headers.Set("Host", originalHost)
+	}
 
 	wsConn, resp, err := dialer.Dial(u.String(), headers)
 	if err != nil {
@@ -260,6 +281,49 @@ func connectToWorker(host string, port uint16, config *EasyNetConfig) (*websocke
 		return nil, err
 	}
 	return wsConn, nil
+}
+
+func buildTunnelURL(config *EasyNetConfig) (*url.URL, string, string, error) {
+	raw := strings.TrimSpace(config.ServerWsURL)
+	if raw == "" {
+		raw = strings.TrimSpace(config.WorkerHost)
+	}
+	if raw == "" {
+		return nil, "", "", fmt.Errorf("serverWsUrl or workerHost is required")
+	}
+
+	if !strings.Contains(raw, "://") {
+		raw = "wss://" + raw
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("invalid server ws url: %w", err)
+	}
+	if u.Scheme == "http" {
+		u.Scheme = "ws"
+	}
+	if u.Scheme == "https" {
+		u.Scheme = "wss"
+	}
+	if u.Scheme != "ws" && u.Scheme != "wss" {
+		return nil, "", "", fmt.Errorf("unsupported server ws scheme: %s", u.Scheme)
+	}
+	if u.Host == "" {
+		return nil, "", "", fmt.Errorf("server ws url host is required")
+	}
+	if u.Path == "" || u.Path == "/" {
+		u.Path = "/tunnel"
+	}
+
+	return u, u.Host, u.Hostname(), nil
+}
+
+func joinHostPortIfNeeded(host string, port string) string {
+	if port == "" {
+		return host
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func isIP(host string) bool {

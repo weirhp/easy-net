@@ -1,213 +1,129 @@
-# Easy-Net WebSocket 代理中继服务端 (VPS 部署版)
+# Easy-Net WebSocket 代理中继服务端
 
-本项目是 Easy-Net 代理中继的服务端，基于 Node.js 与原生 WebSocket 开发，主要负责接收本地客户端的代理流量并中继到目标主机。它支持多连接凭证隔离校验和实时的流量统计。
+Easy-Net 服务端基于 Node.js 和 WebSocket，负责接收本地客户端代理流量并中继到目标主机。当前版本内置管理端、用户端和本地 SQLite 数据库，可以在浏览器里维护用户、连接密钥、流量额度和客户端配置。
 
----
+## 主要功能
 
-## 部署前提
+- 管理端：`/admin`
+  - 管理员登录、修改管理员密码。
+  - 登录失败锁定，默认 15 分钟内连续 5 次失败会临时锁定。
+  - 创建、编辑、删除用户。
+  - 设置用户每日和月周期流量上限。
+  - 设置用户名、密码、昵称、连接密钥和管理员备注。
+  - 重置用户当日流量。
+  - 下载指定用户客户端配置。
+  - 查看服务运行统计和每日流量统计。
+  - 设置客户端配置中使用的服务器域名和本地端口。
+- 用户端：`/user`
+  - 使用管理端创建的账号登录。
+  - 查看当天和月周期内的使用情况。
+  - 修改自己的登录密码和连接密钥。
+  - 下载自己的客户端配置。
+- 代理连接：`/tunnel`
+  - 客户端连接密钥从数据库用户读取，不再依赖 `SECRETS` 白名单。
+  - 用户被停用或超过每日/月周期额度后会拒绝或关闭连接。
 
-在 VPS 上部署该服务，宿主机需要具备以下环境：
+## 本地数据库
 
-1. **Docker** (建议最新版本)
-2. **Docker Compose** (或 Docker 自带的 `docker compose` 命令行插件)
+服务使用 `sql.js` 提供 SQLite 数据库能力，默认数据库文件为：
 
----
+```text
+server/data/easy-net.sqlite
+```
 
-## 部署与运行步骤
+Docker Compose 默认会挂载：
 
-服务端提供了快捷管理脚本 `deploy.sh`，可极大地简化部署流程。
+```text
+./data:/app/data
+```
 
-### 第一步：准备文件
+请保留 `data` 目录，避免重启或重建容器后丢失用户、密码、设置和流量统计。
 
-将 `server` 文件夹下的所有内容（包括 `server.js`、`package.json`、`Dockerfile`、`docker-compose.yml`、`deploy.sh` 和 `.env.example`）上传到您的 VPS 目标目录中。
+## 环境变量
 
-### 第二步：配置凭证与端口
+| 环境变量名 | 说明 | 默认值 |
+| :--- | :--- | :--- |
+| `HOST_PORT` | Docker 映射到宿主机的端口。 | `3100` |
+| `PORT` | 容器内部 Node.js 监听端口。 | `3000` |
+| `DATA_DIR` | 数据库目录。 | `/app/data` |
+| `CONTEXT_PATH` | 服务统一路径前缀，例如 `/easy-net`。 | 空 |
+| `ADMIN_PASSWORD` | 初始管理员密码，仅首次创建数据库时生效。 | 未设置时会随机生成并打印到日志 |
+| `CLIENT_WS_URL` | 客户端配置里的完整 WebSocket 地址。也可在管理端修改。 | 空，下载配置时按当前请求推断 |
+| `CLIENT_HOST` | 旧版兼容：客户端配置里的服务器域名或 `host:port`。 | 空 |
+| `CLIENT_LOCAL_PORT` | 客户端配置里的本地 SOCKS 端口。 | `1080` |
+| `LOGIN_MAX_FAILURES` | 登录失败锁定阈值。 | `5` |
+| `LOGIN_LOCK_MINUTES` | 触发锁定后的锁定分钟数。 | `15` |
+| `SECRETS` | 旧版兼容。首次启动时会迁移为 `legacy_x` 用户，后续推荐在管理端维护。 | 空 |
+| `ADMIN_KEY` | 旧版兼容。仍可访问 `/stats?admin_key=...`。 | 空 |
+| `MONITOR_INTERVAL_SECONDS` | 定时输出监控日志间隔，`0` 表示关闭。 | `0` |
+| `MAX_WS_PAYLOAD_BYTES` | WebSocket 单条消息大小限制。 | `1048576` |
+| `WS_BACKPRESSURE_LIMIT_BYTES` | 单连接 WebSocket 待发送缓冲暂停阈值。 | `4194304` |
+| `WS_BACKPRESSURE_RESUME_BYTES` | 单连接 WebSocket 待发送缓冲恢复阈值。 | `2097152` |
 
-为了服务安全性，本服务**无默认连接凭证**。在部署前，您可以通过以下方式进行环境配置：
+## 部署步骤
 
-#### 方式 A：通过 `.env` 配置文件（推荐）
-
-直接复制目录下的 `.env.example` 为 `.env`：
+1. 复制环境变量示例：
 
 ```bash
 cp .env.example .env
 ```
 
-打开 `.env` 文件并编辑其中的环境变量：
+2. 修改 `.env`，至少设置：
 
 ```env
-# 宿主机映射端口
 HOST_PORT=3100
-
-# 客户端连接秘钥白名单，多个凭证以逗号分隔
-SECRETS=your-custom-secret-key-1,your-custom-secret-key-2
-
-# 流量统计查询管理员秘钥
-ADMIN_KEY=your-admin-stat-key
+CONTEXT_PATH=/easy-net
+ADMIN_PASSWORD=change-this-admin-password
+CLIENT_WS_URL=wss://proxy.example.com/easy-net/tunnel
+CLIENT_LOCAL_PORT=1080
 ```
 
-#### 方式 B：通过命令行参数直接启动
-
-在启动时，您可以通过在命令前直接附带环境变量来配置，例如：
-
-```bash
-SECRETS="my-secret-key" ADMIN_KEY="my-admin-key" ./deploy.sh start --port 3100
-```
-
----
-
-### 第三步：使用脚本进行服务管理
-
-首先赋予脚本执行权限：
+3. 启动服务：
 
 ```bash
 chmod +x deploy.sh
-```
-
-#### 1. 启动服务
-
-如果您已在 `.env` 中配置好了密码和端口，可直接运行：
-
-```bash
 ./deploy.sh start
 ```
 
-如果想覆盖 `.env` 中的宿主机映射端口，可以通过 `--port` 参数指定：
+4. 打开管理端：
 
-```bash
-./deploy.sh start --port 3100
+```text
+http://你的服务器:3100/easy-net/admin
 ```
 
-* **`--port [port]`**：指定服务在宿主机上映射的端口（若未指定，优先使用 `.env` 中的 `HOST_PORT`，其次为默认值 3000）。
-* **`-p [project_name]`**：指定 Docker Compose 项目的名称（当需要在一台 VPS 上运行多个代理实例时，非常有用）。
+首次登录使用 `.env` 中的 `ADMIN_PASSWORD`。登录后请尽快在“管理员密码”里修改。
 
-#### 2. 查看服务状态
+## 客户端配置
 
-```bash
-./deploy.sh status
-```
-
-#### 3. 查看实时运行日志
-
-```bash
-./deploy.sh logs
-```
-
-#### 4. 重启服务
-
-```bash
-./deploy.sh restart
-```
-
-#### 5. 停止服务
-
-```bash
-./deploy.sh stop
-```
-
----
-
-## 环境变量说明
-
-| 环境变量名 | 说明 | 是否必填 |
-| :--- | :--- | :--- |
-| `SECRETS` | 客户端连接秘钥白名单，多个凭证以逗号 `,` 分隔。若未配置，**所有客户端连接请求均会被拒绝**。 | **必填** (为保障安全无默认值) |
-| `ADMIN_KEY` | 用于访问流量统计的管理员凭证。若未配置，**流量统计接口将安全禁用**。 | 选填 (建议配置) |
-| `PORT` | 容器内部 Node.js 服务端监听的端口，默认为 `3000` (由 Docker 内部使用，无需手动修改)。 | 选填 |
-| `HOST_PORT` | 映射到宿主机的端口。您可在 `deploy.sh` 启动时通过 `--port` 指定，或修改 `.env` 配置文件。 | 选填 |
-| `MONITOR_INTERVAL_SECONDS` | 定时输出监控日志的间隔秒数。默认 `0` 表示关闭；例如设置为 `60` 后每分钟输出一次 RSS、容器内存、连接数与缓冲区指标。 | 选填 |
-| `MAX_WS_PAYLOAD_BYTES` | WebSocket 单条消息大小限制，默认 `1048576` (1 MiB)。本地客户端默认分片较小，通常无需修改。 | 选填 |
-| `WS_BACKPRESSURE_LIMIT_BYTES` | 单连接 WebSocket 待发送缓冲超过该值时暂停读取目标 TCP，默认 `4194304` (4 MiB)。 | 选填 |
-| `WS_BACKPRESSURE_RESUME_BYTES` | 单连接 WebSocket 待发送缓冲低于该值时恢复读取目标 TCP，默认 `2097152` (2 MiB)。 | 选填 |
-
----
-
-## 使用与接口说明
-
-### 1. 客户端连接接口 `/tunnel`
-
-本接口只接受 WebSocket 协议的升级连接。客户端建立连接时需携带以下 Query 参数：
-
-* `secret`: 对应的访问凭证（必须在 `SECRETS` 列表中）
-* `host`: 目标访问的主机地址
-* `port`: 目标访问的端口号
-
-**客户端配置示例 (`local-config.json`)：**
+管理端或用户端下载的配置格式如下：
 
 ```json
 {
-  "workerHost": "您的VPS的公网IP:映射端口",
+  "serverWsUrl": "wss://proxy.example.com/easy-net/tunnel",
+  "workerHost": "proxy.example.com:3100",
   "localPort": 1080,
-  "secret": "在SECRETS中配置的密钥之一"
+  "secret": "用户自己的连接密钥"
 }
 ```
 
-### 2. 流量统计接口 `/stats`
+`serverWsUrl` 和 `localPort` 来自管理端“系统设置”，`secret` 来自当前用户。`workerHost` 仅用于兼容旧客户端。
 
-本接口为 HTTP GET 接口，访问时需要提供正确的管理员查询凭证。
+## 旧版接口
 
-* **访问地址**：`http://您的VPS的公网IP:映射端口/stats?admin_key=您的ADMIN_KEY`
-* **响应格式**：返回各凭证当前的活跃连接数及上行、下行流量字节数（**注意：该统计数据存储在内存中，服务重启后将清零**）。
+### WebSocket 代理接口 `/tunnel`
 
-  ```json
-  {
-    "status": "success",
-    "timestamp": "2026-06-06T14:00:00.000Z",
-    "runtime": {
-      "pid": 1,
-      "nodeVersion": "v22.22.1",
-      "uptimeSeconds": 86400,
-      "limits": {
-        "maxWsPayloadBytes": 1048576,
-        "wsBackpressureLimitBytes": 4194304,
-        "wsBackpressureResumeBytes": 2097152
-      },
-      "memory": {
-        "rss": 67108864,
-        "heapTotal": 8388608,
-        "heapUsed": 5242880,
-        "external": 2097152,
-        "arrayBuffers": 1048576
-      },
-      "containerMemory": {
-        "currentBytes": 322961408,
-        "limitBytes": 3848290697,
-        "stat": {
-          "anon": 67108864,
-          "file": 251658240,
-          "sock": 0
-        }
-      },
-      "connections": {
-        "totalConnections": 120,
-        "activeConnections": 1,
-        "maxActiveConnections": 18,
-        "rejectedUpgrades": 3,
-        "targetErrors": 2,
-        "websocketErrors": 0,
-        "deadConnectionsTerminated": 1
-      },
-      "websocket": {
-        "backpressureEvents": 0,
-        "totalWsBufferedAmount": 0,
-        "maxWsBufferedAmount": 0,
-        "maxWsBufferedAmountSeen": 0,
-        "pausedTargetReads": 0,
-        "resumedTargetReads": 0,
-        "openTargetSockets": 1,
-        "totalTargetWritableLength": 0
-      }
-    },
-    "stats": {
-      "your-custom-secret-key-1": {
-        "uploadBytes": 10240,
-        "downloadBytes": 20480,
-        "activeConnections": 1,
-        "totalConnections": 10,
-        "failedConnections": 0
-      }
-    }
-  }
-  ```
+客户端仍然使用 WebSocket 连接：
 
-  其中 `runtime.memory.rss` 是 Node 主进程 RSS，`runtime.containerMemory.currentBytes` 对应容器 cgroup 当前内存，通常更接近 `docker stats`。如果 `containerMemory.stat.file` 很高，说明主要是文件缓存；如果 `anon` 或 `memory.rss` 持续增长，才更像应用实际内存增长。
+```text
+ws://服务器/easy-net/tunnel?secret=用户连接密钥&host=目标主机&port=目标端口
+```
+
+### 统计接口 `/stats`
+
+如果配置了 `ADMIN_KEY`，旧统计接口仍可使用：
+
+```text
+http://服务器/stats?admin_key=你的ADMIN_KEY
+```
+
+新管理端推荐使用 `/admin` 查看统计信息。

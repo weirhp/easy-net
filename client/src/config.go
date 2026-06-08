@@ -36,13 +36,14 @@ type MihomoConfig struct {
 }
 
 type EasyNetConfig struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Enabled    bool   `json:"enabled"`
-	WorkerHost string `json:"workerHost"`
-	LocalPort  int    `json:"localPort"`
-	Secret     string `json:"secret"`
-	EndpointIP string `json:"endpointIP"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Enabled     bool   `json:"enabled"`
+	ServerWsURL string `json:"serverWsUrl"`
+	WorkerHost  string `json:"workerHost"`
+	LocalPort   int    `json:"localPort"`
+	Secret      string `json:"secret"`
+	EndpointIP  string `json:"endpointIP"`
 }
 
 type ExternalSocks5 struct {
@@ -70,16 +71,17 @@ type ProcessRule struct {
 }
 
 type legacyConfig struct {
-	WorkerHost string `json:"workerHost"`
-	LocalPort  int    `json:"localPort"`
-	Secret     string `json:"secret"`
-	EndpointIP string `json:"endpointIP"`
+	ServerWsURL string `json:"serverWsUrl"`
+	WorkerHost  string `json:"workerHost"`
+	LocalPort   int    `json:"localPort"`
+	Secret      string `json:"secret"`
+	EndpointIP  string `json:"endpointIP"`
 }
 
 func NewConfigStore(workDir string) *ConfigStore {
 	return &ConfigStore{
 		workDir: workDir,
-		path:    filepath.Join(workDir, "local-config.json"),
+		path:    filepath.Join(workDir, "client-config.json"),
 	}
 }
 
@@ -109,13 +111,14 @@ func (s *ConfigStore) Load() (*AppConfig, error) {
 		}
 		cfg := defaultConfig(s.workDir)
 		cfg.EasyNetServers = []EasyNetConfig{{
-			ID:         "easy-net-" + portID(legacy.LocalPort),
-			Name:       "Easy-Net " + portID(legacy.LocalPort),
-			Enabled:    true,
-			WorkerHost: legacy.WorkerHost,
-			LocalPort:  legacy.LocalPort,
-			Secret:     legacy.Secret,
-			EndpointIP: legacy.EndpointIP,
+			ID:          "easy-net-" + portID(legacy.LocalPort),
+			Name:        "Easy-Net " + portID(legacy.LocalPort),
+			Enabled:     true,
+			ServerWsURL: legacy.ServerWsURL,
+			WorkerHost:  legacy.WorkerHost,
+			LocalPort:   legacy.LocalPort,
+			Secret:      legacy.Secret,
+			EndpointIP:  legacy.EndpointIP,
 		}}
 		return cfg, s.Save(cfg)
 	}
@@ -142,7 +145,7 @@ func defaultConfig(workDir string) *AppConfig {
 		ManagerPort: 18080,
 		Mihomo: MihomoConfig{
 			Enabled:        false,
-			ExecutablePath: filepath.Join(workDir, "mihomo", "mihomo.exe"),
+			ExecutablePath: defaultMihomoExecutablePath(workDir),
 			ConfigPath:     filepath.Join(workDir, "mihomo", "config.yaml"),
 			MixedPort:      7890,
 			SocksPort:      7891,
@@ -152,12 +155,13 @@ func defaultConfig(workDir string) *AppConfig {
 			AllowLAN:       false,
 		},
 		EasyNetServers: []EasyNetConfig{{
-			ID:         "easy-net-1080",
-			Name:       "Easy-Net 1080",
-			Enabled:    false,
-			WorkerHost: "your-server-domain.com",
-			LocalPort:  1080,
-			Secret:     "easy-net-secret-key-12345",
+			ID:          "easy-net-1080",
+			Name:        "Easy-Net 1080",
+			Enabled:     false,
+			ServerWsURL: "wss://your-server-domain.com/tunnel",
+			WorkerHost:  "your-server-domain.com",
+			LocalPort:   1080,
+			Secret:      "easy-net-secret-key-12345",
 		}},
 		ExternalSocks5: []ExternalSocks5{},
 		Chains:         []ProxyChain{},
@@ -172,12 +176,8 @@ func normalizeConfig(cfg *AppConfig, workDir string) {
 	if cfg.ManagerPort == 0 {
 		cfg.ManagerPort = 18080
 	}
-	if cfg.Mihomo.ExecutablePath == "" {
-		cfg.Mihomo.ExecutablePath = filepath.Join(workDir, "mihomo", "mihomo.exe")
-	}
-	if cfg.Mihomo.ConfigPath == "" {
-		cfg.Mihomo.ConfigPath = filepath.Join(workDir, "mihomo", "config.yaml")
-	}
+	cfg.Mihomo.ExecutablePath = defaultMihomoExecutablePath(workDir)
+	cfg.Mihomo.ConfigPath = defaultMihomoConfigPath(workDir)
 	if cfg.Mihomo.MixedPort == 0 {
 		cfg.Mihomo.MixedPort = 7890
 	}
@@ -201,7 +201,11 @@ func normalizeConfig(cfg *AppConfig, workDir string) {
 		if cfg.EasyNetServers[i].Name == "" {
 			cfg.EasyNetServers[i].Name = "Easy-Net " + portID(cfg.EasyNetServers[i].LocalPort)
 		}
+		cfg.EasyNetServers[i].ServerWsURL = strings.TrimSpace(cfg.EasyNetServers[i].ServerWsURL)
 		cfg.EasyNetServers[i].WorkerHost = strings.TrimSpace(cfg.EasyNetServers[i].WorkerHost)
+		if cfg.EasyNetServers[i].ServerWsURL == "" && strings.HasPrefix(cfg.EasyNetServers[i].WorkerHost, "ws") {
+			cfg.EasyNetServers[i].ServerWsURL = cfg.EasyNetServers[i].WorkerHost
+		}
 	}
 	for i := range cfg.ExternalSocks5 {
 		if cfg.ExternalSocks5[i].ID == "" {
@@ -225,6 +229,14 @@ func normalizeConfig(cfg *AppConfig, workDir string) {
 			cfg.ProcessRules[i].Policy = "PROXY"
 		}
 	}
+}
+
+func defaultMihomoExecutablePath(workDir string) string {
+	return filepath.Join(workDir, "mihomo", "mihomo.exe")
+}
+
+func defaultMihomoConfigPath(workDir string) string {
+	return filepath.Join(workDir, "mihomo", "config.yaml")
 }
 
 func portID(port int) string {

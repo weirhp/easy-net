@@ -6,13 +6,13 @@
 
 ## 1. 本地客户端配置
 
-在本地客户端文件夹中，找到名为 `local-config.json` 的配置文件。如果该文件不存在，可复制 `local-config.json.example` 并重命名为 `local-config.json`。
+在客户端文件夹中，找到名为 `client-config.json` 的配置文件。如果该文件不存在，可复制 `client-config.json.example` 并重命名为 `client-config.json`。
 
 使用文本编辑器打开它，并根据您服务端的实际参数进行配置：
 
 ```json
 {
-  "workerHost": "your-server-domain.com",
+  "serverWsUrl": "wss://your-server-domain.com/easy-net/tunnel",
   "localPort": 1080,
   "secret": "easy-net-secret-key-12345"
 }
@@ -20,9 +20,9 @@
 
 **参数说明：**
 
-* **`workerHost`**：远程中继服务器的域名或公网 IP 地址（注意：不要带 `http://` 或 `https://` 前缀）。
-* **`localPort`**：本地客户端所开启的 SOCKS5 本地代理端口（默认：`1080`）。
-* **`secret`**：与服务端约定的安全认证密钥（必须与服务端 `SECRETS` 环境变量中的其中一个密钥一致）。
+* **`serverWsUrl`**：服务端提供的完整 WebSocket 地址，例如 `wss://proxy.example.com/easy-net/tunnel`。
+* **`localPort`**：客户端在本机开启的 SOCKS5 端口。本机应用连接 `127.0.0.1:localPort` 后，会通过该 Easy-Net 节点转发。
+* **`secret`**：服务端管理端为用户生成的连接密钥。
 
 ---
 
@@ -84,7 +84,7 @@ function main(config, profileName) {
     name: "Easy-Net 本地加密通道",
     type: "socks5",
     server: "127.0.0.1",
-    port: 1080, // 需与 local-config.json 中的 localPort 保持一致
+    port: 1080, // 需与 client-config.json 中的 localPort 保持一致
     udp: false  // 显式关闭 UDP，使 DNS/UDP 流量自动走直连或其它分流
   };
 

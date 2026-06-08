@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Easy-Net 用户端</title>
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <section id="login" class="login-box panel">
+    <div class="brand">
+      <strong>Easy-Net 用户端</strong>
+      <span>使用管理员创建的账号登录</span>
+    </div>
+    <form id="loginForm" class="form" style="grid-template-columns: 1fr; margin-top: 18px;">
+      <div class="field">
+        <label>用户名</label>
+        <input name="username" autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label>密码</label>
+        <input name="password" type="password" autocomplete="current-password" required>
+      </div>
+      <button type="submit">登录</button>
+      <div id="loginStatus" class="status"></div>
+    </form>
+  </section>
+
+  <main id="app" class="shell hidden">
+    <header class="topbar">
+      <div class="brand">
+        <strong>Easy-Net 用户端</strong>
+        <span id="userTitle">个人流量和配置</span>
+      </div>
+      <div class="toolbar">
+        <div class="settings-wrap">
+          <button id="settingsBtn" class="icon-button" type="button" aria-label="设置" aria-haspopup="menu" aria-expanded="false" title="设置">⚙</button>
+          <div id="settingsMenu" class="action-menu hidden" role="menu" aria-labelledby="settingsBtn">
+            <button id="openPasswordModalBtn" class="ghost" type="button" role="menuitem">修改登录密码</button>
+            <button id="openResetSecretConfirmBtn" class="ghost" type="button" role="menuitem">重置代理密钥</button>
+            <button id="openLogoutConfirmBtn" class="ghost danger-text" type="button" role="menuitem">退出</button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <section class="panel">
+      <h2>使用情况</h2>
+      <div id="usageMetrics" class="grid" style="margin-top: 14px;"></div>
+    </section>
+
+    <section class="panel">
+      <h2>连接配置</h2>
+      <div class="grid" style="margin-top: 14px;">
+        <div class="metric secret-card">
+          <span>WebSocket 地址</span>
+          <strong id="configHost" class="code masked-value"></strong>
+          <button id="copyWsBtn" class="secondary" type="button">复制</button>
+        </div>
+        <div class="metric secret-card">
+          <span>连接密钥</span>
+          <strong id="configSecret" class="code masked-value"></strong>
+          <button id="copySecretBtn" class="secondary" type="button">复制</button>
+        </div>
+      </div>
+      <div id="copyStatus" class="status"></div>
+    </section>
+  </main>
+
+  <div id="passwordModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="passwordModalTitle">
+    <div class="modal">
+      <div class="modal-head">
+        <h2 id="passwordModalTitle">修改登录密码</h2>
+        <button id="closePasswordModalBtn" class="ghost icon-button" type="button" aria-label="关闭">×</button>
+      </div>
+
+      <form id="passwordForm" class="form">
+        <div class="field">
+          <label>原密码</label>
+          <input name="oldPassword" type="password" required>
+        </div>
+        <div class="field">
+          <label>新密码</label>
+          <input name="newPassword" type="password" minlength="8" required>
+        </div>
+        <div class="modal-wide modal-actions inline-actions">
+          <button class="secondary" type="button" id="cancelPasswordBtn">取消</button>
+          <button type="submit">保存密码</button>
+        </div>
+      </form>
+      <div id="passwordStatus" class="status"></div>
+    </div>
+  </div>
+
+  <div id="confirmModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <div class="modal confirm-modal">
+      <div class="modal-head">
+        <h2 id="confirmTitle">确认操作</h2>
+        <button id="closeConfirmBtn" class="ghost icon-button" type="button" aria-label="关闭">×</button>
+      </div>
+      <p id="confirmMessage" class="confirm-message"></p>
+      <div class="modal-actions">
+        <button id="cancelConfirmBtn" class="secondary" type="button">取消</button>
+        <button id="confirmActionBtn" class="danger" type="button">确认</button>
+      </div>
+      <div id="confirmStatus" class="status"></div>
+    </div>
+  </div>
+
+  <script src="assets/user.js"></script>
+</body>
+</html>

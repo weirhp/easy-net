@@ -5,6 +5,7 @@ go 1.21
 require (
 	github.com/getlantern/systray v1.2.2
 	github.com/gorilla/websocket v1.5.1
+	golang.org/x/sys v0.13.0
 )
 
 require (
@@ -17,5 +18,4 @@ require (
 	github.com/go-stack/stack v1.8.0 // indirect
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c // indirect
 	golang.org/x/net v0.17.0 // indirect
-	golang.org/x/sys v0.13.0 // indirect
 )

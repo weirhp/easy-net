@@ -24,6 +24,8 @@ func RunTray(app *AppRuntime) {
 		systray.AddSeparator()
 		quit := systray.AddMenuItem("退出程序", "停止代理并退出 Easy-Net Manager")
 
+		go showStartupNotification(app.uiURL)
+
 		go func() {
 			for {
 				select {
@@ -44,6 +46,25 @@ func RunTray(app *AppRuntime) {
 
 func openBrowser(url string) error {
 	return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+}
+
+func showStartupNotification(uiURL string) {
+	script := `
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$notify = New-Object System.Windows.Forms.NotifyIcon
+$notify.Icon = [System.Drawing.SystemIcons]::Information
+$notify.BalloonTipTitle = 'Easy-Net 已在后台运行'
+$notify.BalloonTipText = '右键右下角托盘图标可打开管理界面或退出程序。管理地址：' + $args[0]
+$notify.Visible = $true
+$notify.ShowBalloonTip(8000)
+Start-Sleep -Seconds 9
+$notify.Dispose()
+`
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script, uiURL)
+	if err := cmd.Start(); err != nil {
+		log.Printf("[Easy-Net] startup notification warning: %v", err)
+	}
 }
 
 func makeTrayIcon() []byte {

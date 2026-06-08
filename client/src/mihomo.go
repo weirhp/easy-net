@@ -75,9 +75,10 @@ func (p *MihomoProcess) Start() error {
 		return fmt.Errorf("mihomo executable not found: %s", p.cfg.ExecutablePath)
 	}
 
-	args := []string{"-f", p.cfg.ConfigPath}
+	mihomoDir := filepath.Dir(p.cfg.ConfigPath)
+	args := []string{"-d", mihomoDir, "-f", p.cfg.ConfigPath}
 	cmd := exec.Command(p.cfg.ExecutablePath, args...)
-	cmd.Dir = filepath.Dir(p.cfg.ConfigPath)
+	cmd.Dir = mihomoDir
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -159,7 +160,20 @@ func GenerateMihomoConfig(cfg *AppConfig) string {
 	fmt.Fprintf(&b, "external-ui: ui\n")
 	fmt.Fprintf(&b, "external-ui-name: xd\n")
 	fmt.Fprintf(&b, "external-ui-url: \"https://github.com/MetaCubeX/metacubexd/archive/refs/heads/gh-pages.zip\"\n")
+	fmt.Fprintf(&b, "geodata-mode: true\n")
+	fmt.Fprintf(&b, "geodata-loader: memconservative\n")
+	fmt.Fprintf(&b, "geo-auto-update: true\n")
+	fmt.Fprintf(&b, "geo-update-interval: 24\n")
+	fmt.Fprintf(&b, "geox-url:\n")
+	fmt.Fprintf(&b, "  geoip: \"https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat\"\n")
+	fmt.Fprintf(&b, "  geosite: \"https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat\"\n")
+	fmt.Fprintf(&b, "  mmdb: \"https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb\"\n")
+	fmt.Fprintf(&b, "  asn: \"https://github.com/xishang0128/geoip/releases/download/latest/GeoLite2-ASN.mmdb\"\n")
 	fmt.Fprintf(&b, "\n")
+
+	fmt.Fprintf(&b, "profile:\n")
+	fmt.Fprintf(&b, "  store-selected: true\n")
+	fmt.Fprintf(&b, "  store-fake-ip: true\n\n")
 
 	fmt.Fprintf(&b, "tun:\n")
 	fmt.Fprintf(&b, "  enable: %s\n", boolText(cfg.Mihomo.TUNEnabled))
@@ -173,11 +187,23 @@ func GenerateMihomoConfig(cfg *AppConfig) string {
 	fmt.Fprintf(&b, "dns:\n")
 	fmt.Fprintf(&b, "  enable: true\n")
 	fmt.Fprintf(&b, "  listen: 127.0.0.1:%d\n", cfg.Mihomo.DNSPort)
+	fmt.Fprintf(&b, "  ipv6: false\n")
 	fmt.Fprintf(&b, "  enhanced-mode: fake-ip\n")
 	fmt.Fprintf(&b, "  fake-ip-range: 198.18.0.1/16\n")
-	fmt.Fprintf(&b, "  nameserver:\n")
+	fmt.Fprintf(&b, "  default-nameserver:\n")
 	fmt.Fprintf(&b, "    - 223.5.5.5\n")
-	fmt.Fprintf(&b, "    - 119.29.29.29\n\n")
+	fmt.Fprintf(&b, "    - 119.29.29.29\n")
+	fmt.Fprintf(&b, "  nameserver:\n")
+	fmt.Fprintf(&b, "    - https://223.5.5.5/dns-query\n")
+	fmt.Fprintf(&b, "    - https://1.12.12.12/dns-query\n")
+	fmt.Fprintf(&b, "  fallback:\n")
+	fmt.Fprintf(&b, "    - https://1.1.1.1/dns-query\n")
+	fmt.Fprintf(&b, "    - https://8.8.8.8/dns-query\n")
+	fmt.Fprintf(&b, "  fallback-filter:\n")
+	fmt.Fprintf(&b, "    geoip: true\n")
+	fmt.Fprintf(&b, "    geoip-code: CN\n")
+	fmt.Fprintf(&b, "    geosite:\n")
+	fmt.Fprintf(&b, "      - geolocation-!cn\n\n")
 
 	proxyNames := collectProxyNames(cfg)
 	if len(proxyNames) == 0 {
@@ -259,10 +285,9 @@ func GenerateMihomoConfig(cfg *AppConfig) string {
 	}
 
 	fmt.Fprintf(&b, "rules:\n")
-	fmt.Fprintf(&b, "  - PROCESS-NAME,mihomo.exe,DIRECT\n")
-	fmt.Fprintf(&b, "  - PROCESS-NAME,proxy-go.exe,DIRECT\n")
-	fmt.Fprintf(&b, "  - PROCESS-NAME,proxy-go-silent.exe,DIRECT\n")
-	fmt.Fprintf(&b, "  - PROCESS-NAME,easy-net-manager.exe,DIRECT\n")
+	for _, processName := range directProcessNames() {
+		fmt.Fprintf(&b, "  - PROCESS-NAME,%s,DIRECT\n", processName)
+	}
 	for _, rule := range cfg.ProcessRules {
 		if strings.TrimSpace(rule.ProcessName) == "" {
 			continue
@@ -273,8 +298,50 @@ func GenerateMihomoConfig(cfg *AppConfig) string {
 		}
 		fmt.Fprintf(&b, "  - PROCESS-NAME,%s,%s\n", strings.TrimSpace(rule.ProcessName), policy)
 	}
-	fmt.Fprintf(&b, "  - MATCH,DIRECT\n")
+	fmt.Fprintf(&b, "  - GEOSITE,private,DIRECT\n")
+	fmt.Fprintf(&b, "  - GEOSITE,cn,DIRECT\n")
+	if len(proxyNames) > 0 {
+		fmt.Fprintf(&b, "  - GEOSITE,geolocation-!cn,PROXY\n")
+	}
+	fmt.Fprintf(&b, "  - GEOIP,CN,DIRECT\n")
+	matchPolicy := "DIRECT"
+	if len(proxyNames) > 0 {
+		matchPolicy = "PROXY"
+	}
+	fmt.Fprintf(&b, "  - MATCH,%s\n", matchPolicy)
 	return b.String()
+}
+
+func directProcessNames() []string {
+	names := []string{
+		"mihomo.exe",
+		"mihomo",
+		"easy-net-manager.exe",
+		"easy-net-manager-silent.exe",
+		"easy-net-manager-windows-amd64.exe",
+		"easy-net-manager-windows-amd64-silent.exe",
+		"easy-net-manager-mac-arm64",
+		"easy-net-manager-mac-amd64",
+		"easy-net-manager-linux-amd64",
+	}
+	if exePath, err := os.Executable(); err == nil {
+		if exeName := strings.TrimSpace(filepath.Base(exePath)); exeName != "" {
+			names = append([]string{exeName}, names...)
+		}
+	}
+
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		key := strings.ToLower(name)
+		if name == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, name)
+	}
+	return result
 }
 
 func WriteMihomoConfig(path string, yamlText string) error {

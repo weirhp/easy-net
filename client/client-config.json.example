@@ -17,6 +17,7 @@
       "id": "easy-net-1080",
       "name": "Easy-Net 1080",
       "enabled": false,
+      "serverWsUrl": "wss://your-server-domain.com/easy-net/tunnel",
       "workerHost": "your-server-domain.com",
       "localPort": 1080,
       "secret": "easy-net-secret-key-12345",

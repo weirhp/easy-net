@@ -1,4 +1,4 @@
-# Easy-Net Local Manager
+# Easy-Net Client Manager
 
 本地管理器用于统一管理：
 
@@ -46,10 +46,11 @@ dist\      编译输出
 
 ## 配置文件
 
-配置文件仍然是 `local-config.json`。如果检测到旧版格式：
+配置文件为 `client-config.json`。如果检测到旧版格式：
 
 ```json
 {
+  "serverWsUrl": "wss://your-server-domain.com/easy-net/tunnel",
   "workerHost": "your-server-domain.com",
   "localPort": 1080,
   "secret": "easy-net-secret-key-12345"
@@ -58,26 +59,36 @@ dist\      编译输出
 
 管理器启动时会自动迁移成新版多实例格式。
 
-## Mihomo
-
-界面中的 `下载 Mihomo` 会从 MetaCubeX/mihomo 最新 release 下载 Windows AMD64 zip，并解压为：
+`serverWsUrl` 是推荐配置，直接填写服务端管理端/用户端下载的完整 WebSocket 地址，例如：
 
 ```text
-local\mihomo\mihomo.exe
+wss://proxy.example.com/easy-net/tunnel
+```
+
+`workerHost` 仍保留用于兼容旧配置；当 `serverWsUrl` 为空时，客户端会继续按旧逻辑使用 `workerHost` 拼接 `/tunnel`。
+
+## Mihomo
+
+界面中的 `下载 Mihomo` 会从 MetaCubeX/mihomo 最新 release 下载 Windows AMD64 zip，并解压到 exe 同目录下的 `mihomo` 文件夹：
+
+```text
+mihomo\mihomo.exe
 ```
 
 生成的配置默认写到：
 
 ```text
-local\mihomo\config.yaml
+mihomo\config.yaml
 ```
+
+Mihomo 启动时会使用 `mihomo` 文件夹作为配置目录，因此自动下载的 `GeoSite.dat`、`GeoIP.dat`、`cache.db` 和面板文件也会放在 exe 同目录下的 `mihomo` 文件夹中。
 
 勾选 `保存后自动启动` 后，每次保存配置都会尝试启动 Mihomo。TUN 模式通常需要管理员权限，如果启动失败，请用管理员权限运行 `easy-net-manager.exe`。
 
-Mihomo 区域提供三个控制入口：
+Mihomo 区域提供两个链接入口和一个维护操作：
 
-- `打开 API`：打开 `http://127.0.0.1:<controllerPort>/version`。
-- `打开面板`：打开 `http://127.0.0.1:<controllerPort>/ui`。
+- `API 入口`：打开 `http://127.0.0.1:<controllerPort>/version`。
+- `面板入口`：打开 `http://127.0.0.1:<controllerPort>/ui/xd/`。
 - `更新面板`：调用 Mihomo `/upgrade/ui` 下载或更新 MetaCubeXD 面板资源。
 
 生成的 Mihomo 配置会自动包含：
@@ -155,4 +166,4 @@ Discord.exe,PROXY
 chrome.exe,DIRECT
 ```
 
-保存后会生成到 Mihomo `rules` 中。默认 `MATCH,DIRECT`，因此只有配置的进程会被强制走 `PROXY` 组。
+保存后会生成到 Mihomo `rules` 中。默认会把程序自身和 Mihomo 设为 `DIRECT`，中国站点和中国 IP 走 `DIRECT`，国际站点走 `PROXY`；没有可用代理节点时兜底 `MATCH,DIRECT`。

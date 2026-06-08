@@ -7,6 +7,7 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "sql.js": "^1.14.1",
     "ws": "^8.18.0"
   }
 }

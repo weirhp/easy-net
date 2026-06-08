@@ -15,7 +15,7 @@ Easy-Net 本地 SOCKS5 可以被 v2rayN 使用，但在 v2rayN 中开启 TUN 时
 - TUN 模式开启
 - TUN 严格路由关闭
 - Easy-Net SOCKS 节点 UDP 保持关闭
-- Easy-Net 中继域名建议填写优选 IP，减少 TUN 下 DNS 环路风险
+- Easy-Net 可在“优选 IP（选填）”中填写中继服务器解析出的 IP，减少 TUN 下 DNS 环路风险
 
 ## 问题现象
 
@@ -118,9 +118,9 @@ mihomo.exe
 sing-box.exe
 ```
 
-### 5. 中继域名直连
+### 5. WebSocket 中继地址直连
 
-Easy-Net 的中继域名必须直连，避免代理套代理或形成环路。
+Easy-Net 的 WebSocket 中继地址对应域名必须直连，避免代理套代理或形成环路。
 
 示例：
 
@@ -188,4 +188,3 @@ Easy-Net SOCKS + v2rayN + Xray Socks Core + TUN
 - Easy-Net 节点在 Clash/Mihomo 中应设置 `udp: false`。
 - 如果浏览器访问异常，可以临时关闭 QUIC，让流量回落到 TCP 443。
 - v2rayN 当前日志中如果看到 `dns-module -> proxy` 后紧跟 `read/write on closed pipe`，优先检查 SOCKS Core 类型和 TUN DNS 设置。
-

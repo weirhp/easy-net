@@ -32,24 +32,12 @@ dns:
     - 223.5.5.5
     - 119.29.29.29
 
-proxies:
-  - name: "Easy-Net 1025"
-    type: socks5
-    server: 127.0.0.1
-    port: 1084
-    udp: false
-  - name: "Easy-Net 9025"
-    type: socks5
-    server: 127.0.0.1
-    port: 1087
-    udp: false
+proxies: []
 
 proxy-groups:
   - name: PROXY
     type: select
     proxies:
-      - "Easy-Net 1025"
-      - "Easy-Net 9025"
       - DIRECT
 
 rules:

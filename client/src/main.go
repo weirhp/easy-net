@@ -39,7 +39,7 @@ func main() {
 	}()
 
 	log.Printf("=================================================")
-	log.Printf("[Easy-Net] local manager started")
+	log.Printf("[Easy-Net] client manager started")
 	log.Printf("UI: http://%s", addr)
 	log.Printf("Config: %s", store.Path())
 	log.Printf("=================================================")
@@ -55,43 +55,10 @@ func main() {
 
 func appDir() string {
 	if exePath, err := os.Executable(); err == nil {
-		dir := filepath.Dir(exePath)
-		if filepath.Base(dir) == "dist" {
-			parent := filepath.Dir(dir)
-			if isAppDir(parent) {
-				return parent
-			}
-		}
-		if isAppDir(dir) {
-			return dir
-		}
-		if isAppDir(filepath.Dir(dir)) {
-			return filepath.Dir(dir)
-		}
+		return filepath.Dir(exePath)
 	}
 	if wd, err := os.Getwd(); err == nil {
-		if filepath.Base(wd) == "scripts" || filepath.Base(wd) == "dist" {
-			parent := filepath.Dir(wd)
-			if isAppDir(parent) {
-				return parent
-			}
-		}
-		if isAppDir(wd) {
-			return wd
-		}
 		return wd
 	}
 	return "."
-}
-
-func isAppDir(dir string) bool {
-	if dir == "" || dir == "." {
-		return false
-	}
-	for _, name := range []string{"go.mod", "local-config.json", "local-config.json.example"} {
-		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-			return true
-		}
-	}
-	return false
 }

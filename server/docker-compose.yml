@@ -9,10 +9,25 @@ services:
       - "${HOST_PORT:-3100}:3000"
     environment:
       - PORT=3000
-      # 访问凭证白名单，多个凭证以逗号分隔
+      # 本地 SQLite 数据目录
+      - DATA_DIR=/app/data
+      # 服务统一路径前缀，例如 /easy-net。留空表示不加前缀。
+      - CONTEXT_PATH=${CONTEXT_PATH}
+      # 初始管理员密码。仅首次创建数据库时生效，创建后请在管理端修改。
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      # 旧版访问凭证白名单。首次启动时会自动迁移为 legacy 用户，后续推荐在管理端维护用户密钥。
       - SECRETS=${SECRETS}
-      # 流量统计查询凭证
+      # 旧版流量统计查询凭证，仍可用于 /stats?admin_key=...
       - ADMIN_KEY=${ADMIN_KEY}
+      # 客户端配置里写入的完整 WebSocket 地址，也可在管理端系统设置中修改。
+      - CLIENT_WS_URL=${CLIENT_WS_URL}
+      # 旧版兼容：客户端配置里写入的服务器域名或 host:port。
+      - CLIENT_HOST=${CLIENT_HOST}
+      # 客户端配置里写入的本地 SOCKS 端口
+      - CLIENT_LOCAL_PORT=${CLIENT_LOCAL_PORT:-1080}
+      # 登录失败锁定策略
+      - LOGIN_MAX_FAILURES=${LOGIN_MAX_FAILURES:-5}
+      - LOGIN_LOCK_MINUTES=${LOGIN_LOCK_MINUTES:-15}
       # 定时监控日志间隔秒数，0 表示关闭
       - MONITOR_INTERVAL_SECONDS=${MONITOR_INTERVAL_SECONDS:-0}
       # WebSocket 单条消息大小限制，默认 1 MiB
@@ -21,3 +36,5 @@ services:
       - WS_BACKPRESSURE_LIMIT_BYTES=${WS_BACKPRESSURE_LIMIT_BYTES:-4194304}
       # 单连接 WebSocket 待发送缓冲低于该值时恢复读取目标 TCP，默认 2 MiB
       - WS_BACKPRESSURE_RESUME_BYTES=${WS_BACKPRESSURE_RESUME_BYTES:-2097152}
+    volumes:
+      - ./data:/app/data

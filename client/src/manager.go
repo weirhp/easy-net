@@ -14,17 +14,20 @@ type Manager struct {
 	cfg            *AppConfig
 	easyNet        map[string]*SocksServer
 	easyNetErrors  map[string]string
+	traffic        *TrafficStats
 	mihomo         *MihomoProcess
 	mihomoLogs     *LogBuffer
 	lastMihomoYAML string
 }
 
 type RuntimeState struct {
-	Config     *AppConfig         `json:"config"`
-	EasyNet    map[string]string  `json:"easyNet"`
-	EasyNetErr map[string]string  `json:"easyNetErrors"`
-	Mihomo     MihomoRuntimeState `json:"mihomo"`
-	MihomoYAML string             `json:"mihomoYaml"`
+	Config             *AppConfig                 `json:"config"`
+	EasyNet            map[string]string          `json:"easyNet"`
+	EasyNetErr         map[string]string          `json:"easyNetErrors"`
+	EasyNetTraffic     map[string]TrafficSnapshot `json:"easyNetTraffic"`
+	Mihomo             MihomoRuntimeState         `json:"mihomo"`
+	MihomoYAML         string                     `json:"mihomoYaml"`
+	DirectProcessNames []string                   `json:"directProcessNames"`
 }
 
 type MihomoRuntimeState struct {
@@ -41,6 +44,7 @@ func NewManager(workDir string, store *ConfigStore, cfg *AppConfig) *Manager {
 		cfg:           cfg,
 		easyNet:       make(map[string]*SocksServer),
 		easyNetErrors: make(map[string]string),
+		traffic:       NewTrafficStats(workDir),
 		mihomoLogs:    NewLogBuffer(120),
 	}
 }
@@ -68,7 +72,9 @@ func (m *Manager) State() RuntimeState {
 
 	easyState := make(map[string]string)
 	easyErrors := make(map[string]string)
+	easyIDs := make([]string, 0, len(m.cfg.EasyNetServers))
 	for _, srvCfg := range m.cfg.EasyNetServers {
+		easyIDs = append(easyIDs, srvCfg.ID)
 		status := "stopped"
 		if srv := m.easyNet[srvCfg.ID]; srv != nil && srv.Running() {
 			status = "running"
@@ -89,10 +95,12 @@ func (m *Manager) State() RuntimeState {
 	}
 
 	return RuntimeState{
-		Config:     m.cfg,
-		EasyNet:    easyState,
-		EasyNetErr: easyErrors,
-		MihomoYAML: yamlText,
+		Config:             m.cfg,
+		EasyNet:            easyState,
+		EasyNetErr:         easyErrors,
+		EasyNetTraffic:     m.traffic.SnapshotEasyNet(easyIDs),
+		MihomoYAML:         yamlText,
+		DirectProcessNames: directProcessNames(),
 		Mihomo: MihomoRuntimeState{
 			Running:    running,
 			Executable: m.cfg.Mihomo.ExecutablePath,
@@ -198,6 +206,7 @@ func (m *Manager) Shutdown() {
 		srv.Stop()
 		delete(m.easyNet, id)
 	}
+	m.traffic.Save()
 }
 
 func (m *Manager) applyLocked() error {
@@ -247,7 +256,7 @@ func (m *Manager) startEasyNetLocked(cfg EasyNetConfig) error {
 	if srv := m.easyNet[cfg.ID]; srv != nil && srv.Running() {
 		return nil
 	}
-	srv := NewSocksServer(cfg)
+	srv := NewSocksServer(cfg, m.traffic.AddEasyNet)
 	if err := srv.Start(); err != nil {
 		return err
 	}
@@ -259,6 +268,9 @@ func (m *Manager) startEasyNetLocked(cfg EasyNetConfig) error {
 func (m *Manager) startMihomoLocked() error {
 	if m.mihomo != nil && m.mihomo.Running() {
 		return nil
+	}
+	if m.cfg.Mihomo.TUNEnabled && !hasTunPrivileges() {
+		return fmt.Errorf("Mihomo TUN 模式需要管理员权限，请右键以管理员身份运行 easy-net-manager.exe 后再启动；如果只想用本地 Mixed/SOCKS 端口，可以先关闭 TUN 模式")
 	}
 	for _, srvCfg := range m.cfg.EasyNetServers {
 		if srvCfg.Enabled {

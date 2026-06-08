@@ -132,7 +132,17 @@ func GenerateClashSubscription(nodes []SubscriptionNode) string {
 		fmt.Fprintf(&b, "      - DIRECT\n")
 	}
 	fmt.Fprintf(&b, "\nrules:\n")
-	fmt.Fprintf(&b, "  - MATCH,Easy-Net\n")
+	fmt.Fprintf(&b, "  - GEOSITE,private,DIRECT\n")
+	fmt.Fprintf(&b, "  - GEOSITE,cn,DIRECT\n")
+	if len(nodes) > 0 {
+		fmt.Fprintf(&b, "  - GEOSITE,geolocation-!cn,Easy-Net\n")
+	}
+	fmt.Fprintf(&b, "  - GEOIP,CN,DIRECT\n")
+	if len(nodes) == 0 {
+		fmt.Fprintf(&b, "  - MATCH,DIRECT\n")
+	} else {
+		fmt.Fprintf(&b, "  - MATCH,Easy-Net\n")
+	}
 	return b.String()
 }
 

@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Easy-Net 管理端</title>
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <section id="login" class="login-box panel">
+    <div class="brand">
+      <strong>Easy-Net 管理端</strong>
+      <span>管理员登录</span>
+    </div>
+    <form id="loginForm" class="form" style="grid-template-columns: 1fr; margin-top: 18px;">
+      <div class="field">
+        <label for="adminPassword">管理员密码</label>
+        <input id="adminPassword" type="password" autocomplete="current-password" required>
+      </div>
+      <button type="submit">登录</button>
+      <div id="loginStatus" class="status"></div>
+    </form>
+  </section>
+
+  <main id="app" class="shell admin-shell hidden">
+    <header class="topbar">
+      <div class="brand">
+        <strong>Easy-Net 管理端</strong>
+        <span>用户、流量和客户端配置</span>
+      </div>
+      <div class="toolbar">
+        <a class="button secondary" href="user">用户端</a>
+        <button id="logoutBtn" class="ghost" type="button">退出</button>
+      </div>
+    </header>
+
+    <nav class="tabs" aria-label="管理模块">
+      <button class="tab active" data-tab="users" type="button">用户管理</button>
+      <button class="tab" data-tab="stats" type="button">统计信息</button>
+      <button class="tab" data-tab="settings" type="button">系统设置</button>
+      <button class="tab" data-tab="account" type="button">管理员密码</button>
+    </nav>
+
+    <section id="tab-users" class="tab-page">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>用户管理</h2>
+          <div class="toolbar">
+            <button id="openCreateUserBtn" type="button">新增用户</button>
+            <button id="refreshUsersBtn" class="secondary" type="button">刷新</button>
+          </div>
+        </div>
+        <div class="list-controls">
+          <div class="field">
+            <label>搜索</label>
+            <input id="userSearchInput" placeholder="用户名、昵称、备注">
+          </div>
+          <div class="field">
+            <label>每页</label>
+            <select id="pageSizeSelect">
+              <option value="10">10 条</option>
+              <option value="20" selected>20 条</option>
+              <option value="50">50 条</option>
+              <option value="100">100 条</option>
+            </select>
+          </div>
+        </div>
+        <div id="userStatus" class="status"></div>
+        <div class="table-wrap" style="margin-top: 12px;">
+          <table>
+            <thead>
+              <tr>
+                <th>用户</th>
+                <th>今日</th>
+                <th>本月</th>
+                <th>额度</th>
+                <th>备注</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="usersBody"></tbody>
+          </table>
+        </div>
+        <div class="pagination">
+          <span id="userPageInfo" class="muted"></span>
+          <div class="toolbar">
+            <button id="prevPageBtn" class="secondary" type="button">上一页</button>
+            <button id="nextPageBtn" class="secondary" type="button">下一页</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-stats" class="tab-page hidden">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>服务统计</h2>
+          <button id="refreshStatsBtn" class="secondary" type="button">刷新</button>
+        </div>
+        <div id="statsMetrics" class="grid" style="margin-top: 14px;"></div>
+      </div>
+      <div class="panel">
+        <h2>每日使用情况</h2>
+        <div class="table-wrap" style="margin-top: 12px;">
+          <table>
+            <thead>
+              <tr>
+                <th>日期</th>
+                <th>上行</th>
+                <th>下行</th>
+                <th>总量</th>
+                <th>连接</th>
+                <th>失败</th>
+              </tr>
+            </thead>
+            <tbody id="dailyBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-settings" class="tab-page hidden">
+      <div class="panel">
+        <h2>系统设置</h2>
+        <form id="settingsForm" class="form" style="margin-top: 14px;">
+          <div class="field">
+            <label>客户端 WebSocket 地址</label>
+            <input name="clientWsUrl" placeholder="wss://proxy.example.com/easy-net/tunnel">
+          </div>
+          <div class="field">
+            <label>当前服务 Context Path</label>
+            <input name="contextPath" readonly>
+          </div>
+          <button type="submit">保存设置</button>
+        </form>
+        <div id="settingsStatus" class="status"></div>
+      </div>
+    </section>
+
+    <section id="tab-account" class="tab-page hidden">
+      <div class="panel">
+        <h2>修改管理员密码</h2>
+        <form id="adminPasswordForm" class="form" style="margin-top: 14px;">
+          <div class="field">
+            <label>原密码</label>
+            <input name="oldPassword" type="password" required>
+          </div>
+          <div class="field">
+            <label>新密码</label>
+            <input name="newPassword" type="password" minlength="8" required>
+          </div>
+          <button type="submit">修改密码</button>
+        </form>
+        <div id="passwordStatus" class="status"></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="userModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="userModalTitle">
+    <div class="modal">
+      <div class="modal-head">
+        <h2 id="userModalTitle">用户</h2>
+        <button id="closeUserModalBtn" class="ghost icon-button" type="button" aria-label="关闭">×</button>
+      </div>
+      <form id="userModalForm" class="form">
+        <input name="id" type="hidden">
+        <div class="field">
+          <label>用户名</label>
+          <input name="username" required placeholder="user01">
+        </div>
+        <div class="field">
+          <label>密码</label>
+          <input name="password" type="password" minlength="8" placeholder="编辑时留空则不修改">
+        </div>
+        <div class="field">
+          <label>昵称</label>
+          <input name="nickname">
+        </div>
+        <div class="field">
+          <label>每日流量上限 GB</label>
+          <input name="dailyLimitGb" type="number" min="0" step="0.1" value="0">
+        </div>
+        <div class="field">
+          <label>月周期流量上限 GB</label>
+          <input name="monthlyLimitGb" type="number" min="0" step="0.1" value="0">
+        </div>
+        <div class="field">
+          <label>状态</label>
+          <select name="active">
+            <option value="true">启用</option>
+            <option value="false">停用</option>
+          </select>
+        </div>
+        <div class="field modal-wide">
+          <label>备注</label>
+          <textarea name="remark"></textarea>
+        </div>
+        <div class="modal-wide modal-actions inline-actions">
+          <button id="resetSecretBtn" class="secondary hidden" type="button">重置密钥</button>
+          <button type="submit">保存</button>
+        </div>
+      </form>
+      <div id="userModalStatus" class="status"></div>
+    </div>
+  </div>
+
+  <script src="assets/admin.js"></script>
+</body>
+</html>

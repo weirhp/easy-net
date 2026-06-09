@@ -1,0 +1,16 @@
+name = "omnigate-proxy"
+main = "index.js"
+compatibility_date = "2026-06-04"
+
+# 如果您想绑定自己的自定义域名，可以在部署后在 Cloudflare 后台设置，
+# 或者在此处添加 triggers 配置，例如：
+# [triggers]
+# crons = []
+# 
+# [routes]
+# pattern = "yourdomain.com"
+# custom_domain = true
+
+[vars]
+CLOUDFLARE_ACCOUNT_ID = "30e17eeb548de3c6ab815d31bd661982"
+

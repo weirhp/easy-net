@@ -187,6 +187,16 @@ const initDatabase = async () => {
       PRIMARY KEY (user_id, day)
     );
 
+    CREATE TABLE IF NOT EXISTS traffic_monthly_adjustments (
+      user_id INTEGER NOT NULL,
+      month TEXT NOT NULL,
+      upload_bytes INTEGER NOT NULL DEFAULT 0,
+      download_bytes INTEGER NOT NULL DEFAULT 0,
+      connections INTEGER NOT NULL DEFAULT 0,
+      failed_connections INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_id, month)
+    );
+
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -412,6 +422,14 @@ const getUserUsage = userId => {
        FROM traffic_daily WHERE user_id = ? AND day LIKE ?`,
     [userId, `${month}%`]
   );
+  const monthlyAdjustment = get(
+    `SELECT COALESCE(SUM(upload_bytes), 0) AS uploadBytes,
+            COALESCE(SUM(download_bytes), 0) AS downloadBytes,
+            COALESCE(SUM(connections), 0) AS connections,
+            COALESCE(SUM(failed_connections), 0) AS failedConnections
+       FROM traffic_monthly_adjustments WHERE user_id = ? AND month = ?`,
+    [userId, month]
+  );
   const pendingToday = getPendingTraffic(userId, day);
   const pendingMonth = getPendingTraffic(userId, month);
   return {
@@ -422,10 +440,10 @@ const getUserUsage = userId => {
       failedConnections: Number(today.failedConnections || 0) + pendingToday.failedConnections
     },
     month: {
-      uploadBytes: Number(monthly.uploadBytes || 0) + pendingMonth.uploadBytes,
-      downloadBytes: Number(monthly.downloadBytes || 0) + pendingMonth.downloadBytes,
-      connections: Number(monthly.connections || 0) + pendingMonth.connections,
-      failedConnections: Number(monthly.failedConnections || 0) + pendingMonth.failedConnections
+      uploadBytes: Number(monthly.uploadBytes || 0) + Number(monthlyAdjustment.uploadBytes || 0) + pendingMonth.uploadBytes,
+      downloadBytes: Number(monthly.downloadBytes || 0) + Number(monthlyAdjustment.downloadBytes || 0) + pendingMonth.downloadBytes,
+      connections: Number(monthly.connections || 0) + Number(monthlyAdjustment.connections || 0) + pendingMonth.connections,
+      failedConnections: Number(monthly.failedConnections || 0) + Number(monthlyAdjustment.failedConnections || 0) + pendingMonth.failedConnections
     }
   };
 };
@@ -505,6 +523,33 @@ const flushTraffic = () => {
 
 const resetUserDailyTraffic = userId => {
   flushTraffic();
+  const day = todayKey();
+  const month = monthKey();
+  const current = get(
+    `SELECT COALESCE(upload_bytes, 0) AS uploadBytes,
+            COALESCE(download_bytes, 0) AS downloadBytes,
+            COALESCE(connections, 0) AS connections,
+            COALESCE(failed_connections, 0) AS failedConnections
+       FROM traffic_daily WHERE user_id = ? AND day = ?`,
+    [userId, day]
+  ) || {};
+  run(
+    `INSERT INTO traffic_monthly_adjustments (user_id, month, upload_bytes, download_bytes, connections, failed_connections)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, month) DO UPDATE SET
+      upload_bytes = upload_bytes + excluded.upload_bytes,
+      download_bytes = download_bytes + excluded.download_bytes,
+      connections = connections + excluded.connections,
+      failed_connections = failed_connections + excluded.failed_connections`,
+    [
+      userId,
+      month,
+      Number(current.uploadBytes || 0),
+      Number(current.downloadBytes || 0),
+      Number(current.connections || 0),
+      Number(current.failedConnections || 0)
+    ]
+  );
   run(
     `INSERT INTO traffic_daily (user_id, day, upload_bytes, download_bytes, connections, failed_connections)
      VALUES (?, ?, 0, 0, 0, 0)
@@ -513,7 +558,7 @@ const resetUserDailyTraffic = userId => {
       download_bytes = 0,
       connections = 0,
       failed_connections = 0`,
-    [userId, todayKey()]
+    [userId, day]
   );
   usageCache.delete(Number(userId));
 };
@@ -960,6 +1005,7 @@ const handleAdminApi = async (req, res, pathname, method) => {
     if (method === 'DELETE' && !action) {
       run('DELETE FROM users WHERE id = ?', [userId]);
       run('DELETE FROM traffic_daily WHERE user_id = ?', [userId]);
+      run('DELETE FROM traffic_monthly_adjustments WHERE user_id = ?', [userId]);
       usageCache.delete(userId);
       return sendJson(res, 200, { ok: true });
     }

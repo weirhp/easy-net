@@ -1,0 +1,79 @@
+name: Build Easy-Net Lite
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - client-lite/**
+      - .github/workflows/client-lite-build.yml
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: client-lite/go.mod
+          cache-dependency-path: client-lite/go.sum
+
+      - name: Build Windows application
+        working-directory: client-lite
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Easy-Net-Lite-windows-x64
+          path: client-lite/dist/Easy-Net-Lite.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    name: macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            package: Easy-Net-Lite-macos-arm64
+          - runner: macos-15-intel
+            arch: x64
+            package: Easy-Net-Lite-macos-x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: client-lite/go.mod
+          cache-dependency-path: client-lite/go.sum
+
+      - name: Build macOS application
+        working-directory: client-lite
+        run: ./scripts/build-macos.sh
+
+      - name: Package macOS application
+        working-directory: client-lite
+        run: ditto -c -k --sequesterRsrc --keepParent "dist/Easy-Net Lite.app" "dist/${{ matrix.package }}.zip"
+
+      - name: Upload macOS package
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.package }}
+          path: client-lite/dist/${{ matrix.package }}.zip
+          if-no-files-found: error
+          retention-days: 14

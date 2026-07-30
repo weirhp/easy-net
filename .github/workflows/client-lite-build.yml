@@ -64,7 +64,7 @@ jobs:
 
       - name: Build macOS application
         working-directory: client-lite
-        run: ./scripts/build-macos.sh
+        run: bash ./scripts/build-macos.sh
 
       - name: Package macOS application
         working-directory: client-lite

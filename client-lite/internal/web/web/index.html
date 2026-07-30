@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Easy-Net Lite</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><span></span></span>
+        <div>
+          <h1>Easy-Net Lite</h1>
+          <p>WebSocket 与 SSH 本地 SOCKS5 客户端</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="button secondary" data-command="stop-all">停止全部</button>
+        <button class="button secondary" data-command="start-all">启动全部</button>
+        <button class="button primary" data-add="websocket">添加 WebSocket</button>
+        <button class="button primary" data-add="ssh">添加 SSH</button>
+      </div>
+    </header>
+
+    <section class="overview" aria-labelledby="overview-title">
+      <div>
+        <p class="eyebrow" id="overview-title">本机代理</p>
+        <p class="summary" id="summary">正在读取配置…</p>
+      </div>
+      <p class="overview-note">关闭此网页不会停止代理；程序仍在系统托盘运行。</p>
+    </section>
+
+    <section class="profiles" id="profiles" aria-live="polite">
+      <div class="empty-state">
+        <div class="loading" aria-hidden="true"></div>
+        <p>正在加载代理配置</p>
+      </div>
+    </section>
+
+    <footer>
+      <span id="config-path"></span>
+      <button class="text-button danger-text" data-command="quit">退出程序</button>
+    </footer>
+  </main>
+
+  <dialog id="profile-dialog" aria-labelledby="dialog-title">
+    <form id="profile-form" class="dialog-shell">
+      <div class="dialog-header">
+        <div>
+          <p class="eyebrow" id="dialog-kind">代理配置</p>
+          <h2 id="dialog-title">添加代理</h2>
+        </div>
+        <button type="button" class="icon-button" id="close-dialog" aria-label="关闭">×</button>
+      </div>
+
+      <div class="dialog-body">
+        <div class="form-grid">
+          <label class="field full">
+            <span>名称</span>
+            <input id="field-name" required maxlength="80" placeholder="例如：公司代理">
+          </label>
+          <label class="field">
+            <span>本地 SOCKS5 端口</span>
+            <input id="field-local-port" required type="number" min="1" max="65535" inputmode="numeric">
+          </label>
+          <label class="check-field">
+            <input id="field-auto-start" type="checkbox">
+            <span>程序启动后自动运行</span>
+          </label>
+        </div>
+
+        <section id="websocket-fields" class="form-section" hidden>
+          <h3>WebSocket 连接</h3>
+          <div class="form-grid">
+            <label class="field full">
+              <span>WebSocket 地址</span>
+              <input id="field-ws-url" type="url" placeholder="wss://proxy.example.com/tunnel">
+            </label>
+            <label class="field full">
+              <span>密钥</span>
+              <input id="field-ws-secret" type="password" autocomplete="new-password">
+              <small class="edit-secret-hint">编辑时留空将保留已有密钥</small>
+            </label>
+          </div>
+        </section>
+
+        <section id="ssh-fields" class="form-section" hidden>
+          <h3>SSH 连接</h3>
+          <div class="form-grid">
+            <label class="field full">
+              <span>服务器 IP 或域名</span>
+              <input id="field-ssh-host" placeholder="ssh.example.com">
+            </label>
+            <label class="field">
+              <span>SSH 端口</span>
+              <input id="field-ssh-port" type="number" min="1" max="65535" inputmode="numeric" value="22">
+            </label>
+            <label class="field">
+              <span>用户名</span>
+              <input id="field-ssh-user" autocomplete="username">
+            </label>
+            <label class="field full">
+              <span>认证方式</span>
+              <select id="field-ssh-auth">
+                <option value="password">密码</option>
+                <option value="private_key">私钥文件</option>
+              </select>
+            </label>
+            <label class="field full" id="ssh-password-row">
+              <span>密码</span>
+              <input id="field-ssh-password" type="password" autocomplete="new-password">
+              <small class="edit-secret-hint">编辑时留空将保留已有密码</small>
+            </label>
+            <label class="field full" id="ssh-key-row" hidden>
+              <span>私钥文件</span>
+              <input id="field-ssh-key" type="file" accept=".pem,.key,application/x-pem-file,text/plain">
+              <small id="ssh-key-hint">支持 OpenSSH 私钥，最大 64 KiB</small>
+            </label>
+            <label class="field full" id="ssh-passphrase-row" hidden>
+              <span>私钥口令（可选）</span>
+              <input id="field-ssh-passphrase" type="password" autocomplete="new-password">
+              <small class="edit-secret-hint">编辑时留空将保留已有口令</small>
+            </label>
+          </div>
+        </section>
+
+        <p class="form-error" id="form-error" role="alert" hidden></p>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="button secondary" id="cancel-dialog">取消</button>
+        <button type="submit" class="button primary" id="save-profile">保存配置</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="action-dialog" class="action-dialog" aria-labelledby="action-dialog-title" aria-describedby="action-dialog-message">
+    <div class="dialog-shell">
+      <div class="dialog-header">
+        <div>
+          <p class="eyebrow" id="action-dialog-kind">确认操作</p>
+          <h2 id="action-dialog-title">请确认</h2>
+        </div>
+        <button type="button" class="icon-button" id="close-action-dialog" aria-label="关闭确认窗口">×</button>
+      </div>
+      <div class="dialog-body action-dialog-body">
+        <p id="action-dialog-message"></p>
+        <div class="modal-details" id="action-dialog-details" hidden></div>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="button secondary" id="cancel-action-dialog">取消</button>
+        <button type="button" class="button primary" id="confirm-action-dialog">确认</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

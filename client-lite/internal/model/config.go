@@ -1,0 +1,151 @@
+package model
+
+import (
+	"fmt"
+	"net"
+	"strings"
+)
+
+type ProxyType string
+
+const (
+	ProxyTypeWebSocket ProxyType = "websocket"
+	ProxyTypeSSH       ProxyType = "ssh"
+)
+
+type AuthType string
+
+const (
+	AuthTypePassword   AuthType = "password"
+	AuthTypePrivateKey AuthType = "private_key"
+)
+
+type Config struct {
+	Profiles []Profile `json:"profiles"`
+}
+
+type Profile struct {
+	ID         string           `json:"id"`
+	Name       string           `json:"name"`
+	Type       ProxyType        `json:"type"`
+	ListenHost string           `json:"listenHost"`
+	ListenPort int              `json:"listenPort"`
+	AutoStart  bool             `json:"autoStart"`
+	WebSocket  *WebSocketConfig `json:"websocket,omitempty"`
+	SSH        *SSHConfig       `json:"ssh,omitempty"`
+}
+
+type WebSocketConfig struct {
+	URL       string `json:"url"`
+	SecretRef string `json:"secretRef,omitempty"`
+}
+
+type SSHConfig struct {
+	Host               string   `json:"host"`
+	Port               int      `json:"port"`
+	Username           string   `json:"username"`
+	AuthType           AuthType `json:"authType"`
+	PasswordRef        string   `json:"passwordRef,omitempty"`
+	PrivateKeyPath     string   `json:"privateKeyPath,omitempty"`
+	PassphraseRef      string   `json:"passphraseRef,omitempty"`
+	HostKeyFingerprint string   `json:"hostKeyFingerprint,omitempty"`
+}
+
+func (p Profile) Clone() Profile {
+	clone := p
+	if p.WebSocket != nil {
+		ws := *p.WebSocket
+		clone.WebSocket = &ws
+	}
+	if p.SSH != nil {
+		ssh := *p.SSH
+		clone.SSH = &ssh
+	}
+	return clone
+}
+
+func (p *Profile) Normalize() {
+	p.Name = strings.TrimSpace(p.Name)
+	p.ListenHost = strings.TrimSpace(p.ListenHost)
+	if p.ListenHost == "" {
+		p.ListenHost = "127.0.0.1"
+	}
+	if p.WebSocket != nil {
+		p.WebSocket.URL = strings.TrimSpace(p.WebSocket.URL)
+	}
+	if p.SSH != nil {
+		p.SSH.Host = strings.TrimSpace(p.SSH.Host)
+		p.SSH.Username = strings.TrimSpace(p.SSH.Username)
+		p.SSH.PrivateKeyPath = strings.TrimSpace(p.SSH.PrivateKeyPath)
+		if p.SSH.Port == 0 {
+			p.SSH.Port = 22
+		}
+		if p.SSH.AuthType == "" {
+			p.SSH.AuthType = AuthTypePassword
+		}
+	}
+}
+
+func (p Profile) Validate() error {
+	if strings.TrimSpace(p.ID) == "" {
+		return fmt.Errorf("配置 ID 不能为空")
+	}
+	if strings.TrimSpace(p.Name) == "" {
+		return fmt.Errorf("名称不能为空")
+	}
+	if ip := net.ParseIP(p.ListenHost); ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("第一版仅允许监听本机回环地址")
+	}
+	if p.ListenPort < 1 || p.ListenPort > 65535 {
+		return fmt.Errorf("本地端口必须在 1–65535 之间")
+	}
+	switch p.Type {
+	case ProxyTypeWebSocket:
+		if p.WebSocket == nil || strings.TrimSpace(p.WebSocket.URL) == "" {
+			return fmt.Errorf("WebSocket 地址不能为空")
+		}
+		if p.WebSocket.SecretRef == "" {
+			return fmt.Errorf("WebSocket 密钥不能为空")
+		}
+	case ProxyTypeSSH:
+		if p.SSH == nil {
+			return fmt.Errorf("SSH 配置不能为空")
+		}
+		if p.SSH.Host == "" || p.SSH.Username == "" {
+			return fmt.Errorf("SSH 地址和用户名不能为空")
+		}
+		if p.SSH.Port < 1 || p.SSH.Port > 65535 {
+			return fmt.Errorf("SSH 端口必须在 1–65535 之间")
+		}
+		if p.SSH.AuthType != AuthTypePassword && p.SSH.AuthType != AuthTypePrivateKey {
+			return fmt.Errorf("不支持的 SSH 认证方式")
+		}
+		if p.SSH.AuthType == AuthTypePrivateKey && p.SSH.PrivateKeyPath == "" {
+			return fmt.Errorf("请选择 SSH 私钥文件")
+		}
+		if p.SSH.AuthType == AuthTypePassword && p.SSH.PasswordRef == "" {
+			return fmt.Errorf("SSH 密码不能为空")
+		}
+	default:
+		return fmt.Errorf("不支持的代理类型：%s", p.Type)
+	}
+	return nil
+}
+
+func (p Profile) Endpoint() string {
+	switch p.Type {
+	case ProxyTypeWebSocket:
+		if p.WebSocket != nil {
+			return p.WebSocket.URL
+		}
+	case ProxyTypeSSH:
+		if p.SSH != nil {
+			return net.JoinHostPort(p.SSH.Host, fmt.Sprintf("%d", p.SSH.Port))
+		}
+	}
+	return ""
+}
+
+func (p Profile) ListenAddress() string {
+	return net.JoinHostPort(p.ListenHost, fmt.Sprintf("%d", p.ListenPort))
+}

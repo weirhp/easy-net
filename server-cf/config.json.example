@@ -1,0 +1,9 @@
+{
+  "title": "SuperBlog",
+  "subtitle": "记录技术与生活的个人空间",
+  "secret": "you-secret-key-change-me",
+  "adminUser": "xxxadmin",
+  "adminPass": "xadmin1023232",
+  "cloudflareAccountId": "",
+  "cloudflareApiToken": ""
+}

@@ -2,3 +2,7 @@
 
 1. 请合法合理使用！
 2. 使用该工具上网，可能会被访问的站点限制。出现任何问题，本人概不负责。
+
+## 轻量桌面客户端
+
+Windows/macOS WebSocket + SSH 客户端见 [`client-lite`](client-lite/README.md)。

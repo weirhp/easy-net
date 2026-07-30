@@ -1,10 +1,16 @@
-FROM node:20-slim
+FROM node:20-bullseye-slim
 
 WORKDIR /app
 
 # 1. 复制依赖描述并安装生产环境依赖
 COPY package*.json ./
-RUN npm install --omit=dev
+ENV NODE_OPTIONS=--v8-pool-size=1
+ENV npm_config_jobs=1
+RUN if [ -f package-lock.json ]; then \
+      npm ci --omit=dev --no-audit --no-fund; \
+    else \
+      npm install --omit=dev --no-audit --no-fund; \
+    fi
 
 # 2. 复制核心代码
 COPY server.js ./

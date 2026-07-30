@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 # 切换到脚本所在目录，确保 docker compose 能读取同目录下的 docker-compose.yml 和 .env。
 cd "$(dirname "$0")" || exit 1
@@ -19,6 +20,10 @@ if [ -z "$BASE_CMD" ]; then
     echo "错误: 未检测到 docker compose 或 docker-compose，请先安装 Docker 环境。"
     exit 1
 fi
+
+# 本项目在低配 VPS 上构建 Node 镜像时依赖 build.ulimits 提高线程/进程限制。
+# 默认关闭 Compose Bake 委托，避免不同 Buildx 版本对该字段支持不一致。
+export COMPOSE_BAKE="${COMPOSE_BAKE:-false}"
 
 # 打印帮助信息
 print_help() {
@@ -111,7 +116,13 @@ fi
 case "$COMMAND" in
     start)
         echo "正在构建并运行服务..."
-        $COMPOSE_CMD up -d --build
+        if ! $COMPOSE_CMD up -d --build; then
+            echo "================================================="
+            echo "服务启动失败：Docker Compose 构建或启动未成功。"
+            echo "请根据上方 Docker 输出排查，或运行: docker compose logs"
+            echo "================================================="
+            exit 1
+        fi
         echo "================================================="
         echo "服务已成功启动！"
         echo "================================================="

@@ -41,6 +41,8 @@ go test ./...
 go vet ./...
 ```
 
+当前版本由根目录下的 `VERSION` 文件统一管理。正式构建会把该版本写入程序、网页管理界面和 macOS 应用信息；命令行也可以使用 `--version` 查看。
+
 ## Windows 构建
 
 只需要 Go 1.23 或更高版本，不需要 GCC、Node.js 或 WebView。执行：
@@ -61,6 +63,19 @@ chmod +x scripts/build-macos.sh
 ```
 
 输出：`dist/Easy-Net Lite.app`。Intel 和 Apple Silicon 应分别在对应构建机上构建；面向外部分发时还需要 Developer ID 签名和 Apple 公证。
+
+## GitHub Release
+
+推送 `client-lite-v<版本号>` 格式的 Git 标签时，GitHub Actions 会构建 Windows x64、macOS arm64 和 macOS x64，校验标签与 `VERSION` 一致，然后自动创建 Release、上传三个程序包和 `SHA256SUMS.txt`。
+
+例如发布 `VERSION` 中的 `0.1.0`：
+
+```bash
+git tag -a client-lite-v0.1.0 -m "Easy-Net Lite v0.1.0"
+git push origin client-lite-v0.1.0
+```
+
+普通推送到 `main` 只生成 Actions 构建产物，不会创建 Release。
 
 ## 当前协议边界
 

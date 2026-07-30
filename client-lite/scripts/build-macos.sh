@@ -5,6 +5,13 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="$PROJECT_DIR/dist"
 APP_DIR="$DIST_DIR/Easy-Net Lite.app"
 CONTENTS_DIR="$APP_DIR/Contents"
+VERSION="${EASY_NET_VERSION:-$(tr -d '[:space:]' < "$PROJECT_DIR/VERSION")}"
+BUILD_VERSION="${EASY_NET_BUILD_VERSION:-1}"
+
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+  echo "无效版本号：$VERSION" >&2
+  exit 1
+fi
 
 if ! xcrun --find clang >/dev/null 2>&1; then
   echo "缺少 Xcode Command Line Tools，请先运行：xcode-select --install" >&2
@@ -13,10 +20,12 @@ fi
 
 mkdir -p "$CONTENTS_DIR/MacOS" "$CONTENTS_DIR/Resources"
 cp "$PROJECT_DIR/build/macos/Info.plist" "$CONTENTS_DIR/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$CONTENTS_DIR/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_VERSION" "$CONTENTS_DIR/Info.plist"
 
 cd "$PROJECT_DIR"
 CGO_ENABLED=1 go test ./...
-CGO_ENABLED=1 go build -trimpath -ldflags "-s -w" -o "$CONTENTS_DIR/MacOS/easy-net-lite" ./cmd/easy-net
+CGO_ENABLED=1 go build -trimpath -ldflags "-s -w -X easy-net/client-lite/internal/version.Value=$VERSION" -o "$CONTENTS_DIR/MacOS/easy-net-lite" ./cmd/easy-net
 
-echo "构建完成：$APP_DIR"
+echo "构建完成：$APP_DIR（版本 $VERSION）"
 echo "正式分发前请使用 Apple Developer ID 对 .app 签名并公证。"

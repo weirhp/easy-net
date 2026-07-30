@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -12,10 +13,15 @@ import (
 	"easy-net/client-lite/internal/secretstore"
 	"easy-net/client-lite/internal/service"
 	"easy-net/client-lite/internal/tray"
+	"easy-net/client-lite/internal/version"
 	"easy-net/client-lite/internal/web"
 )
 
 func main() {
+	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
+		fmt.Printf("Easy-Net Lite %s\n", version.Value)
+		return
+	}
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	store, err := config.NewStore()
 	if err != nil {
@@ -38,7 +44,7 @@ func main() {
 	if err := manager.Start(); err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("[Easy-Net Lite] 管理界面：%s", manager.URL())
+	log.Printf("[Easy-Net Lite %s] 管理界面：%s", version.Value, manager.URL())
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt)

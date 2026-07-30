@@ -52,7 +52,7 @@ async function loadState(silent = false) {
     const data = await api("/api/state");
     appState.profiles = data.profiles || [];
     appState.token = data.token;
-    $("#config-path").textContent = `配置文件：${data.configPath}`;
+    $("#config-path").textContent = `Easy-Net Lite ${data.version || "dev"} · 配置文件：${data.configPath}`;
     renderProfiles();
   } catch (error) {
     if (!silent) showToast(error.message, true);

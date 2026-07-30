@@ -71,6 +71,9 @@ func TestManagementPageAndProfileAPI(t *testing.T) {
 	}
 
 	state := getState(t, server.URL)
+	if state.Version == "" {
+		t.Fatal("missing application version")
+	}
 	request := upsertRequest{
 		Profile:         model.Profile{Name: "测试 WS", Type: model.ProxyTypeWebSocket, ListenHost: "127.0.0.1", ListenPort: 1080, WebSocket: &model.WebSocketConfig{URL: "wss://example.com/tunnel"}},
 		WebSocketSecret: "secret-value",

@@ -17,6 +17,7 @@ import (
 
 	"easy-net/client-lite/internal/model"
 	"easy-net/client-lite/internal/service"
+	"easy-net/client-lite/internal/version"
 )
 
 const listenAddress = "127.0.0.1:18081"
@@ -36,6 +37,7 @@ type stateResponse struct {
 	Profiles   []service.ProfileState `json:"profiles"`
 	ConfigPath string                 `json:"configPath"`
 	Token      string                 `json:"token"`
+	Version    string                 `json:"version"`
 }
 
 type upsertRequest struct {
@@ -132,7 +134,9 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, stateResponse{Profiles: s.service.States(), ConfigPath: s.service.ConfigPath(), Token: s.token})
+	writeJSON(w, http.StatusOK, stateResponse{
+		Profiles: s.service.States(), ConfigPath: s.service.ConfigPath(), Token: s.token, Version: version.Value,
+	})
 }
 
 func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {

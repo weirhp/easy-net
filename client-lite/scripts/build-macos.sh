@@ -27,5 +27,5 @@ cd "$PROJECT_DIR"
 CGO_ENABLED=1 go test ./...
 CGO_ENABLED=1 go build -trimpath -ldflags "-s -w -X easy-net/client-lite/internal/version.Value=$VERSION" -o "$CONTENTS_DIR/MacOS/easy-net-lite" ./cmd/easy-net
 
-echo "构建完成：$APP_DIR（版本 $VERSION）"
+echo "构建完成：${APP_DIR}（版本 ${VERSION}）"
 echo "正式分发前请使用 Apple Developer ID 对 .app 签名并公证。"

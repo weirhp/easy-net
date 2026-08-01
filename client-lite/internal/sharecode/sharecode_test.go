@@ -1,6 +1,7 @@
 package sharecode
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -33,12 +34,16 @@ func TestDecodeRejectsTampering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	last := code[len(code)-1]
-	replacement := byte('A')
-	if last == replacement {
-		replacement = 'B'
+	parts := strings.Split(strings.TrimPrefix(code, Prefix), ".")
+	if len(parts) != 2 {
+		t.Fatalf("unexpected share code format: %q", code)
 	}
-	code = code[:len(code)-1] + string(replacement)
+	sealed, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil || len(sealed) == 0 {
+		t.Fatalf("decode sealed payload: %v", err)
+	}
+	sealed[len(sealed)-1] ^= 0x01
+	code = Prefix + parts[0] + "." + base64.RawURLEncoding.EncodeToString(sealed)
 	if _, err := Decode(code); err == nil {
 		t.Fatal("expected tampered code rejection")
 	}

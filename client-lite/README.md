@@ -71,11 +71,11 @@ chmod +x scripts/build-macos.sh
 
 推送 `client-lite-v<版本号>` 格式的 Git 标签时，GitHub Actions 会构建 Windows x64、macOS arm64 和 macOS x64，校验标签与 `VERSION` 一致，然后自动创建 Release、上传三个程序包和 `SHA256SUMS.txt`。
 
-例如发布 `VERSION` 中的 `0.1.1`：
+例如发布 `VERSION` 中的 `0.1.3`：
 
 ```bash
-git tag -a client-lite-v0.1.1 -m "Easy-Net Lite v0.1.1"
-git push origin client-lite-v0.1.1
+git tag -a client-lite-v0.1.3 -m "Easy-Net Lite v0.1.3"
+git push origin client-lite-v0.1.3
 ```
 
 普通推送到 `main` 只生成 Actions 构建产物，不会创建 Release。

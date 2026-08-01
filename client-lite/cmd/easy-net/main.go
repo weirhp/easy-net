@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"easy-net/client-lite/internal/config"
+	"easy-net/client-lite/internal/logging"
 	"easy-net/client-lite/internal/secretstore"
 	"easy-net/client-lite/internal/service"
 	"easy-net/client-lite/internal/tray"
@@ -42,6 +44,13 @@ func main() {
 		log.Fatal(err)
 	}
 	if err := manager.Start(); err != nil {
+		var alreadyRunning *web.AlreadyRunningError
+		if errors.As(err, &alreadyRunning) {
+			if openErr := tray.OpenBrowser(alreadyRunning.URL); openErr != nil {
+				log.Printf("[Easy-Net Lite] 打开已运行的管理界面失败：%v", openErr)
+			}
+			return
+		}
 		log.Fatal(err)
 	}
 	log.Printf("[Easy-Net Lite %s] 管理界面：%s", version.Value, manager.URL())
@@ -72,11 +81,7 @@ func main() {
 }
 
 func configureLogging(configDir string) func() {
-	if err := os.MkdirAll(configDir, 0700); err != nil {
-		return func() {}
-	}
-	path := configDir + string(os.PathSeparator) + "easy-net-lite.log"
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	file, err := logging.NewRotatingFile(configDir, "easy-net-lite.log", logging.DefaultMaxSize, logging.DefaultBackups)
 	if err != nil {
 		return func() {}
 	}

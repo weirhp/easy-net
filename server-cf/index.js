@@ -65,8 +65,10 @@ export default {
         return new Response('Expected WebSocket', { status: 400 });
       }
 
-      // 优先从 URL 参数（防止 CDN 过滤 Header）读取鉴权和目标地址，其次从 Header 读取
-      const secret = url.searchParams.get('secret') || request.headers.get('x-secret');
+      // 新客户端优先使用 Header，URL 参数仅用于兼容旧客户端和可能过滤自定义 Header 的 CDN。
+      const authorization = request.headers.get('authorization') || '';
+      const bearerSecret = authorization.toLowerCase().startsWith('bearer ') ? authorization.slice(7).trim() : '';
+      const secret = request.headers.get('x-secret') || bearerSecret || url.searchParams.get('secret');
       if (secret !== config.secret) {
         return new Response('Unauthorized', { status: 401 });
       }

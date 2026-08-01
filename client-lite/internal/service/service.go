@@ -9,6 +9,7 @@ import (
 	"net"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"easy-net/client-lite/internal/model"
 	"easy-net/client-lite/internal/proxy"
 	"easy-net/client-lite/internal/secretstore"
+	"easy-net/client-lite/internal/sharecode"
 	"easy-net/client-lite/internal/transport"
 	sshtransport "easy-net/client-lite/internal/transport/ssh"
 	websockettransport "easy-net/client-lite/internal/transport/websocket"
@@ -29,18 +31,22 @@ type SecretValues struct {
 }
 
 type ProfileState struct {
-	Profile model.Profile `json:"profile"`
-	Running bool          `json:"running"`
-	Error   string        `json:"error,omitempty"`
+	Profile  model.Profile
+	Running  bool
+	Starting bool
+	Error    string
 }
 
 type Service struct {
-	mu        sync.Mutex
-	store     *config.Store
-	secrets   secretstore.Store
-	cfg       *model.Config
-	instances map[string]*proxy.Server
-	errors    map[string]string
+	mu           sync.Mutex
+	configMu     sync.Mutex
+	store        *config.Store
+	secrets      secretstore.Store
+	cfg          *model.Config
+	instances    map[string]*proxy.Server
+	errors       map[string]string
+	starting     map[string]context.CancelFunc
+	profileLocks map[string]*sync.Mutex
 }
 
 func New(store *config.Store, secrets secretstore.Store) (*Service, error) {
@@ -51,18 +57,24 @@ func New(store *config.Store, secrets secretstore.Store) (*Service, error) {
 	return &Service{
 		store: store, secrets: secrets, cfg: cfg,
 		instances: make(map[string]*proxy.Server), errors: make(map[string]string),
+		starting: make(map[string]context.CancelFunc), profileLocks: make(map[string]*sync.Mutex),
 	}, nil
 }
 
 func (s *Service) ConfigPath() string { return s.store.Path() }
 
+func (s *Service) ConfigWarnings() []string { return s.store.Warnings() }
+
 func (s *Service) States() []ProfileState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	states := make([]ProfileState, 0, len(s.cfg.Profiles))
-	for _, p := range s.cfg.Profiles {
-		server := s.instances[p.ID]
-		states = append(states, ProfileState{Profile: p.Clone(), Running: server != nil && server.Running(), Error: s.errors[p.ID]})
+	for _, profile := range s.cfg.Profiles {
+		server := s.instances[profile.ID]
+		_, starting := s.starting[profile.ID]
+		states = append(states, ProfileState{
+			Profile: profile.Clone(), Running: server != nil && server.Running(), Starting: starting, Error: s.errors[profile.ID],
+		})
 	}
 	sort.SliceStable(states, func(i, j int) bool { return states[i].Profile.Name < states[j].Profile.Name })
 	return states
@@ -71,9 +83,9 @@ func (s *Service) States() []ProfileState {
 func (s *Service) Profile(id string) (model.Profile, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, p := range s.cfg.Profiles {
-		if p.ID == id {
-			return p.Clone(), true
+	for _, profile := range s.cfg.Profiles {
+		if profile.ID == id {
+			return profile.Clone(), true
 		}
 	}
 	return model.Profile{}, false
@@ -86,79 +98,195 @@ func (s *Service) Secret(ref string) (string, error) {
 	return s.secrets.Get(ref)
 }
 
-func (s *Service) Upsert(profile model.Profile, values SecretValues) error {
+func (s *Service) ExportShare(id string) (sharecode.Payload, error) {
+	op := s.profileLock(id)
+	op.Lock()
+	defer op.Unlock()
+	profile, ok := s.Profile(id)
+	if !ok {
+		return sharecode.Payload{}, fmt.Errorf("代理配置不存在")
+	}
+	payload := sharecode.Payload{Name: profile.Name, Type: profile.Type, PreferredPort: profile.ListenPort}
+	switch profile.Type {
+	case model.ProxyTypeWebSocket:
+		secret, err := s.getSecret(profile.WebSocket.SecretRef, "WebSocket 密钥")
+		if err != nil {
+			return sharecode.Payload{}, err
+		}
+		payload.WebSocket = &sharecode.WebSocketConfig{
+			URL: profile.WebSocket.URL, Secret: secret, AllowInsecure: profile.WebSocket.AllowInsecure, LegacyQueryAuth: profile.WebSocket.LegacyQueryAuth,
+		}
+	case model.ProxyTypeSSH:
+		sharedSSH := &sharecode.SSHConfig{
+			Host: profile.SSH.Host, Port: profile.SSH.Port, Username: profile.SSH.Username,
+			AuthType: profile.SSH.AuthType, HostKeyFingerprint: profile.SSH.HostKeyFingerprint,
+		}
+		if profile.SSH.AuthType == model.AuthTypePassword {
+			password, err := s.getSecret(profile.SSH.PasswordRef, "SSH 密码")
+			if err != nil {
+				return sharecode.Payload{}, err
+			}
+			sharedSSH.Password = password
+		} else {
+			privateKey, err := s.store.ReadManagedPrivateKey(profile.SSH.PrivateKeyPath)
+			if err != nil {
+				return sharecode.Payload{}, err
+			}
+			sharedSSH.PrivateKey = string(privateKey)
+			passphrase, err := s.getOptionalSecret(profile.SSH.PassphraseRef, "私钥口令")
+			if err != nil {
+				return sharecode.Payload{}, err
+			}
+			sharedSSH.Passphrase = passphrase
+		}
+		payload.SSH = sharedSSH
+	default:
+		return sharecode.Payload{}, fmt.Errorf("不支持的代理类型")
+	}
+	if err := sharecode.Validate(payloadWithVersion(payload)); err != nil {
+		return sharecode.Payload{}, err
+	}
+	return payload, nil
+}
+
+func (s *Service) ImportShare(payload sharecode.Payload) (string, error) {
+	if err := sharecode.Validate(payload); err != nil {
+		return "", err
+	}
+	id := newID()
+	profile := model.Profile{
+		ID: id, Name: strings.TrimSpace(payload.Name), Type: payload.Type, ListenHost: "127.0.0.1",
+		ListenPort: s.nextAvailablePort(payload.PreferredPort), AutoStart: false,
+	}
+	values := SecretValues{}
+	if payload.WebSocket != nil {
+		profile.WebSocket = &model.WebSocketConfig{URL: payload.WebSocket.URL, AllowInsecure: payload.WebSocket.AllowInsecure, LegacyQueryAuth: payload.WebSocket.LegacyQueryAuth}
+		values.WebSocketSecret = payload.WebSocket.Secret
+	}
+	if payload.SSH != nil {
+		profile.SSH = &model.SSHConfig{Host: payload.SSH.Host, Port: payload.SSH.Port, Username: payload.SSH.Username, AuthType: payload.SSH.AuthType}
+		values.SSHPassword = payload.SSH.Password
+		values.SSHPrivateKey = []byte(payload.SSH.PrivateKey)
+		values.SSHPassphrase = payload.SSH.Passphrase
+	}
+	if err := s.Upsert(profile, values); err != nil {
+		return "", err
+	}
+	if payload.SSH != nil && payload.SSH.HostKeyFingerprint != "" {
+		if err := s.TrustSSHHost(id, payload.SSH.HostKeyFingerprint); err != nil {
+			if rollbackErr := s.Delete(id); rollbackErr != nil {
+				return "", fmt.Errorf("导入 SSH 指纹失败：%v；回滚导入配置也失败：%w", err, rollbackErr)
+			}
+			return "", fmt.Errorf("导入 SSH 指纹失败：%w", err)
+		}
+	}
+	return id, nil
+}
+
+func payloadWithVersion(payload sharecode.Payload) sharecode.Payload {
+	payload.Version = sharecode.CurrentVersion
+	return payload
+}
+
+func (s *Service) nextAvailablePort(preferred int) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	used := make(map[int]struct{}, len(s.cfg.Profiles))
+	for _, profile := range s.cfg.Profiles {
+		used[profile.ListenPort] = struct{}{}
+	}
+	if preferred < 1 || preferred > 65535 {
+		preferred = 1080
+	}
+	for port := preferred; port <= 65535; port++ {
+		if _, exists := used[port]; !exists {
+			return port
+		}
+	}
+	for port := 1080; port < preferred; port++ {
+		if _, exists := used[port]; !exists {
+			return port
+		}
+	}
+	return preferred
+}
 
-	if profile.ID == "" {
-		profile.ID = newID()
+func (s *Service) Upsert(incoming model.Profile, values SecretValues) error {
+	if incoming.ID == "" {
+		incoming.ID = newID()
 	}
-	profile.Normalize()
-	oldIndex := -1
-	wasRunning := false
-	oldPrivateKeyPath := ""
-	for i, existing := range s.cfg.Profiles {
-		if existing.ID == profile.ID {
-			oldIndex = i
-			wasRunning = s.instances[profile.ID] != nil && s.instances[profile.ID].Running()
-			preserveSecretRefs(&profile, existing)
-			if existing.SSH != nil {
-				oldPrivateKeyPath = existing.SSH.PrivateKeyPath
-			}
-			break
+	s.cancelStart(incoming.ID)
+	op := s.profileLock(incoming.ID)
+	op.Lock()
+	opHeld := true
+	defer func() {
+		if opHeld {
+			op.Unlock()
 		}
-	}
-	newPrivateKeyPath := ""
-	if profile.SSH != nil && profile.SSH.AuthType == model.AuthTypePrivateKey && len(values.SSHPrivateKey) > 0 {
-		path, err := s.store.SavePrivateKey(values.SSHPrivateKey)
-		if err != nil {
-			return err
+	}()
+
+	s.configMu.Lock()
+	configHeld := true
+	defer func() {
+		if configHeld {
+			s.configMu.Unlock()
 		}
-		newPrivateKeyPath = path
-		profile.SSH.PrivateKeyPath = path
+	}()
+
+	s.mu.Lock()
+	updated := cloneConfig(s.cfg)
+	oldIndex := profileIndex(updated, incoming.ID)
+	var old *model.Profile
+	var wasRunning bool
+	if oldIndex >= 0 {
+		oldCopy := updated.Profiles[oldIndex].Clone()
+		old = &oldCopy
+		server := s.instances[incoming.ID]
+		wasRunning = server != nil && server.Running()
 	}
-	if profile.SSH != nil && profile.SSH.AuthType != model.AuthTypePrivateKey {
-		profile.SSH.PrivateKeyPath = ""
+	s.mu.Unlock()
+
+	profile, newPrivateKeyPath, err := s.prepareProfile(incoming, old, values)
+	if err != nil {
+		return err
 	}
 	cleanupNewKey := func() {
 		if newPrivateKeyPath != "" {
 			_ = s.store.DeleteManagedPrivateKey(newPrivateKeyPath)
 		}
 	}
-	assignSecretRefs(&profile)
+
 	if err := profile.Validate(); err != nil {
 		cleanupNewKey()
 		return err
 	}
-	for _, existing := range s.cfg.Profiles {
-		if existing.ID != profile.ID && existing.ListenHost == profile.ListenHost && existing.ListenPort == profile.ListenPort {
+	for _, existing := range updated.Profiles {
+		if existing.ID != profile.ID && existing.ListenAddress() == profile.ListenAddress() {
 			cleanupNewKey()
 			return fmt.Errorf("本地端口 %d 已被配置 %q 使用", profile.ListenPort, existing.Name)
 		}
 	}
-	if err := s.saveSecrets(profile, values); err != nil {
+
+	rollbackSecrets, err := s.saveSecretsTransactional(profile, values)
+	if err != nil {
 		cleanupNewKey()
 		return err
 	}
+	rollback := func() {
+		rollbackSecrets()
+		cleanupNewKey()
+	}
 	if profile.WebSocket != nil {
 		if err := s.requireSecret(profile.WebSocket.SecretRef, "WebSocket 密钥"); err != nil {
-			cleanupNewKey()
+			rollback()
 			return err
 		}
 	}
 	if profile.SSH != nil && profile.SSH.AuthType == model.AuthTypePassword {
 		if err := s.requireSecret(profile.SSH.PasswordRef, "SSH 密码"); err != nil {
-			cleanupNewKey()
+			rollback()
 			return err
 		}
-	}
-	if running := s.instances[profile.ID]; running != nil {
-		running.Stop()
-		delete(s.instances, profile.ID)
-	}
-	updated := &model.Config{Profiles: make([]model.Profile, len(s.cfg.Profiles))}
-	for i, existing := range s.cfg.Profiles {
-		updated.Profiles[i] = existing.Clone()
 	}
 	if oldIndex >= 0 {
 		updated.Profiles[oldIndex] = profile
@@ -166,48 +294,115 @@ func (s *Service) Upsert(profile model.Profile, values SecretValues) error {
 		updated.Profiles = append(updated.Profiles, profile)
 	}
 	if err := s.store.Save(updated); err != nil {
-		cleanupNewKey()
+		rollback()
 		return err
 	}
+
+	s.mu.Lock()
 	s.cfg = updated
-	currentPrivateKeyPath := ""
-	if profile.SSH != nil {
-		currentPrivateKeyPath = profile.SSH.PrivateKeyPath
-	}
-	if oldPrivateKeyPath != "" && oldPrivateKeyPath != currentPrivateKeyPath {
-		_ = s.store.DeleteManagedPrivateKey(oldPrivateKeyPath)
-	}
+	oldServer := s.instances[profile.ID]
+	delete(s.instances, profile.ID)
+	delete(s.starting, profile.ID)
 	s.errors[profile.ID] = ""
+	s.mu.Unlock()
+
+	configHeld = false
+	s.configMu.Unlock()
+	if oldServer != nil {
+		oldServer.Stop()
+	}
+	if old != nil {
+		s.cleanupReplacedCredentials(*old, profile)
+	}
+	opHeld = false
+	op.Unlock()
 	if wasRunning {
-		if err := s.startLocked(profile.ID); err != nil {
-			s.errors[profile.ID] = err.Error()
+		if err := s.Start(profile.ID); err != nil {
 			return fmt.Errorf("配置已保存，但重新启动失败：%w", err)
 		}
 	}
 	return nil
 }
 
-func (s *Service) Delete(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	index := -1
-	var profile model.Profile
-	for i, p := range s.cfg.Profiles {
-		if p.ID == id {
-			index, profile = i, p
-			break
+func (s *Service) prepareProfile(incoming model.Profile, old *model.Profile, values SecretValues) (model.Profile, string, error) {
+	profile := incoming.Clone()
+	profile.Normalize()
+	if profile.Type == model.ProxyTypeWebSocket {
+		profile.SSH = nil
+		if profile.WebSocket == nil {
+			profile.WebSocket = &model.WebSocketConfig{}
+		}
+		profile.WebSocket.SecretRef = profile.ID + "/websocket"
+	} else if profile.Type == model.ProxyTypeSSH {
+		profile.WebSocket = nil
+		if profile.SSH == nil {
+			profile.SSH = &model.SSHConfig{}
+		}
+		profile.SSH.PasswordRef = ""
+		profile.SSH.PassphraseRef = ""
+		if profile.SSH.AuthType == model.AuthTypePassword {
+			profile.SSH.PasswordRef = profile.ID + "/password"
+		} else if profile.SSH.AuthType == model.AuthTypePrivateKey {
+			profile.SSH.PassphraseRef = profile.ID + "/passphrase"
+		}
+		profile.SSH.PrivateKeyPath = ""
+		profile.SSH.HostKeyFingerprint = ""
+		if old != nil && old.SSH != nil {
+			if profile.SSH.Host == old.SSH.Host && profile.SSH.Port == old.SSH.Port {
+				profile.SSH.HostKeyFingerprint = old.SSH.HostKeyFingerprint
+			}
+			if profile.SSH.AuthType == model.AuthTypePrivateKey && old.SSH.AuthType == model.AuthTypePrivateKey {
+				profile.SSH.PrivateKeyPath = old.SSH.PrivateKeyPath
+			}
 		}
 	}
+
+	newPrivateKeyPath := ""
+	if profile.SSH != nil && profile.SSH.AuthType == model.AuthTypePrivateKey && len(values.SSHPrivateKey) > 0 {
+		path, err := s.store.SavePrivateKey(values.SSHPrivateKey)
+		if err != nil {
+			return model.Profile{}, "", err
+		}
+		newPrivateKeyPath = path
+		profile.SSH.PrivateKeyPath = path
+	}
+	if profile.SSH != nil && profile.SSH.AuthType != model.AuthTypePrivateKey {
+		profile.SSH.PrivateKeyPath = ""
+	}
+	return profile, newPrivateKeyPath, nil
+}
+
+func (s *Service) Delete(id string) error {
+	s.cancelStart(id)
+	op := s.profileLock(id)
+	op.Lock()
+	defer op.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+
+	s.mu.Lock()
+	updated := cloneConfig(s.cfg)
+	index := profileIndex(updated, id)
 	if index < 0 {
+		s.mu.Unlock()
 		return fmt.Errorf("代理配置不存在")
 	}
-	if running := s.instances[id]; running != nil {
-		running.Stop()
-		delete(s.instances, id)
-	}
-	s.cfg.Profiles = append(s.cfg.Profiles[:index], s.cfg.Profiles[index+1:]...)
-	if err := s.store.Save(s.cfg); err != nil {
+	profile := updated.Profiles[index].Clone()
+	updated.Profiles = append(updated.Profiles[:index], updated.Profiles[index+1:]...)
+	s.mu.Unlock()
+	if err := s.store.Save(updated); err != nil {
 		return err
+	}
+
+	s.mu.Lock()
+	s.cfg = updated
+	server := s.instances[id]
+	delete(s.instances, id)
+	delete(s.starting, id)
+	delete(s.errors, id)
+	s.mu.Unlock()
+	if server != nil {
+		server.Stop()
 	}
 	for _, ref := range secretRefs(profile) {
 		_ = s.secrets.Delete(ref)
@@ -215,63 +410,76 @@ func (s *Service) Delete(id string) error {
 	if profile.SSH != nil {
 		_ = s.store.DeleteManagedPrivateKey(profile.SSH.PrivateKeyPath)
 	}
-	delete(s.errors, id)
 	return nil
 }
 
 func (s *Service) Start(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	err := s.startLocked(id)
-	if err != nil {
-		s.errors[id] = err.Error()
-	} else {
-		s.errors[id] = ""
-	}
-	return err
-}
+	op := s.profileLock(id)
+	op.Lock()
+	defer op.Unlock()
 
-func (s *Service) startLocked(id string) error {
+	s.mu.Lock()
 	if running := s.instances[id]; running != nil && running.Running() {
+		s.mu.Unlock()
 		return nil
 	}
-	var profile *model.Profile
-	for i := range s.cfg.Profiles {
-		if s.cfg.Profiles[i].ID == id {
-			profile = &s.cfg.Profiles[i]
-			break
-		}
-	}
-	if profile == nil {
+	index := profileIndex(s.cfg, id)
+	if index < 0 {
+		s.mu.Unlock()
 		return fmt.Errorf("代理配置不存在")
 	}
-	outbound, err := s.buildTransport(*profile)
+	profile := s.cfg.Profiles[index].Clone()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	s.starting[id] = cancel
+	s.errors[id] = ""
+	s.mu.Unlock()
+
+	outbound, err := s.buildTransport(profile)
+	var server *proxy.Server
+	if err == nil {
+		server = proxy.NewServer(profile.ListenAddress(), outbound)
+		err = server.Start(ctx)
+	}
+	canceled := ctx.Err() != nil
+	cancel()
+
+	s.mu.Lock()
+	delete(s.starting, id)
 	if err != nil {
+		s.errors[id] = err.Error()
+		s.mu.Unlock()
 		return err
 	}
-	server := proxy.NewServer(profile.ListenAddress(), outbound)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := server.Start(ctx); err != nil {
-		return err
+	if canceled {
+		s.errors[id] = ""
+		s.mu.Unlock()
+		server.Stop()
+		return context.Canceled
 	}
 	s.instances[id] = server
+	s.errors[id] = ""
+	s.mu.Unlock()
 	return nil
 }
 
 func (s *Service) Stop(id string) {
+	s.cancelStart(id)
+	op := s.profileLock(id)
+	op.Lock()
+	defer op.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if running := s.instances[id]; running != nil {
-		running.Stop()
-		delete(s.instances, id)
-	}
+	server := s.instances[id]
+	delete(s.instances, id)
+	delete(s.starting, id)
 	s.errors[id] = ""
+	s.mu.Unlock()
+	if server != nil {
+		server.Stop()
+	}
 }
 
 func (s *Service) StartAuto() {
-	states := s.States()
-	for _, state := range states {
+	for _, state := range s.States() {
 		if state.Profile.AutoStart {
 			_ = s.Start(state.Profile.ID)
 		}
@@ -285,24 +493,36 @@ func (s *Service) StartAll() {
 }
 
 func (s *Service) StopAll() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for id, running := range s.instances {
-		running.Stop()
-		delete(s.instances, id)
+	states := s.States()
+	for _, state := range states {
+		s.Stop(state.Profile.ID)
 	}
 }
 
 func (s *Service) TrustSSHHost(id, fingerprint string) error {
+	s.cancelStart(id)
+	op := s.profileLock(id)
+	op.Lock()
+	defer op.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := range s.cfg.Profiles {
-		if s.cfg.Profiles[i].ID == id && s.cfg.Profiles[i].SSH != nil {
-			s.cfg.Profiles[i].SSH.HostKeyFingerprint = fingerprint
-			return s.store.Save(s.cfg)
-		}
+	updated := cloneConfig(s.cfg)
+	index := profileIndex(updated, id)
+	if index < 0 || updated.Profiles[index].SSH == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("SSH 配置不存在")
 	}
-	return fmt.Errorf("SSH 配置不存在")
+	updated.Profiles[index].SSH.HostKeyFingerprint = fingerprint
+	s.mu.Unlock()
+	if err := s.store.Save(updated); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.cfg = updated
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *Service) buildTransport(profile model.Profile) (transport.Transport, error) {
@@ -312,19 +532,20 @@ func (s *Service) buildTransport(profile model.Profile) (transport.Transport, er
 		if err != nil {
 			return nil, err
 		}
-		return websockettransport.New(profile.WebSocket.URL, secret)
+		return websockettransport.New(websockettransport.Config{
+			URL: profile.WebSocket.URL, Secret: secret, AllowInsecure: profile.WebSocket.AllowInsecure,
+			LegacyQueryAuth: profile.WebSocket.LegacyQueryAuth,
+		})
 	case model.ProxyTypeSSH:
 		cfg := sshtransport.Config{
-			Address:            net.JoinHostPort(profile.SSH.Host, strconv.Itoa(profile.SSH.Port)),
-			Username:           profile.SSH.Username,
-			PrivateKeyPath:     profile.SSH.PrivateKeyPath,
-			HostKeyFingerprint: profile.SSH.HostKeyFingerprint,
+			Address: net.JoinHostPort(profile.SSH.Host, strconv.Itoa(profile.SSH.Port)), Username: profile.SSH.Username,
+			PrivateKeyPath: profile.SSH.PrivateKeyPath, HostKeyFingerprint: profile.SSH.HostKeyFingerprint,
 		}
 		var err error
 		if profile.SSH.AuthType == model.AuthTypePassword {
 			cfg.Password, err = s.getSecret(profile.SSH.PasswordRef, "SSH 密码")
 		} else if profile.SSH.PassphraseRef != "" {
-			cfg.PrivateKeyPassphrase, err = s.getSecret(profile.SSH.PassphraseRef, "私钥口令")
+			cfg.PrivateKeyPassphrase, err = s.getOptionalSecret(profile.SSH.PassphraseRef, "私钥口令")
 		}
 		if err != nil {
 			return nil, err
@@ -343,6 +564,17 @@ func (s *Service) getSecret(ref, label string) (string, error) {
 	return value, nil
 }
 
+func (s *Service) getOptionalSecret(ref, label string) (string, error) {
+	value, err := s.secrets.Get(ref)
+	if secretstore.IsNotFound(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("从系统凭据库读取%s失败：%w", label, err)
+	}
+	return value, nil
+}
+
 func (s *Service) requireSecret(ref, label string) error {
 	value, err := s.secrets.Get(ref)
 	if err != nil || value == "" {
@@ -354,49 +586,70 @@ func (s *Service) requireSecret(ref, label string) error {
 	return nil
 }
 
-func (s *Service) saveSecrets(profile model.Profile, values SecretValues) error {
-	pairs := map[string]string{}
+type secretRollback struct {
+	ref     string
+	old     string
+	existed bool
+}
+
+func (s *Service) saveSecretsTransactional(profile model.Profile, values SecretValues) (func(), error) {
+	pairs := make([]struct{ ref, value string }, 0, 3)
 	if profile.WebSocket != nil && values.WebSocketSecret != "" {
-		pairs[profile.WebSocket.SecretRef] = values.WebSocketSecret
+		pairs = append(pairs, struct{ ref, value string }{profile.WebSocket.SecretRef, values.WebSocketSecret})
 	}
-	if profile.SSH != nil && values.SSHPassword != "" {
-		pairs[profile.SSH.PasswordRef] = values.SSHPassword
+	if profile.SSH != nil && profile.SSH.AuthType == model.AuthTypePassword && values.SSHPassword != "" {
+		pairs = append(pairs, struct{ ref, value string }{profile.SSH.PasswordRef, values.SSHPassword})
 	}
-	if profile.SSH != nil && values.SSHPassphrase != "" {
-		pairs[profile.SSH.PassphraseRef] = values.SSHPassphrase
+	if profile.SSH != nil && profile.SSH.AuthType == model.AuthTypePrivateKey && values.SSHPassphrase != "" {
+		pairs = append(pairs, struct{ ref, value string }{profile.SSH.PassphraseRef, values.SSHPassphrase})
 	}
-	for ref, value := range pairs {
-		if err := s.secrets.Set(ref, value); err != nil {
-			return fmt.Errorf("写入系统凭据库失败：%w", err)
+	changes := make([]secretRollback, 0, len(pairs))
+	rollback := func() {
+		for i := len(changes) - 1; i >= 0; i-- {
+			change := changes[i]
+			if change.existed {
+				_ = s.secrets.Set(change.ref, change.old)
+			} else {
+				_ = s.secrets.Delete(change.ref)
+			}
 		}
 	}
-	return nil
+	for _, pair := range pairs {
+		old, err := s.secrets.Get(pair.ref)
+		existed := err == nil
+		if err != nil && !secretstore.IsNotFound(err) {
+			rollback()
+			return func() {}, fmt.Errorf("读取系统凭据库失败：%w", err)
+		}
+		if err := s.secrets.Set(pair.ref, pair.value); err != nil {
+			rollback()
+			return func() {}, fmt.Errorf("写入系统凭据库失败：%w", err)
+		}
+		changes = append(changes, secretRollback{ref: pair.ref, old: old, existed: existed})
+	}
+	return rollback, nil
 }
 
-func assignSecretRefs(profile *model.Profile) {
-	if profile.WebSocket != nil && profile.WebSocket.SecretRef == "" {
-		profile.WebSocket.SecretRef = profile.ID + "/websocket"
+func (s *Service) cleanupReplacedCredentials(old, current model.Profile) {
+	activeRefs := make(map[string]struct{})
+	for _, ref := range secretRefs(current) {
+		activeRefs[ref] = struct{}{}
 	}
-	if profile.SSH != nil {
-		if profile.SSH.AuthType == model.AuthTypePassword && profile.SSH.PasswordRef == "" {
-			profile.SSH.PasswordRef = profile.ID + "/password"
-		}
-		if profile.SSH.AuthType == model.AuthTypePrivateKey && profile.SSH.PassphraseRef == "" {
-			profile.SSH.PassphraseRef = profile.ID + "/passphrase"
+	for _, ref := range secretRefs(old) {
+		if _, active := activeRefs[ref]; !active {
+			_ = s.secrets.Delete(ref)
 		}
 	}
-}
-
-func preserveSecretRefs(profile *model.Profile, old model.Profile) {
-	if profile.WebSocket != nil && old.WebSocket != nil {
-		profile.WebSocket.SecretRef = old.WebSocket.SecretRef
+	oldKey := ""
+	currentKey := ""
+	if old.SSH != nil {
+		oldKey = old.SSH.PrivateKeyPath
 	}
-	if profile.SSH != nil && old.SSH != nil {
-		profile.SSH.PasswordRef = old.SSH.PasswordRef
-		profile.SSH.PassphraseRef = old.SSH.PassphraseRef
-		if profile.SSH.HostKeyFingerprint == "" && profile.SSH.Host == old.SSH.Host && profile.SSH.Port == old.SSH.Port {
-			profile.SSH.HostKeyFingerprint = old.SSH.HostKeyFingerprint
-		}
+	if current.SSH != nil {
+		currentKey = current.SSH.PrivateKeyPath
+	}
+	if oldKey != "" && oldKey != currentKey {
+		_ = s.store.DeleteManagedPrivateKey(oldKey)
 	}
 }
 
@@ -414,6 +667,43 @@ func secretRefs(profile model.Profile) []string {
 		}
 	}
 	return refs
+}
+
+func cloneConfig(cfg *model.Config) *model.Config {
+	result := &model.Config{Version: cfg.Version, Profiles: make([]model.Profile, len(cfg.Profiles))}
+	for i := range cfg.Profiles {
+		result.Profiles[i] = cfg.Profiles[i].Clone()
+	}
+	return result
+}
+
+func profileIndex(cfg *model.Config, id string) int {
+	for i := range cfg.Profiles {
+		if cfg.Profiles[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func (s *Service) profileLock(id string) *sync.Mutex {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lock := s.profileLocks[id]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		s.profileLocks[id] = lock
+	}
+	return lock
+}
+
+func (s *Service) cancelStart(id string) {
+	s.mu.Lock()
+	cancel := s.starting[id]
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 func newID() string {

@@ -1,11 +1,14 @@
 "use strict";
 
-const appState = { profiles: [], token: "", busy: new Set(), editingId: "", kind: "websocket", poll: null };
+const appState = { profiles: [], token: "", busy: new Set(), editingId: "", kind: "websocket", poll: null, warningsShown: false };
 const $ = (selector) => document.querySelector(selector);
 const profilesElement = $("#profiles");
 const dialogElement = $("#profile-dialog");
 const formElement = $("#profile-form");
 const actionDialogElement = $("#action-dialog");
+const shareDialogElement = $("#share-dialog");
+const importDialogElement = $("#import-dialog");
+const importFormElement = $("#import-form");
 let actionDialogResolver = null;
 
 class APIError extends Error {
@@ -54,6 +57,10 @@ async function loadState(silent = false) {
     appState.token = data.token;
     $("#config-path").textContent = `Easy-Net Lite ${data.version || "dev"} · 配置文件：${data.configPath}`;
     renderProfiles();
+    if (!silent && !appState.warningsShown && data.warnings?.length) {
+      appState.warningsShown = true;
+      showToast(data.warnings.join("；"), true);
+    }
   } catch (error) {
     if (!silent) showToast(error.message, true);
   }
@@ -70,8 +77,8 @@ function renderProfiles() {
     const profile = item.profile;
     const busy = appState.busy.has(profile.id);
     const type = profile.type === "ssh" ? "SSH" : "WebSocket";
-    const statusClass = busy ? "busy" : item.running ? "running" : "";
-    const statusText = busy ? "正在处理" : item.running ? "运行中" : "已停止";
+    const statusClass = busy || item.starting ? "busy" : item.running ? "running" : "";
+    const statusText = item.starting ? "正在连接" : busy ? "正在处理" : item.running ? "运行中" : "已停止";
     const endpoint = profile.type === "ssh" ? `${profile.ssh.host}:${profile.ssh.port}` : profile.websocket.url;
     const primaryAction = item.running ? "stop" : "start";
     const primaryText = item.running ? "停止" : "启动";
@@ -89,6 +96,7 @@ function renderProfiles() {
         </div>
         <div class="card-actions">
           <button class="button ${item.running ? "secondary" : "start"}" data-profile-action="${primaryAction}" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${primaryText}</button>
+          <button class="button secondary" data-profile-action="share" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>分享</button>
           <button class="button secondary" data-profile-action="edit" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>编辑</button>
           <button class="button danger" data-profile-action="delete" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>删除</button>
         </div>
@@ -114,6 +122,8 @@ function openProfileDialog(kind, id = "") {
   $("#field-auto-start").checked = profile ? profile.autoStart : true;
   if (kind === "websocket") {
     $("#field-ws-url").value = profile?.websocket?.url || "";
+	$("#field-ws-insecure").checked = Boolean(profile?.websocket?.allowInsecure);
+	$("#field-ws-legacy-query").checked = Boolean(profile?.websocket?.legacyQueryAuth);
 	$("#field-ws-url").required = true;
     $("#field-ws-secret").required = !id;
 	$("#field-ssh-host").required = false;
@@ -130,7 +140,7 @@ function openProfileDialog(kind, id = "") {
 	$("#field-ssh-user").required = true;
 	$("#field-ssh-port").required = true;
     $("#field-ssh-password").required = !id && $("#field-ssh-auth").value === "password";
-    const existingKey = profile?.ssh?.privateKeyPath || "";
+    const existingKey = Boolean(profile?.ssh?.hasPrivateKey);
     $("#ssh-key-hint").textContent = existingKey ? "已保存私钥；重新选择文件将替换它" : "支持 OpenSSH 私钥，最大 64 KiB";
     toggleSSHAuth();
   }
@@ -141,7 +151,7 @@ function openProfileDialog(kind, id = "") {
 function toggleSSHAuth() {
   const privateKey = $("#field-ssh-auth").value === "private_key";
 	const existing = appState.editingId ? appState.profiles.find((entry) => entry.profile.id === appState.editingId)?.profile : null;
-	const hasSavedPassword = Boolean(existing?.ssh?.passwordRef);
+	const hasSavedPassword = Boolean(existing?.ssh?.hasPassword);
 	const passwordRow = $("#ssh-password-row");
 	const keyRow = $("#ssh-key-row");
 	const passphraseRow = $("#ssh-passphrase-row");
@@ -167,29 +177,35 @@ async function saveProfile(event) {
   saveButton.textContent = "保存中…";
   try {
     const existing = appState.editingId ? appState.profiles.find((entry) => entry.profile.id === appState.editingId)?.profile : null;
-    const profile = existing ? structuredClone(existing) : {
-      id: "", type: appState.kind, listenHost: "127.0.0.1", websocket: null, ssh: null
+    const profile = {
+      id: existing?.id || "",
+      name: $("#field-name").value.trim(),
+      type: appState.kind,
+      listenHost: "127.0.0.1",
+      listenPort: Number($("#field-local-port").value),
+      autoStart: $("#field-auto-start").checked,
+      websocket: null,
+      ssh: null
     };
-    profile.name = $("#field-name").value.trim();
-    profile.listenPort = Number($("#field-local-port").value);
-    profile.autoStart = $("#field-auto-start").checked;
     const request = { profile, websocketSecret: "", sshPassword: "", sshPassphrase: "", sshPrivateKey: "" };
     if (appState.kind === "websocket") {
-      profile.websocket = profile.websocket || { url: "", secretRef: "" };
-      profile.ssh = null;
-      profile.websocket.url = $("#field-ws-url").value.trim();
+      profile.websocket = {
+        url: $("#field-ws-url").value.trim(),
+        allowInsecure: $("#field-ws-insecure").checked,
+        legacyQueryAuth: $("#field-ws-legacy-query").checked
+      };
       request.websocketSecret = $("#field-ws-secret").value;
     } else {
-      profile.ssh = profile.ssh || { host: "", port: 22, username: "", authType: "password" };
-      profile.websocket = null;
-      profile.ssh.host = $("#field-ssh-host").value.trim();
-      profile.ssh.port = Number($("#field-ssh-port").value);
-      profile.ssh.username = $("#field-ssh-user").value.trim();
-      profile.ssh.authType = $("#field-ssh-auth").value;
+      profile.ssh = {
+        host: $("#field-ssh-host").value.trim(),
+        port: Number($("#field-ssh-port").value),
+        username: $("#field-ssh-user").value.trim(),
+        authType: $("#field-ssh-auth").value
+      };
       const keyFile = $("#field-ssh-key").files[0];
       if (profile.ssh.authType === "private_key") {
 		request.sshPassphrase = $("#field-ssh-passphrase").value;
-        if (!keyFile && !profile.ssh.privateKeyPath) throw new Error("请选择 SSH 私钥文件");
+        if (!keyFile && !existing?.ssh?.hasPrivateKey) throw new Error("请选择 SSH 私钥文件");
         if (keyFile && keyFile.size > 64 * 1024) throw new Error("私钥文件不能超过 64 KiB");
         if (keyFile) request.sshPrivateKey = await keyFile.text();
 	  } else {
@@ -214,6 +230,18 @@ async function profileAction(action, id) {
   const item = appState.profiles.find((entry) => entry.profile.id === id);
   if (!item) return;
   if (action === "edit") { openProfileDialog(item.profile.type, id); return; }
+  if (action === "share") {
+    appState.busy.add(id);
+    renderProfiles();
+    try {
+      const data = await api(`/api/profiles/${encodeURIComponent(id)}/share`, { method: "POST" });
+      $("#share-code").value = data.shareCode || "";
+      shareDialogElement.showModal();
+      $("#copy-share-code").focus();
+    } catch (error) { showToast(error.message, true); }
+    finally { appState.busy.delete(id); await loadState(true); }
+    return;
+  }
   if (action === "delete") {
     const confirmed = await showConfirmModal({
       kind: "删除配置",
@@ -253,6 +281,75 @@ async function profileAction(action, id) {
   } finally {
     appState.busy.delete(id);
     await loadState(true);
+  }
+}
+
+function closeShareDialog() {
+  if (shareDialogElement.open) shareDialogElement.close();
+  $("#share-code").value = "";
+}
+
+async function copyShareCode() {
+  const code = $("#share-code").value;
+  if (!code) return;
+  try {
+    await navigator.clipboard.writeText(code);
+    showToast("分享码已复制");
+  } catch (_) {
+    const field = $("#share-code");
+    field.focus();
+    field.select();
+    if (document.execCommand("copy")) showToast("分享码已复制");
+    else showToast("复制失败，请手动选择分享码", true);
+  }
+}
+
+function openImportDialog() {
+  importFormElement.reset();
+  $("#import-error").hidden = true;
+  importDialogElement.showModal();
+  $("#import-share-code").focus();
+}
+
+function closeImportDialog() {
+	if (importDialogElement.open) importDialogElement.close();
+	importFormElement.reset();
+	$("#import-error").hidden = true;
+}
+
+async function pasteShareCode() {
+  const errorElement = $("#import-error");
+  errorElement.hidden = true;
+  try {
+    const text = (await navigator.clipboard.readText()).trim();
+    if (!text) throw new Error("剪贴板中没有分享码");
+    $("#import-share-code").value = text;
+    $("#import-share-code").focus();
+  } catch (error) {
+    errorElement.textContent = error.message || "无法读取剪贴板，请手动粘贴分享码";
+    errorElement.hidden = false;
+  }
+}
+
+async function importProfile(event) {
+  event.preventDefault();
+  const button = $("#import-profile");
+  const errorElement = $("#import-error");
+  errorElement.hidden = true;
+  if (!importFormElement.reportValidity()) return;
+  button.disabled = true;
+  button.textContent = "导入中…";
+  try {
+    await api("/api/import", { method: "POST", body: JSON.stringify({ shareCode: $("#import-share-code").value.trim() }) });
+    closeImportDialog();
+    showToast("配置已导入，请检查后启动");
+    await loadState();
+  } catch (error) {
+    errorElement.textContent = error.message;
+    errorElement.hidden = false;
+  } finally {
+    button.disabled = false;
+    button.textContent = "导入配置";
   }
 }
 
@@ -299,6 +396,8 @@ function escapeHTML(value) {
 }
 
 document.addEventListener("click", (event) => {
+  const importButton = event.target.closest("[data-import]");
+  if (importButton) { openImportDialog(); return; }
   const addButton = event.target.closest("[data-add]");
   if (addButton) { openProfileDialog(addButton.dataset.add); return; }
   const actionButton = event.target.closest("[data-profile-action]");
@@ -313,6 +412,13 @@ $("#cancel-dialog").addEventListener("click", () => dialogElement.close());
 $("#close-action-dialog").addEventListener("click", () => finishActionDialog(false));
 $("#cancel-action-dialog").addEventListener("click", () => finishActionDialog(false));
 $("#confirm-action-dialog").addEventListener("click", () => finishActionDialog(true));
+$("#close-share-dialog").addEventListener("click", closeShareDialog);
+$("#dismiss-share-dialog").addEventListener("click", closeShareDialog);
+$("#copy-share-code").addEventListener("click", copyShareCode);
+$("#close-import-dialog").addEventListener("click", closeImportDialog);
+$("#cancel-import-dialog").addEventListener("click", closeImportDialog);
+$("#paste-share-code").addEventListener("click", pasteShareCode);
+importFormElement.addEventListener("submit", importProfile);
 formElement.addEventListener("submit", saveProfile);
 dialogElement.addEventListener("click", (event) => { if (event.target === dialogElement) dialogElement.close(); });
 actionDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); finishActionDialog(false); });
@@ -324,7 +430,11 @@ actionDialogElement.addEventListener("close", () => {
   }
 });
 actionDialogElement.addEventListener("click", (event) => { if (event.target === actionDialogElement) finishActionDialog(false); });
+shareDialogElement.addEventListener("click", (event) => { if (event.target === shareDialogElement) closeShareDialog(); });
+importDialogElement.addEventListener("click", (event) => { if (event.target === importDialogElement) closeImportDialog(); });
+shareDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); closeShareDialog(); });
+importDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); closeImportDialog(); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loadState(true); });
 
 loadState();
-appState.poll = setInterval(() => { if (!document.hidden && !dialogElement.open) loadState(true); }, 2500);
+appState.poll = setInterval(() => { if (!document.hidden && !dialogElement.open && !shareDialogElement.open && !importDialogElement.open) loadState(true); }, 2500);

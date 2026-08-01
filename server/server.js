@@ -1158,7 +1158,11 @@ const wss = new WebSocket.Server({
 server.on('upgrade', (request, socket, head) => {
   const parsedUrl = url.parse(request.url, true);
   const pathname = stripContextPath(parsedUrl.pathname);
-  const { secret, host, port } = parsedUrl.query;
+  const authorization = String(request.headers.authorization || '');
+  const bearerSecret = authorization.toLowerCase().startsWith('bearer ') ? authorization.slice(7).trim() : '';
+  const secret = parsedUrl.query.secret || request.headers['x-secret'] || bearerSecret;
+  const host = parsedUrl.query.host || request.headers['x-target-host'];
+  const port = parsedUrl.query.port || request.headers['x-target-port'];
   const user = secret ? get('SELECT * FROM users WHERE secret = ? AND active = 1', [secret]) : null;
 
   if (pathname === '/tunnel' && user && host && port) {

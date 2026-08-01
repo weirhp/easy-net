@@ -39,7 +39,7 @@ func TestDialContextUsesEasyNetProtocolAndRelaysBytes(t *testing.T) {
 	}))
 	defer server.Close()
 
-	transport, err := New("ws"+strings.TrimPrefix(server.URL, "http")+"/tunnel", "token")
+	transport, err := New(Config{URL: "ws" + strings.TrimPrefix(server.URL, "http") + "/tunnel", Secret: "token", AllowInsecure: true, LegacyQueryAuth: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,11 +67,84 @@ func TestDialContextUsesEasyNetProtocolAndRelaysBytes(t *testing.T) {
 }
 
 func TestNewDefaultsToSecureWebSocket(t *testing.T) {
-	transport, err := New("example.com", "token")
+	transport, err := New(Config{URL: "example.com", Secret: "token"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if transport.url.Scheme != "wss" || transport.url.Path != "/tunnel" {
 		t.Fatalf("unexpected normalized URL: %s", transport.url.String())
+	}
+}
+
+func TestSecureHeaderProtocolDoesNotPutSecretInURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("secret") != "" || strings.Contains(r.URL.RawQuery, "token") {
+			http.Error(w, "secret leaked into query", http.StatusBadRequest)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer token" || r.Header.Get("X-Target-Host") != "example.com" || r.Header.Get("X-Target-Port") != "443" {
+			http.Error(w, "missing secure tunnel headers", http.StatusBadRequest)
+			return
+		}
+		conn, err := (&gorillaws.Upgrader{}).Upgrade(w, r, nil)
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	defer server.Close()
+
+	transport, err := New(Config{URL: "ws" + strings.TrimPrefix(server.URL, "http") + "/tunnel", Secret: "token", AllowInsecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := transport.DialContext(context.Background(), "tcp", "example.com:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+}
+
+func TestNewRejectsInsecureAndCredentialURLs(t *testing.T) {
+	if _, err := New(Config{URL: "ws://example.com", Secret: "token"}); err == nil {
+		t.Fatal("expected insecure websocket rejection")
+	}
+	if _, err := New(Config{URL: "wss://user:password@example.com", Secret: "token"}); err == nil {
+		t.Fatal("expected URL credentials rejection")
+	}
+	if _, err := New(Config{URL: "wss://example.com/tunnel?secret=leaked", Secret: "token"}); err == nil {
+		t.Fatal("expected query secret rejection")
+	}
+}
+
+func TestTransportCloseClosesActiveConnections(t *testing.T) {
+	serverClosed := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := (&gorillaws.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+		serverClosed <- struct{}{}
+	}))
+	defer server.Close()
+	transport, err := New(Config{URL: "ws" + strings.TrimPrefix(server.URL, "http"), Secret: "token", AllowInsecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := transport.DialContext(context.Background(), "tcp", "example.com:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-serverClosed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active websocket connection was not closed")
+	}
+	if _, err := conn.Write([]byte("closed")); err == nil {
+		t.Fatal("write unexpectedly succeeded after transport close")
 	}
 }

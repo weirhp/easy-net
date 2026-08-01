@@ -15,8 +15,34 @@ permissions:
   contents: read
 
 jobs:
+  validate:
+    name: Tests and security checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: client-lite/go.mod
+          cache-dependency-path: client-lite/go.sum
+
+      - name: Run tests with race detector
+        working-directory: client-lite
+        run: go test -race -count=1 ./...
+
+      - name: Run static analysis
+        working-directory: client-lite
+        run: go vet ./...
+
+      - name: Scan reachable vulnerabilities
+        working-directory: client-lite
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
   windows:
     name: Windows x64
+    needs: validate
     runs-on: windows-latest
     steps:
       - name: Check out repository
@@ -43,6 +69,7 @@ jobs:
 
   macos:
     name: macOS ${{ matrix.arch }}
+    needs: validate
     strategy:
       fail-fast: false
       matrix:

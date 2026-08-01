@@ -14,6 +14,8 @@ import (
 	"easy-net/client-lite/internal/transport"
 )
 
+const maxConcurrentClients = 256
+
 type Server struct {
 	address   string
 	transport transport.Transport
@@ -81,9 +83,21 @@ func (s *Server) acceptLoop(ctx context.Context) {
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
+			if ctx.Err() == nil {
+				s.running.Store(false)
+				if s.cancel != nil {
+					s.cancel()
+				}
+				_ = s.transport.Close()
+			}
 			return
 		}
 		s.mu.Lock()
+		if len(s.clients) >= maxConcurrentClients {
+			s.mu.Unlock()
+			_ = conn.Close()
+			continue
+		}
 		s.clients[conn] = struct{}{}
 		s.mu.Unlock()
 		s.wg.Add(1)

@@ -3,8 +3,11 @@ package model
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"strings"
 )
+
+const CurrentConfigVersion = 2
 
 type ProxyType string
 
@@ -21,6 +24,7 @@ const (
 )
 
 type Config struct {
+	Version  int       `json:"version"`
 	Profiles []Profile `json:"profiles"`
 }
 
@@ -36,8 +40,10 @@ type Profile struct {
 }
 
 type WebSocketConfig struct {
-	URL       string `json:"url"`
-	SecretRef string `json:"secretRef,omitempty"`
+	URL             string `json:"url"`
+	SecretRef       string `json:"secretRef,omitempty"`
+	AllowInsecure   bool   `json:"allowInsecure,omitempty"`
+	LegacyQueryAuth bool   `json:"legacyQueryAuth,omitempty"`
 }
 
 type SSHConfig struct {
@@ -103,6 +109,26 @@ func (p Profile) Validate() error {
 	case ProxyTypeWebSocket:
 		if p.WebSocket == nil || strings.TrimSpace(p.WebSocket.URL) == "" {
 			return fmt.Errorf("WebSocket 地址不能为空")
+		}
+		rawURL := strings.TrimSpace(p.WebSocket.URL)
+		if !strings.Contains(rawURL, "://") {
+			rawURL = "wss://" + rawURL
+		}
+		parsed, err := url.Parse(rawURL)
+		if err != nil || parsed.Host == "" {
+			return fmt.Errorf("WebSocket 地址无效")
+		}
+		if parsed.User != nil {
+			return fmt.Errorf("WebSocket 地址不能包含用户名或密码")
+		}
+		if parsed.Query().Has("secret") {
+			return fmt.Errorf("WebSocket 地址不能包含 secret 参数，请在密钥字段中单独填写")
+		}
+		if parsed.Scheme != "wss" && parsed.Scheme != "https" && parsed.Scheme != "ws" && parsed.Scheme != "http" {
+			return fmt.Errorf("WebSocket 地址必须使用 wss:// 或 ws://")
+		}
+		if (parsed.Scheme == "ws" || parsed.Scheme == "http") && !p.WebSocket.AllowInsecure {
+			return fmt.Errorf("未加密的 ws:// 连接必须明确允许")
 		}
 		if p.WebSocket.SecretRef == "" {
 			return fmt.Errorf("WebSocket 密钥不能为空")

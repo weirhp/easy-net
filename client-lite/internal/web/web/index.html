@@ -17,6 +17,7 @@
         </div>
       </div>
       <div class="header-actions">
+        <button class="button secondary" data-import>导入配置</button>
         <button class="button secondary" data-command="stop-all">停止全部</button>
         <button class="button secondary" data-command="start-all">启动全部</button>
         <button class="button primary" data-add="websocket">添加 WebSocket</button>
@@ -82,6 +83,14 @@
               <span>密钥</span>
               <input id="field-ws-secret" type="password" autocomplete="new-password">
               <small class="edit-secret-hint">编辑时留空将保留已有密钥</small>
+            </label>
+            <label class="check-field full">
+              <input id="field-ws-insecure" type="checkbox">
+              <span>允许未加密的 ws:// 连接（仅建议用于可信内网）</span>
+            </label>
+            <label class="check-field full">
+              <input id="field-ws-legacy-query" type="checkbox">
+              <span>兼容旧服务端（密钥会出现在连接 URL 中）</span>
             </label>
           </div>
         </section>
@@ -153,6 +162,54 @@
         <button type="button" class="button primary" id="confirm-action-dialog">确认</button>
       </div>
     </div>
+  </dialog>
+
+  <dialog id="share-dialog" aria-labelledby="share-dialog-title">
+    <div class="dialog-shell">
+      <div class="dialog-header">
+        <div>
+          <p class="eyebrow">分享配置</p>
+          <h2 id="share-dialog-title">复制加密分享码</h2>
+        </div>
+        <button type="button" class="icon-button" id="close-share-dialog" aria-label="关闭分享窗口">×</button>
+      </div>
+      <div class="dialog-body">
+        <label class="field full">
+          <span>加密分享码</span>
+          <textarea id="share-code" rows="8" readonly spellcheck="false"></textarea>
+        </label>
+        <p class="share-warning">分享码包含连接密钥、SSH 密码或私钥。任何拿到分享码的人都能导入并使用，请只发送给可信的人。</p>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="button secondary" id="dismiss-share-dialog">关闭</button>
+        <button type="button" class="button primary" id="copy-share-code">复制分享码</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="import-dialog" aria-labelledby="import-dialog-title">
+    <form id="import-form" class="dialog-shell">
+      <div class="dialog-header">
+        <div>
+          <p class="eyebrow">快速导入</p>
+          <h2 id="import-dialog-title">粘贴分享码</h2>
+        </div>
+        <button type="button" class="icon-button" id="close-import-dialog" aria-label="关闭导入窗口">×</button>
+      </div>
+      <div class="dialog-body">
+        <label class="field full">
+          <span>Easy-Net Lite 分享码</span>
+          <textarea id="import-share-code" rows="8" required spellcheck="false" placeholder="ENL1.…"></textarea>
+        </label>
+        <p class="share-note">导入后会自动避开已有本地端口，并默认关闭自动启动。你可以检查配置后再手动启动。</p>
+        <p class="form-error" id="import-error" role="alert" hidden></p>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="button secondary" id="cancel-import-dialog">取消</button>
+        <button type="button" class="button secondary" id="paste-share-code">粘贴剪贴板</button>
+        <button type="submit" class="button primary" id="import-profile">导入配置</button>
+      </div>
+    </form>
   </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>

@@ -1,6 +1,11 @@
 package secretstore
 
-import "github.com/zalando/go-keyring"
+import (
+	"errors"
+	"os"
+
+	"github.com/zalando/go-keyring"
+)
 
 const serviceName = "Easy-Net Lite"
 
@@ -11,6 +16,10 @@ type Store interface {
 }
 
 type Keyring struct{}
+
+func IsNotFound(err error) bool {
+	return err != nil && (errors.Is(err, keyring.ErrNotFound) || os.IsNotExist(err))
+}
 
 func NewKeyring() *Keyring { return &Keyring{} }
 

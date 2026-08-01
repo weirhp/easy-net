@@ -7,6 +7,7 @@ Easy-Net Lite 是一个使用本地网页管理界面、常驻系统托盘的轻
 - SSH 密码、OpenSSH 私钥和加密私钥。
 - Windows Credential Manager 与 macOS Keychain 凭据存储。
 - 多代理配置、独立启停、自动启动和系统托盘。
+- 加密分享码，可复制分享并快速导入 WebSocket 或 SSH 配置。
 - 启动后自动打开 `http://127.0.0.1:18081` 管理页面。
 
 ## 使用
@@ -20,6 +21,8 @@ Easy-Net Lite 是一个使用本地网页管理界面、常驻系统托盘的轻
 把浏览器或其它应用的 SOCKS5 代理设置成该地址即可。域名会原样交给远端解析。
 
 SSH 首次连接会显示服务器 SHA-256 指纹。请与服务器管理员确认后再信任；如果服务器指纹发生变化，程序会拒绝连接。
+
+每个代理卡片都可以生成 `ENL1.` 开头的加密分享码。分享码会包含完整认证信息和 SSH 服务器指纹，导入时自动选择未被配置占用的本地端口，并默认关闭自动启动。分享码本身属于敏感凭据，任何获得它的人都可以导入并使用，只应发送给可信的人。
 
 关闭网页不会停止代理。可通过托盘菜单再次打开管理页；请通过托盘菜单“退出程序”完全关闭。
 
@@ -45,7 +48,7 @@ go vet ./...
 
 ## Windows 构建
 
-只需要 Go 1.23 或更高版本，不需要 GCC、Node.js 或 WebView。执行：
+只需要项目指定的 Go 1.26.5 工具链，不需要 GCC、Node.js 或 WebView。执行：
 
 ```powershell
 .\scripts\build-windows.ps1
@@ -62,7 +65,7 @@ chmod +x scripts/build-macos.sh
 ./scripts/build-macos.sh
 ```
 
-输出：`dist/Easy-Net Lite.app`。Intel 和 Apple Silicon 应分别在对应构建机上构建，最低支持 macOS 11.0；构建脚本会同时校验应用清单和二进制的最低系统版本。面向外部分发时还需要 Developer ID 签名和 Apple 公证。
+输出：`dist/Easy-Net Lite.app`。Intel 和 Apple Silicon 应分别在对应构建机上构建，最低支持 macOS 12.0；构建脚本会同时校验应用清单和二进制的最低系统版本。面向外部分发时还需要 Developer ID 签名和 Apple 公证。
 
 ## GitHub Release
 
@@ -81,5 +84,5 @@ git push origin client-lite-v0.1.1
 
 - 本地入口为免认证 SOCKS5，因此强制只监听 `127.0.0.1` 或 `::1`。
 - 仅支持 SOCKS5 `CONNECT` 和 TCP，不支持 UDP ASSOCIATE。
-- WebSocket 兼容现有 Easy-Net `/tunnel?secret=&host=&port=` 服务端协议，同时也发送 `Authorization: Bearer` 请求头，便于服务端后续迁移到不在 URL 中携带密钥的协议。
-- `wss://` 会正常校验证书；如使用 `ws://`，传输内容和密钥不会得到 TLS 保护。
+- WebSocket 默认通过 `Authorization`、`X-Target-Host` 和 `X-Target-Port` 请求头传递连接信息，不在 URL 中携带密钥；旧服务端可在配置中显式启用查询参数兼容模式。
+- `wss://` 会正常校验证书；`ws://` 默认被拒绝，只有在配置中显式允许后才能使用。

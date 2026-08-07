@@ -108,15 +108,25 @@ http://你的服务器:3100/easy-net/admin
 
 `serverWsUrl` 和 `localPort` 来自管理端“系统设置”，`secret` 来自当前用户。`workerHost` 仅用于兼容旧客户端。
 
-## 旧版接口
-
 ### WebSocket 代理接口 `/tunnel`
 
-客户端仍然使用 WebSocket 连接：
+新客户端默认使用请求头传递认证和目标信息，避免连接密钥出现在 URL：
+
+```text
+Authorization: Bearer 用户连接密钥
+X-Target-Host: 目标主机
+X-Target-Port: 目标端口
+```
+
+旧客户端仍可使用查询参数兼容接口：
 
 ```text
 ws://服务器/easy-net/tunnel?secret=用户连接密钥&host=目标主机&port=目标端口
 ```
+
+生产环境应使用 `wss://`。查询参数兼容模式可能让密钥出现在反向代理访问日志中，只建议用于尚未支持请求头协议的旧服务端或旧客户端。
+
+## 旧版接口
 
 ### 统计接口 `/stats`
 

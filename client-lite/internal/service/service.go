@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,10 +33,13 @@ type SecretValues struct {
 }
 
 type ProfileState struct {
-	Profile  model.Profile
-	Running  bool
-	Starting bool
-	Error    string
+	Profile          model.Profile
+	Running          bool
+	Starting         bool
+	Error            string
+	ConnectionStatus string
+	ConnectionError  string
+	ConnectionAt     time.Time
 }
 
 type Service struct {
@@ -47,6 +52,14 @@ type Service struct {
 	errors       map[string]string
 	starting     map[string]context.CancelFunc
 	profileLocks map[string]*sync.Mutex
+	connections  map[string]connectionHealth
+	revisions    map[string]uint64
+}
+
+type connectionHealth struct {
+	Status    string
+	Error     string
+	CheckedAt time.Time
 }
 
 func New(store *config.Store, secrets secretstore.Store) (*Service, error) {
@@ -58,6 +71,7 @@ func New(store *config.Store, secrets secretstore.Store) (*Service, error) {
 		store: store, secrets: secrets, cfg: cfg,
 		instances: make(map[string]*proxy.Server), errors: make(map[string]string),
 		starting: make(map[string]context.CancelFunc), profileLocks: make(map[string]*sync.Mutex),
+		connections: make(map[string]connectionHealth), revisions: make(map[string]uint64),
 	}, nil
 }
 
@@ -72,8 +86,10 @@ func (s *Service) States() []ProfileState {
 	for _, profile := range s.cfg.Profiles {
 		server := s.instances[profile.ID]
 		_, starting := s.starting[profile.ID]
+		connection := s.connections[profile.ID]
 		states = append(states, ProfileState{
 			Profile: profile.Clone(), Running: server != nil && server.Running(), Starting: starting, Error: s.errors[profile.ID],
+			ConnectionStatus: connection.Status, ConnectionError: connection.Error, ConnectionAt: connection.CheckedAt,
 		})
 	}
 	sort.SliceStable(states, func(i, j int) bool { return states[i].Profile.Name < states[j].Profile.Name })
@@ -303,6 +319,8 @@ func (s *Service) Upsert(incoming model.Profile, values SecretValues) error {
 	oldServer := s.instances[profile.ID]
 	delete(s.instances, profile.ID)
 	delete(s.starting, profile.ID)
+	delete(s.connections, profile.ID)
+	s.revisions[profile.ID]++
 	s.errors[profile.ID] = ""
 	s.mu.Unlock()
 
@@ -400,6 +418,8 @@ func (s *Service) Delete(id string) error {
 	delete(s.instances, id)
 	delete(s.starting, id)
 	delete(s.errors, id)
+	delete(s.connections, id)
+	delete(s.revisions, id)
 	s.mu.Unlock()
 	if server != nil {
 		server.Stop()
@@ -429,6 +449,8 @@ func (s *Service) Start(id string) error {
 		return fmt.Errorf("代理配置不存在")
 	}
 	profile := s.cfg.Profiles[index].Clone()
+	s.revisions[id]++
+	revision := s.revisions[id]
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	s.starting[id] = cancel
 	s.errors[id] = ""
@@ -437,7 +459,9 @@ func (s *Service) Start(id string) error {
 	outbound, err := s.buildTransport(profile)
 	var server *proxy.Server
 	if err == nil {
-		server = proxy.NewServer(profile.ListenAddress(), outbound)
+		server = proxy.NewServer(profile.ListenAddress(), outbound, func(_ string, dialErr error) {
+			s.recordConnectionResult(id, revision, profile, dialErr)
+		})
 		err = server.Start(ctx)
 	}
 	canceled := ctx.Err() != nil
@@ -471,11 +495,147 @@ func (s *Service) Stop(id string) {
 	server := s.instances[id]
 	delete(s.instances, id)
 	delete(s.starting, id)
+	s.revisions[id]++
 	s.errors[id] = ""
 	s.mu.Unlock()
 	if server != nil {
 		server.Stop()
 	}
+}
+
+func (s *Service) TestConnection(id string) error {
+	op := s.profileLock(id)
+	op.Lock()
+	defer op.Unlock()
+
+	s.mu.Lock()
+	index := profileIndex(s.cfg, id)
+	if index < 0 {
+		s.mu.Unlock()
+		return fmt.Errorf("代理配置不存在")
+	}
+	profile := s.cfg.Profiles[index].Clone()
+	s.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	outbound, err := s.buildTransport(profile)
+	if err == nil {
+		err = outbound.Start(ctx)
+	}
+	if err == nil && profile.Type == model.ProxyTypeWebSocket {
+		err = testWebSocketConnection(ctx, profile, outbound)
+	}
+	if outbound != nil {
+		_ = outbound.Close()
+	}
+
+	result := newConnectionHealth(profile, err)
+	s.mu.Lock()
+	s.connections[id] = result
+	s.mu.Unlock()
+	if err == nil {
+		return nil
+	}
+	log.Printf("[Easy-Net Lite] 配置 %q 测试连接失败：%s", profile.Name, result.Error)
+	if profile.Type == model.ProxyTypeWebSocket {
+		return errors.New(result.Error)
+	}
+	return err
+}
+
+func (s *Service) recordConnectionResult(id string, revision uint64, profile model.Profile, err error) {
+	result := newConnectionHealth(profile, err)
+	s.mu.Lock()
+	if s.revisions[id] != revision {
+		s.mu.Unlock()
+		return
+	}
+	previous := s.connections[id]
+	s.connections[id] = result
+	shouldLog := err != nil && (previous.Error != result.Error || result.CheckedAt.Sub(previous.CheckedAt) >= 30*time.Second)
+	s.mu.Unlock()
+	if shouldLog {
+		log.Printf("[Easy-Net Lite] 配置 %q 远端连接失败：%s", profile.Name, result.Error)
+	}
+}
+
+func newConnectionHealth(profile model.Profile, err error) connectionHealth {
+	result := connectionHealth{Status: "success", CheckedAt: time.Now().UTC()}
+	if err != nil {
+		result.Status = "error"
+		result.Error = friendlyConnectionError(profile, err)
+	}
+	return result
+}
+
+func friendlyConnectionError(profile model.Profile, err error) string {
+	message := err.Error()
+	if profile.Type != model.ProxyTypeWebSocket {
+		return message
+	}
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "http 401"), strings.Contains(lower, "http 403"):
+		return "WebSocket 认证失败，请检查连接密钥"
+	case strings.Contains(lower, "http 404"):
+		return "WebSocket 服务端拒绝连接（HTTP 404），请检查地址、密钥以及“兼容旧服务端”设置"
+	case strings.Contains(lower, "x509"), strings.Contains(lower, "certificate"):
+		return "WebSocket TLS 证书校验失败，请检查域名和证书配置"
+	case strings.Contains(lower, "timeout"), strings.Contains(lower, "deadline exceeded"):
+		return "连接 WebSocket 服务端超时，请检查网络或服务端状态"
+	case strings.Contains(lower, "no such host"):
+		return "无法解析 WebSocket 服务端域名，请检查地址或 DNS"
+	case strings.Contains(lower, "connection refused"), strings.Contains(lower, "actively refused"), strings.Contains(lower, "connectex"):
+		return "WebSocket 服务端拒绝连接，请检查服务是否启动及端口是否正确"
+	default:
+		return "WebSocket 连接失败：" + message
+	}
+}
+
+func testWebSocketConnection(ctx context.Context, profile model.Profile, outbound transport.Transport) error {
+	target, err := websocketProbeTarget(profile.WebSocket.URL)
+	if err != nil {
+		return err
+	}
+	conn, err := outbound.DialContext(ctx, "tcp", target)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(900 * time.Millisecond)); err != nil {
+		return err
+	}
+	probe := make([]byte, 1)
+	_, err = conn.Read(probe)
+	if err == nil {
+		return nil
+	}
+	var timeout net.Error
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return nil
+	}
+	return fmt.Errorf("连接建立后被服务端关闭：%w", err)
+}
+
+func websocketProbeTarget(rawURL string) (string, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if !strings.Contains(rawURL, "://") {
+		rawURL = "wss://" + rawURL
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Hostname() == "" {
+		return "", fmt.Errorf("WebSocket 地址无效")
+	}
+	port := u.Port()
+	if port == "" {
+		if u.Scheme == "ws" || u.Scheme == "http" {
+			port = "80"
+		} else {
+			port = "443"
+		}
+	}
+	return net.JoinHostPort(u.Hostname(), port), nil
 }
 
 func (s *Service) StartAuto() {

@@ -1,6 +1,16 @@
 "use strict";
 
-const appState = { profiles: [], token: "", busy: new Set(), editingId: "", kind: "websocket", poll: null, warningsShown: false };
+const appState = {
+  profiles: [],
+  token: "",
+  busy: new Set(),
+  editingId: "",
+  kind: "websocket",
+  poll: null,
+  warningsShown: false,
+  initialized: false,
+  notifiedFailures: new Map(),
+};
 const $ = (selector) => document.querySelector(selector);
 const profilesElement = $("#profiles");
 const dialogElement = $("#profile-dialog");
@@ -31,12 +41,31 @@ function showConfirmModal({ kind = "确认操作", title = "请确认", message,
   detailsElement.textContent = details;
   detailsElement.hidden = !details;
   const confirmButton = $("#confirm-action-dialog");
+	$("#cancel-action-dialog").hidden = false;
   confirmButton.textContent = confirmText;
   confirmButton.classList.toggle("primary", !danger);
   confirmButton.classList.toggle("danger-solid", danger);
   actionDialogElement.showModal();
   $("#cancel-action-dialog").focus();
   return new Promise((resolve) => { actionDialogResolver = resolve; });
+}
+
+function showMessageModal({ kind = "操作结果", title, message, details = "", isError = false }) {
+	if (actionDialogResolver) finishActionDialog(false);
+	$("#action-dialog-kind").textContent = kind;
+	$("#action-dialog-title").textContent = title;
+	$("#action-dialog-message").textContent = message;
+	const detailsElement = $("#action-dialog-details");
+	detailsElement.textContent = details;
+	detailsElement.hidden = !details;
+	const confirmButton = $("#confirm-action-dialog");
+	confirmButton.textContent = "关闭";
+	confirmButton.classList.toggle("primary", !isError);
+	confirmButton.classList.toggle("danger-solid", isError);
+	$("#cancel-action-dialog").hidden = true;
+	actionDialogElement.showModal();
+	confirmButton.focus();
+	return new Promise((resolve) => { actionDialogResolver = resolve; });
 }
 
 async function api(path, options = {}) {
@@ -53,10 +82,13 @@ async function api(path, options = {}) {
 async function loadState(silent = false) {
   try {
     const data = await api("/api/state");
+	const previousProfiles = appState.profiles;
     appState.profiles = data.profiles || [];
     appState.token = data.token;
     $("#config-path").textContent = `Easy-Net Lite ${data.version || "dev"} · 配置文件：${data.configPath}`;
     renderProfiles();
+	if (appState.initialized) notifyConnectionFailures(previousProfiles, appState.profiles);
+	appState.initialized = true;
     if (!silent && !appState.warningsShown && data.warnings?.length) {
       appState.warningsShown = true;
       showToast(data.warnings.join("；"), true);
@@ -66,9 +98,38 @@ async function loadState(silent = false) {
   }
 }
 
+function notifyConnectionFailures(previousProfiles, currentProfiles) {
+	const now = Date.now();
+	for (const item of currentProfiles) {
+		const profileID = item.profile.id;
+		if (item.connectionStatus !== "error" || !item.connectionAt) {
+			appState.notifiedFailures.delete(profileID);
+			continue;
+		}
+		const previous = previousProfiles.find((entry) => entry.profile.id === item.profile.id);
+		if (previous?.connectionAt === item.connectionAt && previous?.connectionStatus === "error") continue;
+		const message = `${item.profile.name}：${item.connectionError || "远端连接失败"}`;
+		const notified = appState.notifiedFailures.get(profileID);
+		if (notified?.message === message && now - notified.at < 30000) continue;
+		appState.notifiedFailures.set(profileID, { message, at: now });
+		showToast(message, true);
+	}
+}
+
+function formatConnectionTime(value) {
+	if (!value) return "";
+	const date = new Date(value);
+	if (Number.isNaN(date.getTime())) return "";
+	const now = new Date();
+	const sameDay = date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+	return new Intl.DateTimeFormat("zh-CN", sameDay
+		? { hour: "2-digit", minute: "2-digit", second: "2-digit" }
+		: { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
 function renderProfiles() {
   const running = appState.profiles.filter((item) => item.running).length;
-  $("#summary").textContent = `${appState.profiles.length} 个配置 · ${running} 个运行中`;
+  $("#summary").textContent = `${appState.profiles.length} 个配置 · ${running} 个本地监听`;
   if (!appState.profiles.length) {
     profilesElement.innerHTML = `<div class="empty-state"><h2>还没有代理配置</h2><p>使用右上角按钮添加 WebSocket 或 SSH 代理。</p></div>`;
     return;
@@ -78,10 +139,16 @@ function renderProfiles() {
     const busy = appState.busy.has(profile.id);
     const type = profile.type === "ssh" ? "SSH" : "WebSocket";
     const statusClass = busy || item.starting ? "busy" : item.running ? "running" : "";
-    const statusText = item.starting ? "正在连接" : busy ? "正在处理" : item.running ? "运行中" : "已停止";
+    const statusText = item.starting ? "正在启动" : busy ? "正在处理" : item.running ? "本地监听中" : "已停止";
     const endpoint = profile.type === "ssh" ? `${profile.ssh.host}:${profile.ssh.port}` : profile.websocket.url;
     const primaryAction = item.running ? "stop" : "start";
     const primaryText = item.running ? "停止" : "启动";
+	const connectionTime = formatConnectionTime(item.connectionAt);
+	const connectionStatus = item.connectionStatus === "success"
+		? `<span class="connection-health success">远端连接正常${connectionTime ? ` · ${escapeHTML(connectionTime)}` : ""}</span>`
+		: item.connectionStatus === "error"
+			? `<span class="connection-health error-health">远端连接失败${connectionTime ? ` · ${escapeHTML(connectionTime)}` : ""}</span>`
+			: `<span class="connection-health untested">远端尚未验证</span>`;
     return `<article class="profile-card">
       <div class="card-main">
         <div>
@@ -92,10 +159,13 @@ function renderProfiles() {
             ${profile.autoStart ? `<span class="badge">自动启动</span>` : ""}
           </div>
           <p class="endpoint">SOCKS5 ${escapeHTML(profile.listenHost)}:${profile.listenPort} · ${escapeHTML(endpoint)}</p>
-          ${item.error ? `<p class="error">最近错误：${escapeHTML(item.error)}</p>` : ""}
+		  <div class="connection-row">${connectionStatus}</div>
+		  ${item.error ? `<p class="error">启动错误：${escapeHTML(item.error)}</p>` : ""}
+		  ${item.connectionError ? `<p class="error connection-error">连接失败：${escapeHTML(item.connectionError)}</p>` : ""}
         </div>
         <div class="card-actions">
           <button class="button ${item.running ? "secondary" : "start"}" data-profile-action="${primaryAction}" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${primaryText}</button>
+		  <button class="button secondary" data-profile-action="test" data-id="${escapeHTML(profile.id)}" ${busy || item.starting ? "disabled" : ""}>测试连接</button>
           <button class="button secondary" data-profile-action="share" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>分享</button>
           <button class="button secondary" data-profile-action="edit" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>编辑</button>
           <button class="button danger" data-profile-action="delete" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>删除</button>
@@ -122,6 +192,10 @@ function openProfileDialog(kind, id = "") {
   $("#field-auto-start").checked = profile ? profile.autoStart : true;
   if (kind === "websocket") {
     $("#field-ws-url").value = profile?.websocket?.url || "";
+	$("#field-ws-secret").placeholder = id ? "已保存；如需更换请重新输入" : "请输入连接密钥";
+	$("#ws-secret-hint").textContent = id
+		? "当前密钥已保存在系统凭据库。留空会继续使用原密钥；服务端密钥有变化时必须重新填写。"
+		: "密钥只保存在系统凭据库，不会写入配置文件。";
 	$("#field-ws-insecure").checked = Boolean(profile?.websocket?.allowInsecure);
 	$("#field-ws-legacy-query").checked = Boolean(profile?.websocket?.legacyQueryAuth);
 	$("#field-ws-url").required = true;
@@ -214,7 +288,7 @@ async function saveProfile(event) {
     }
     await api("/api/profiles", { method: "POST", body: JSON.stringify(request) });
     dialogElement.close();
-    showToast("配置已保存");
+    showToast(appState.kind === "websocket" ? "配置已保存，请使用“测试连接”确认地址和密钥" : "配置已保存");
     await loadState();
   } catch (error) {
     errorElement.textContent = error.message;
@@ -242,6 +316,54 @@ async function profileAction(action, id) {
     finally { appState.busy.delete(id); await loadState(true); }
     return;
   }
+	if (action === "test") {
+		appState.busy.add(id);
+		renderProfiles();
+		try {
+			await api(`/api/profiles/${encodeURIComponent(id)}/test`, { method: "POST" });
+			await loadState(true);
+			await showMessageModal({
+				kind: "连接测试",
+				title: "连接测试成功",
+				message: item.profile.type === "ssh" ? "SSH 地址和认证信息验证通过。" : "WebSocket 地址、密钥和隧道握手验证通过。",
+				details: "配置卡片已更新最近连接状态，现在可以通过本地 SOCKS5 端口使用代理。"
+			});
+		} catch (error) {
+			await loadState(true);
+			if (error.data?.code === "ssh_host_unknown") {
+				const trusted = await showConfirmModal({
+					kind: "SSH 安全确认",
+					title: "确认服务器指纹",
+					message: `这是首次连接 ${error.data.address}。请与服务器管理员核对下面的 SHA-256 指纹。`,
+					details: error.data.fingerprint,
+					confirmText: "信任并重新测试"
+				});
+				if (trusted) {
+					try {
+						await api(`/api/profiles/${encodeURIComponent(id)}/trust`, { method: "POST", body: JSON.stringify({ fingerprint: error.data.fingerprint }) });
+						await api(`/api/profiles/${encodeURIComponent(id)}/test`, { method: "POST" });
+						await loadState(true);
+						await showMessageModal({ kind: "连接测试", title: "连接测试成功", message: "SSH 指纹和认证信息验证通过。" });
+					} catch (trustError) {
+						await loadState(true);
+						await showMessageModal({ kind: "连接测试", title: "连接测试失败", message: "SSH 连接仍未建立。", details: trustError.message, isError: true });
+					}
+				}
+			} else {
+				await showMessageModal({
+					kind: "连接测试",
+					title: "连接测试失败",
+					message: "未能通过该配置建立远端连接，请按下面的提示修正后重试。",
+					details: error.message,
+					isError: true
+				});
+			}
+		} finally {
+			appState.busy.delete(id);
+			await loadState(true);
+		}
+		return;
+	}
   if (action === "delete") {
     const confirmed = await showConfirmModal({
       kind: "删除配置",
@@ -260,7 +382,7 @@ async function profileAction(action, id) {
   renderProfiles();
   try {
     await api(`/api/profiles/${encodeURIComponent(id)}/${action}`, { method: "POST" });
-    showToast(action === "start" ? "代理已启动" : "代理已停止");
+    showToast(action === "start" ? "本地 SOCKS5 监听已启动；远端状态会在首次使用或测试后更新" : "代理已停止");
   } catch (error) {
     if (error.data?.code === "ssh_host_unknown") {
       const trusted = await showConfirmModal({
@@ -370,7 +492,7 @@ async function globalCommand(command) {
   }
   try {
     await api(`/api/${command}`, { method: "POST" });
-    showToast(command === "start-all" ? "已执行启动全部" : "所有代理已停止");
+    showToast(command === "start-all" ? "已启动全部本地监听；请查看各配置的远端状态" : "所有代理已停止");
     await loadState();
   } catch (error) { showToast(error.message, true); }
 }
@@ -380,6 +502,8 @@ function showToast(message, isError = false) {
   if (!toast) return;
   toast.textContent = message;
   toast.classList.toggle("error-toast", isError);
+	toast.setAttribute("role", isError ? "alert" : "status");
+	toast.setAttribute("aria-live", isError ? "assertive" : "polite");
   toast.hidden = false;
   clearTimeout(showToast.timer);
   showToast.timer = setTimeout(() => { toast.hidden = true; }, 3600);

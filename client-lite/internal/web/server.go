@@ -76,10 +76,13 @@ type sshInput struct {
 }
 
 type profileView struct {
-	Profile  publicProfile `json:"profile"`
-	Running  bool          `json:"running"`
-	Starting bool          `json:"starting"`
-	Error    string        `json:"error,omitempty"`
+	Profile          publicProfile `json:"profile"`
+	Running          bool          `json:"running"`
+	Starting         bool          `json:"starting"`
+	Error            string        `json:"error,omitempty"`
+	ConnectionStatus string        `json:"connectionStatus,omitempty"`
+	ConnectionError  string        `json:"connectionError,omitempty"`
+	ConnectionAt     string        `json:"connectionAt,omitempty"`
 }
 
 type publicProfile struct {
@@ -283,6 +286,8 @@ func (s *Server) handleProfileAction(w http.ResponseWriter, r *http.Request) {
 		err = s.service.Start(id)
 	case "stop":
 		s.service.Stop(id)
+	case "test":
+		err = s.service.TestConnection(id)
 	case "trust":
 		var body struct {
 			Fingerprint string `json:"fingerprint"`
@@ -542,7 +547,14 @@ func toProfileView(state service.ProfileState) profileView {
 	if profile.SSH != nil {
 		view.SSH = &publicSSH{Host: profile.SSH.Host, Port: profile.SSH.Port, Username: profile.SSH.Username, AuthType: profile.SSH.AuthType, HasPassword: profile.SSH.AuthType == model.AuthTypePassword && profile.SSH.PasswordRef != "", HasPrivateKey: profile.SSH.PrivateKeyPath != "", HasPassphrase: profile.SSH.AuthType == model.AuthTypePrivateKey && profile.SSH.PassphraseRef != ""}
 	}
-	return profileView{Profile: view, Running: state.Running, Starting: state.Starting, Error: state.Error}
+	connectionAt := ""
+	if !state.ConnectionAt.IsZero() {
+		connectionAt = state.ConnectionAt.Format(time.RFC3339)
+	}
+	return profileView{
+		Profile: view, Running: state.Running, Starting: state.Starting, Error: state.Error,
+		ConnectionStatus: state.ConnectionStatus, ConnectionError: state.ConnectionError, ConnectionAt: connectionAt,
+	}
 }
 
 func methodNotAllowed(w http.ResponseWriter) {

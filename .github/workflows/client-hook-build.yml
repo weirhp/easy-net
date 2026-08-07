@@ -1,0 +1,62 @@
+name: Build Easy-Net Hook
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - client-hook/**
+      - .github/workflows/client-hook-build.yml
+  pull_request:
+    paths:
+      - client-hook/**
+      - .github/workflows/client-hook-build.yml
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows ${{ matrix.arch }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - x64
+          - Win32
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Configure
+        shell: pwsh
+        run: cmake -S client-hook -B client-hook/build -A ${{ matrix.arch }}
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build client-hook/build --config Release --parallel
+
+      - name: Test
+        shell: pwsh
+        run: ctest --test-dir client-hook/build -C Release --output-on-failure
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $package = "client-hook/package/Easy-Net-Hook-${{ matrix.arch }}"
+          New-Item -ItemType Directory -Force $package | Out-Null
+          Copy-Item client-hook/build/Release/easy-net-hook.exe -Destination $package
+          Copy-Item client-hook/build/Release/easy-net-hook.dll -Destination $package
+          Copy-Item client-hook/build/Release/THIRD-PARTY-LICENSES -Destination $package -Recurse
+          Copy-Item client-hook/README.md -Destination $package
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Easy-Net-Hook-${{ matrix.arch }}
+          path: client-hook/package/Easy-Net-Hook-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 14

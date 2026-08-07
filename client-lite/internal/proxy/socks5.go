@@ -16,19 +16,26 @@ import (
 
 const maxConcurrentClients = 256
 
+type DialResultHandler func(target string, err error)
+
 type Server struct {
-	address   string
-	transport transport.Transport
-	listener  net.Listener
-	cancel    context.CancelFunc
-	running   atomic.Bool
-	mu        sync.Mutex
-	clients   map[net.Conn]struct{}
-	wg        sync.WaitGroup
+	address      string
+	transport    transport.Transport
+	onDialResult DialResultHandler
+	listener     net.Listener
+	cancel       context.CancelFunc
+	running      atomic.Bool
+	mu           sync.Mutex
+	clients      map[net.Conn]struct{}
+	wg           sync.WaitGroup
 }
 
-func NewServer(address string, outbound transport.Transport) *Server {
-	return &Server{address: address, transport: outbound, clients: make(map[net.Conn]struct{})}
+func NewServer(address string, outbound transport.Transport, handlers ...DialResultHandler) *Server {
+	server := &Server{address: address, transport: outbound, clients: make(map[net.Conn]struct{})}
+	if len(handlers) > 0 {
+		server.onDialResult = handlers[0]
+	}
+	return server
 }
 
 func (s *Server) Start(ctx context.Context) error {
@@ -127,6 +134,9 @@ func (s *Server) handle(ctx context.Context, local net.Conn) {
 	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	remote, err := s.transport.DialContext(dialCtx, "tcp", target)
 	cancel()
+	if s.onDialResult != nil {
+		s.onDialResult(target, err)
+	}
 	if err != nil {
 		writeReply(local, 0x05)
 		return

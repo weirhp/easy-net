@@ -1161,11 +1161,12 @@ server.on('upgrade', (request, socket, head) => {
   const authorization = String(request.headers.authorization || '');
   const bearerSecret = authorization.toLowerCase().startsWith('bearer ') ? authorization.slice(7).trim() : '';
   const secret = parsedUrl.query.secret || request.headers['x-secret'] || bearerSecret;
-  const host = parsedUrl.query.host || request.headers['x-target-host'];
-  const port = parsedUrl.query.port || request.headers['x-target-port'];
+  const host = String(parsedUrl.query.host || request.headers['x-target-host'] || '').trim();
+  const port = Number(parsedUrl.query.port || request.headers['x-target-port']);
+  const validTarget = host.length > 0 && host.length <= 253 && Number.isInteger(port) && port >= 1 && port <= 65535;
   const user = secret ? get('SELECT * FROM users WHERE secret = ? AND active = 1', [secret]) : null;
 
-  if (pathname === '/tunnel' && user && host && port) {
+  if (pathname === '/tunnel' && user && validTarget) {
     const usage = getUserUsage(user.id);
     const totalToday = usage.today.uploadBytes + usage.today.downloadBytes;
     const totalMonth = usage.month.uploadBytes + usage.month.downloadBytes;
@@ -1179,6 +1180,7 @@ server.on('upgrade', (request, socket, head) => {
 
     wss.handleUpgrade(request, socket, head, ws => {
       ws.clientUser = user;
+      ws.clientTarget = { host, port };
       wss.emit('connection', ws, request);
     });
   } else {
@@ -1196,8 +1198,7 @@ server.on('upgrade', (request, socket, head) => {
 
 wss.on('connection', (ws, req) => {
   const user = ws.clientUser;
-  const parsedUrl = url.parse(req.url, true);
-  const { host, port } = parsedUrl.query;
+  const { host, port } = ws.clientTarget;
 
   try {
     console.log(`[Easy-Net] [连接] 用户 [${user.username}] 请求网络连接 -> ${host}:${port}`);
@@ -1241,33 +1242,35 @@ wss.on('connection', (ws, req) => {
     const targetSocket = net.connect(port, host, () => {
       console.log(`[Easy-Net] [连接] 成功与目标建立连接 -> ${host}:${port}`);
       targetSocket.setKeepAlive(true, 30000);
-
-      ws.on('message', data => {
-        if (targetSocket.writable) {
-          targetSocket.write(data);
-          if (!addTraffic(user.id, data.length, 0, user)) closeForQuota();
-        }
-      });
-
-      targetSocket.on('data', data => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(data, err => {
-            if (err) {
-              runtimeStats.websocketErrors++;
-              console.error(`[Easy-Net] [错误] WebSocket 发送失败 -> ${host}:${port}: ${err.message}`);
-              cleanupConnection();
-              return;
-            }
-            resumeTargetAfterBackpressure(targetSocket);
-          });
-
-          const bufferedAmount = updateWsBackpressureStats();
-          if (bufferedAmount >= WS_BACKPRESSURE_LIMIT_BYTES) pauseTargetForBackpressure(targetSocket);
-          if (!addTraffic(user.id, 0, data.length, user)) closeForQuota();
-        }
-      });
     });
     ws.targetSocket = targetSocket;
+
+    // WebSocket 握手完成后客户端可能立即发送首包。必须在等待目标 TCP
+    // connect 事件之前注册监听；net.Socket 会安全地缓存连接完成前的 write。
+    ws.on('message', data => {
+      if (targetSocket.writable) {
+        targetSocket.write(data);
+        if (!addTraffic(user.id, data.length, 0, user)) closeForQuota();
+      }
+    });
+
+    targetSocket.on('data', data => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(data, err => {
+          if (err) {
+            runtimeStats.websocketErrors++;
+            console.error(`[Easy-Net] [错误] WebSocket 发送失败 -> ${host}:${port}: ${err.message}`);
+            cleanupConnection();
+            return;
+          }
+          resumeTargetAfterBackpressure(targetSocket);
+        });
+
+        const bufferedAmount = updateWsBackpressureStats();
+        if (bufferedAmount >= WS_BACKPRESSURE_LIMIT_BYTES) pauseTargetForBackpressure(targetSocket);
+        if (!addTraffic(user.id, 0, data.length, user)) closeForQuota();
+      }
+    });
 
     ws.isAlive = true;
     ws.on('pong', () => {

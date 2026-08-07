@@ -1,7 +1,10 @@
 package service
 
 import (
+	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +16,8 @@ import (
 	"easy-net/client-lite/internal/config"
 	"easy-net/client-lite/internal/model"
 	"easy-net/client-lite/internal/sharecode"
+
+	"github.com/gorilla/websocket"
 )
 
 type memorySecrets struct {
@@ -276,4 +281,91 @@ func TestStatesRemainResponsiveWhileProfileStarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Stop("slow")
+}
+
+func TestConnectionRecordsFriendlyWebSocketAuthenticationFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/tunnel"
+
+	secrets := &memorySecrets{values: map[string]string{}}
+	svc, err := New(config.NewStoreAt(filepath.Join(t.TempDir(), "config.json")), secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := model.Profile{ID: "ws-auth", Name: "WS auth", Type: model.ProxyTypeWebSocket, ListenHost: "127.0.0.1", ListenPort: 1080, WebSocket: &model.WebSocketConfig{URL: wsURL, AllowInsecure: true}}
+	if err := svc.Upsert(profile, SecretValues{WebSocketSecret: "wrong-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	err = svc.TestConnection("ws-auth")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 404") || !strings.Contains(err.Error(), "密钥") {
+		t.Fatalf("unexpected connection test error: %v", err)
+	}
+	state := svc.States()[0]
+	if state.ConnectionStatus != "error" || state.ConnectionAt.IsZero() || state.ConnectionError != err.Error() {
+		t.Fatalf("unexpected connection state: %#v", state)
+	}
+}
+
+func TestConnectionRecordsSuccessfulWebSocketProbe(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer valid-secret" || r.Header.Get("X-Target-Host") == "" || r.Header.Get("X-Target-Port") == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/tunnel"
+
+	secrets := &memorySecrets{values: map[string]string{}}
+	svc, err := New(config.NewStoreAt(filepath.Join(t.TempDir(), "config.json")), secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := model.Profile{ID: "ws-ok", Name: "WS ok", Type: model.ProxyTypeWebSocket, ListenHost: "127.0.0.1", ListenPort: 1080, WebSocket: &model.WebSocketConfig{URL: wsURL, AllowInsecure: true}}
+	if err := svc.Upsert(profile, SecretValues{WebSocketSecret: "valid-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.TestConnection("ws-ok"); err != nil {
+		t.Fatal(err)
+	}
+	state := svc.States()[0]
+	if state.ConnectionStatus != "success" || state.ConnectionAt.IsZero() || state.ConnectionError != "" {
+		t.Fatalf("unexpected connection state: %#v", state)
+	}
+}
+
+func TestDialResultsUpdateConnectionHealth(t *testing.T) {
+	secrets := &memorySecrets{values: map[string]string{}}
+	svc, err := New(config.NewStoreAt(filepath.Join(t.TempDir(), "config.json")), secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := model.Profile{ID: "health", Name: "health", Type: model.ProxyTypeWebSocket, ListenHost: "127.0.0.1", ListenPort: 1080, WebSocket: &model.WebSocketConfig{URL: "wss://example.com/tunnel"}}
+	if err := svc.Upsert(profile, SecretValues{WebSocketSecret: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+	svc.mu.Lock()
+	svc.revisions[profile.ID] = 2
+	svc.mu.Unlock()
+	svc.recordConnectionResult(profile.ID, 2, profile, context.DeadlineExceeded)
+	state := svc.States()[0]
+	if state.ConnectionStatus != "error" || !strings.Contains(state.ConnectionError, "超时") {
+		t.Fatalf("unexpected failed connection health: %#v", state)
+	}
+	svc.recordConnectionResult(profile.ID, 2, profile, nil)
+	state = svc.States()[0]
+	if state.ConnectionStatus != "success" || state.ConnectionError != "" {
+		t.Fatalf("unexpected successful connection health: %#v", state)
+	}
 }

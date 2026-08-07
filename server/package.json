@@ -4,7 +4,8 @@
   "description": "WebSocket SOCKS5 Proxy Server for Render/HuggingFace",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test server.test.js"
   },
   "dependencies": {
     "sql.js": "^1.14.1",

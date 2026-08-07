@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"testing"
@@ -17,6 +18,14 @@ func (e *echoTransport) DialContext(_ context.Context, _ string, address string)
 	client, server := net.Pipe()
 	go func() { defer server.Close(); _, _ = io.Copy(server, server) }()
 	return client, nil
+}
+
+type failingTransport struct{ err error }
+
+func (f *failingTransport) Start(context.Context) error { return nil }
+func (f *failingTransport) Close() error                { return nil }
+func (f *failingTransport) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, f.err
 }
 
 func TestSOCKS5ConnectAndRelay(t *testing.T) {
@@ -86,5 +95,52 @@ func TestSOCKS5RejectsUnsupportedAuthentication(t *testing.T) {
 	}
 	if err := <-done; err == nil {
 		t.Fatal("expected handshake error")
+	}
+}
+
+func TestSOCKS5ReportsDialFailure(t *testing.T) {
+	wantErr := errors.New("remote authentication failed")
+	results := make(chan struct {
+		target string
+		err    error
+	}, 1)
+	server := NewServer("127.0.0.1:0", &failingTransport{err: wantErr}, func(target string, err error) {
+		results <- struct {
+			target string
+			err    error
+		}{target: target, err: err}
+	})
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	conn, err := net.DialTimeout("tcp", server.Address(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, _ = conn.Write([]byte{0x05, 0x01, 0x00})
+	methodReply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, methodReply); err != nil {
+		t.Fatal(err)
+	}
+	request := append([]byte{0x05, 0x01, 0x00, 0x03, 0x0b}, []byte("example.com")...)
+	request = append(request, 0x01, 0xbb)
+	_, _ = conn.Write(request)
+	connectReply := make([]byte, 10)
+	if _, err := io.ReadFull(conn, connectReply); err != nil {
+		t.Fatal(err)
+	}
+	if connectReply[1] != 0x05 {
+		t.Fatalf("unexpected connect reply: %v", connectReply)
+	}
+	select {
+	case result := <-results:
+		if result.target != "example.com:443" || !errors.Is(result.err, wantErr) {
+			t.Fatalf("unexpected dial result: %#v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("dial result was not reported")
 	}
 }

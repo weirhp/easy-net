@@ -1,10 +1,10 @@
 # Easy-Net Hook
 
-Easy-Net Hook 是一个 Windows 概念验证版应用代理器。它通过 Microsoft Detours 在用户主动启动的目标进程内 Hook Winsock API，把阻塞式 TCP `connect`/`WSAConnect` 改写为 SOCKS5 `CONNECT`。
+Easy-Net Hook 是一个轻量 Windows 应用代理器。它通过 Microsoft Detours 在目标进程内 Hook Winsock API，把 TCP `connect`、`WSAConnect` 和 `ConnectEx` 改写为 SOCKS5 `CONNECT`。
 
-它直接复用 Easy-Net Lite、SSH `-D` 或其他客户端提供的 SOCKS5 端口，例如 `127.0.0.1:1080`。它不注入已运行的进程，不安装驱动、不提权，也不修改目标程序文件。
+它直接复用 Easy-Net Lite、SSH `-D` 或其他客户端提供的 SOCKS5 端口，例如 `127.0.0.1:1080`。它既能启动新进程，也能用 `--pid` 附加到已运行进程；不安装驱动，也不修改目标程序文件。
 
-> 这是边界刻意收紧的 MVP，不是 Proxifier 的完整替代品。请先阅读“当前边界”，尤其是异步连接和 DNS 部分。
+> 这仍不是 Proxifier 的完整替代品。请先阅读“当前边界”，尤其是运行中进程、UDP 和 DNS 部分。
 
 ## 构建
 
@@ -88,19 +88,79 @@ IPv6 DNS 地址带端口时使用方括号：
 --dns [2001:4860:4860::8888]:53
 ```
 
+附加到已运行的进程：
+
+```powershell
+.\easy-net-hook.exe `
+  --proxy 127.0.0.1:1080 `
+  --pid 12345
+```
+
+只能附加相同架构的进程：x64 包对应 x64 目标，Win32 包对应 32 位目标。目标权限高于启动器时，需要以管理员身份运行启动器。注入只影响之后创建的新连接，注入前已经建立的 TCP、HTTP/2 或 WebSocket 连接不会迁移到代理。
+
+### ChatGPT Windows 客户端
+
+先在任务管理器“详细信息”页查找 ChatGPT 的 PID，或者用 PowerShell：
+
+```powershell
+Get-Process *ChatGPT* | Select-Object Id, ProcessName, Path
+```
+
+对每个 x64 ChatGPT 进程执行一次附加：
+
+```powershell
+Get-Process *ChatGPT* | ForEach-Object {
+  .\easy-net-hook.exe --proxy 127.0.0.1:1080 --pid $_.Id
+}
+```
+
+为了避免登录长连接在注入前已经直连，测试时可先断开网络、启动 ChatGPT、完成上述附加，再恢复网络。若应用已经联网，附加后需要在应用内触发重新登录或重新连接；完全退出进程会同时卸载 Hook。
+
+默认不配置 `--dns`，让 ChatGPT 继续使用 Windows 系统 DNS。若需要指定 DNS，可在每次附加时添加 `--dns 223.5.5.5:53`。ChatGPT 更新后进程结构可能变化；如果出现 `msedgewebview2.exe` 等独立网络子进程，需要对实际发起连接的同架构进程单独附加。
+
+ChatGPT/Chromium 可能优先尝试 QUIC。外部 UDP 默认被拒绝后通常会回退 TCP；如果客户端版本没有回退，就仍然无法联网。不要为了“能打开”直接使用 `--allow-udp-direct`，否则 QUIC 会绕过 SOCKS5。
+
+#### AppContainer/CIG 安全回退
+
+`--pid` 会在注入前检测 AppContainer、仅允许 Microsoft/Store 签名 DLL 的策略，以及禁止 Detours 动态跳板的策略。检测到这些保护时不会尝试绕过，而是停止并提示使用网页模式：
+
+```powershell
+.\easy-net-hook.exe `
+  --proxy 127.0.0.1:1080 `
+  --chatgpt-web `
+  --detach
+```
+
+网页模式不需要 `easy-net-hook.dll`，会自动查找 Edge 或 Chrome，并使用独立的 `%LOCALAPPDATA%\EasyNetHook\ChatGPTProfile` 用户目录打开 `https://chatgpt.com/`。它通过 Chromium 原生 `--proxy-server=socks5://...` 代理 URL 请求，强制 URL 域名交给 SOCKS5 代理解析，同时禁用 QUIC 和常见后台联网。
+
+指定浏览器路径：
+
+```powershell
+.\easy-net-hook.exe `
+  --proxy 127.0.0.1:1080 `
+  --chatgpt-web `
+  --browser-path "C:\Program Files\Google\Chrome\Application\chrome.exe"
+```
+
+Chromium 的 SOCKS5 模式不支持用户名密码，因此网页模式只能连接本机免认证 SOCKS5 端口。网页模式使用代理端 DNS，`--dns` 会被忽略；它只提供 ChatGPT 网页功能，不包含 Windows 客户端的桌面集成功能。
+
 默认行为：
 
 - 向目标进程及其通过 `CreateProcessA/W` 创建的子进程加载 Hook。
-- 外部阻塞式 TCP 连接通过 SOCKS5。
+- 外部阻塞式 TCP 连接直接在原套接字中完成 SOCKS5 握手。
+- 非阻塞 `connect` 和 `ConnectEx` 使用按连接创建的本地回环中继，保留事件和 IOCP 完成语义。
 - 回环地址连接直接放行，保证目标程序仍可访问本机服务。
 - 未配置 `--dns` 时使用 Windows 系统 DNS；配置后 Hook `getaddrinfo` 和 `GetAddrInfoW`，向指定 DNS 服务查询 A/AAAA。
-- 不支持的异步连接和 UDP 会失败，不会自动降级为直连。
+- UDP 默认失败，不会自动降级为直连。
 - 启动器等待目标退出，并返回目标程序的退出码。
 
 可用参数：
 
 ```text
 --no-children       不向子进程加载 Hook
+--pid PID           附加到一个已运行的同架构进程
+--chatgpt-web       不注入，使用独立 Edge/Chrome SOCKS5 会话打开 ChatGPT
+--browser-path PATH 为网页模式指定 Edge/Chrome 可执行文件
 --dns IP[:PORT]     指定普通 DNS 服务；端口默认 53
 --allow-udp-direct  允许 UDP 直连；这会产生代理泄漏风险
 --detach            启动成功后立即退出启动器
@@ -115,11 +175,11 @@ SOCKS5 地址目前必须使用字面 IP：
 
 ## 当前边界
 
-### 仅支持阻塞式 TCP
+### 异步 TCP
 
-当前版本支持 `connect` 和常规参数形式的 `WSAConnect`。非阻塞套接字以及通过 `ConnectEx` 发起的异步连接会返回 `WSAEOPNOTSUPP`。如果应用绕过了非阻塞状态跟踪，而连接代理时才暴露异步状态，Hook 会关闭该套接字以阻止后续数据误发。现代 Chromium/Electron、部分游戏和高并发客户端经常使用异步网络 API，因此可能无法使用本版本。
+当前版本支持阻塞和非阻塞 `connect`、常规参数形式的 `WSAConnect`，以及通过 `WSAIoctl` 获取的 `ConnectEx`。异步路径不会伪造 `OVERLAPPED` 或完成端口事件，而是让原始 Winsock 调用连接到一个临时回环监听端口，再由一个轻量工作线程连接 SOCKS5 并双向转发。因此应用仍从 Windows 收到原生的事件/IOCP 完成。
 
-不能通过“先连 SOCKS5，再悄悄把异步状态还给应用”的简单方式解决这个问题。完整实现需要代理 `ConnectEx`、Overlapped I/O、事件通知、完成端口和取消语义，是下一阶段的核心工作。
+阻塞连接不创建中继线程；每个存活的异步 TCP 连接会占用两个中继套接字和一个 128 KiB 保留栈的工作线程。这适合 ChatGPT、浏览器等连接数较少且连接复用率高的客户端，不适合成千上万短连接的压力代理。SOCKS5 目标连接失败时，本地连接可能已经完成，应用随后会收到连接重置；这与直接连接的报错时序不完全相同。
 
 ### UDP 默认阻断
 
@@ -137,10 +197,12 @@ DNS 查询是目标进程到指定 DNS 服务的普通 UDP/TCP 流量，会绕�
 
 ### 进程与兼容性
 
-- 只能代理由启动器新建的进程，不附加到已经运行的进程。
+- `--pid` 采用标准远程 `LoadLibraryW` 注入，只影响注入后新建的连接；已经建立的连接仍保持原路径。
+- 附加目标和启动器必须同为 x86 或同为 x64。ARM64 目标目前不支持。
+- `--pid` 会预检 AppContainer、二进制签名策略和动态代码策略。受保护进程不会继续注入，ChatGPT 可改用 `--chatgpt-web`。
 - 子进程若传入完全自定义的环境块，可能不会继承代理配置。
 - 64 位父进程启动 32 位子进程（或反向）时，子进程自动注入会失败；完整产品需要同时部署两种架构并使用辅助注入器。
-- 未覆盖 `CreateProcessAsUser`、Windows 服务、UWP/商店应用、受保护进程以及内核态网络。
+- 未覆盖商店应用的包激活入口、`CreateProcessAsUser`、Windows 服务、受保护/AppContainer 进程以及内核态网络；普通全信任打包桌面进程只能在启动后尝试 `--pid`。
 - 反作弊、EDR 和安全软件可能阻止或检测 API Hook。
 - 目标程序不应再单独配置同一个 SOCKS5，否则可能形成双重代理。
 
@@ -155,12 +217,12 @@ DNS 查询是目标进程到指定 DNS 服务的普通 UDP/TCP 流量，会绕�
 
 ```text
 easy-net-hook.exe
-  └─ DetourCreateProcessWithDllExW
+  ├─ DetourCreateProcessWithDllExW（启动新进程）
+  └─ --pid + LoadLibraryW（附加运行中进程）
        └─ 目标程序 + easy-net-hook.dll
-            ├─ Hook connect / WSAConnect
-            ├─ 连接本地 SOCKS5
-            ├─ 执行认证与 CONNECT 握手
-            └─ 原套接字继续承载应用 TCP 数据
+            ├─ Hook connect / WSAConnect / ConnectEx
+            ├─ 阻塞 TCP：原套接字直接连接 SOCKS5
+            └─ 异步 TCP：临时回环中继连接 SOCKS5
 ```
 
 Detours 以 MIT 许可证使用，构建产物会包含其许可证文件。

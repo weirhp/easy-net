@@ -3,17 +3,25 @@
 #include <mswsock.h>
 #include <windows.h>
 #include <detours.h>
+#include <tlhelp32.h>
+#include <process.h>
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cwchar>
 #include <cstring>
 #include <iterator>
+#include <memory>
+#include <new>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
+#include "config_ipc.h"
 #include "dns_resolver.h"
 #include "socks5_protocol.h"
 
@@ -38,11 +46,23 @@ Config g_config;
 char g_dll_path[MAX_PATH]{};
 SRWLOCK g_socket_state_lock = SRWLOCK_INIT;
 std::unordered_set<SOCKET> g_nonblocking_sockets;
+struct ProxiedPeer {
+    sockaddr_storage original{};
+    int original_length = 0;
+    sockaddr_storage relay{};
+    int relay_length = 0;
+};
+SRWLOCK g_proxied_peer_lock = SRWLOCK_INIT;
+std::unordered_map<SOCKET, ProxiedPeer> g_proxied_peers;
 SRWLOCK g_address_info_lock = SRWLOCK_INIT;
 std::unordered_set<PADDRINFOA> g_custom_address_info_a;
 std::unordered_set<PADDRINFOW> g_custom_address_info_w;
-PVOID volatile g_real_connect_ex = nullptr;
-PVOID volatile g_real_wsa_send_msg = nullptr;
+PVOID volatile g_fallback_connect_ex = nullptr;
+PVOID volatile g_fallback_wsa_send_msg = nullptr;
+LPFN_CONNECTEX RealConnectEx = nullptr;
+LPFN_WSASENDMSG RealWSASendMsg = nullptr;
+std::atomic<bool> g_connect_ex_hook_attached{false};
+std::atomic<bool> g_wsa_send_msg_hook_attached{false};
 
 decltype(&connect) RealConnect = connect;
 decltype(&WSAConnect) RealWSAConnect = WSAConnect;
@@ -56,6 +76,7 @@ decltype(&WSAEventSelect) RealWSAEventSelect = WSAEventSelect;
 decltype(&WSAAsyncSelect) RealWSAAsyncSelect = WSAAsyncSelect;
 decltype(&WSAIoctl) RealWSAIoctl = WSAIoctl;
 decltype(&closesocket) RealCloseSocket = closesocket;
+decltype(&getpeername) RealGetPeerName = getpeername;
 decltype(&getaddrinfo) RealGetAddrInfoA = getaddrinfo;
 decltype(&freeaddrinfo) RealFreeAddrInfoA = freeaddrinfo;
 decltype(&GetAddrInfoW) RealGetAddrInfoW = GetAddrInfoW;
@@ -105,6 +126,33 @@ bool ParseBoolean(const wchar_t* name, bool fallback) {
     return value != L"0" && value != L"false" && value != L"FALSE";
 }
 
+bool ReadMappedConfig(easy_net::ipc::ConfigBlock& block) {
+    const std::wstring name = easy_net::ipc::ConfigMappingName(GetCurrentProcessId());
+    const HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, name.c_str());
+    if (mapping == nullptr) {
+        return false;
+    }
+    const void* view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(block));
+    if (view == nullptr) {
+        CloseHandle(mapping);
+        return false;
+    }
+    std::memcpy(&block, view, sizeof(block));
+    UnmapViewOfFile(view);
+    CloseHandle(mapping);
+    return easy_net::ipc::IsValid(block);
+}
+
+void PublishAttachedEnvironment(const easy_net::ipc::ConfigBlock& block) {
+    SetEnvironmentVariableW(L"EASY_NET_HOOK_PROXY", block.proxy);
+    SetEnvironmentVariableW(L"EASY_NET_HOOK_USERNAME", block.username);
+    SetEnvironmentVariableW(L"EASY_NET_HOOK_PASSWORD", block.password);
+    SetEnvironmentVariableW(L"EASY_NET_HOOK_DNS", block.dns);
+    SetEnvironmentVariableW(L"EASY_NET_HOOK_CHILDREN", block.inject_children != 0 ? L"1" : L"0");
+    SetEnvironmentVariableW(L"EASY_NET_HOOK_ALLOW_UDP_DIRECT",
+                            block.allow_udp_direct != 0 ? L"1" : L"0");
+}
+
 bool ParseProxyAddress(const std::wstring& value, sockaddr_storage& output, int& output_length) {
     std::wstring host;
     std::wstring port_text;
@@ -151,20 +199,32 @@ bool ParseProxyAddress(const std::wstring& value, sockaddr_storage& output, int&
 }
 
 BOOL CALLBACK InitializeConfig(PINIT_ONCE, PVOID, PVOID*) {
-    const std::wstring proxy = ReadEnvironment(L"EASY_NET_HOOK_PROXY");
+    easy_net::ipc::ConfigBlock attached;
+    const bool attached_process = ReadMappedConfig(attached);
+    if (attached_process) {
+        PublishAttachedEnvironment(attached);
+    }
+
+    const std::wstring proxy = attached_process ? attached.proxy
+                                                : ReadEnvironment(L"EASY_NET_HOOK_PROXY");
     if (proxy.empty()) {
         return TRUE;
     }
 
     g_config.enabled = true;
-    g_config.inject_children = ParseBoolean(L"EASY_NET_HOOK_CHILDREN", true);
-    g_config.allow_udp_direct = ParseBoolean(L"EASY_NET_HOOK_ALLOW_UDP_DIRECT", false);
-    const std::wstring dns_server = ReadEnvironment(L"EASY_NET_HOOK_DNS");
+    g_config.inject_children = attached_process ? attached.inject_children != 0
+                                                : ParseBoolean(L"EASY_NET_HOOK_CHILDREN", true);
+    g_config.allow_udp_direct = attached_process ? attached.allow_udp_direct != 0
+                                                 : ParseBoolean(L"EASY_NET_HOOK_ALLOW_UDP_DIRECT", false);
+    const std::wstring dns_server = attached_process ? attached.dns
+                                                     : ReadEnvironment(L"EASY_NET_HOOK_DNS");
     g_config.custom_dns = !dns_server.empty();
     g_config.dns_valid = !g_config.custom_dns ||
                          easy_net::dns::ParseEndpoint(dns_server, g_config.dns_server);
-    g_config.username = ToUtf8(ReadEnvironment(L"EASY_NET_HOOK_USERNAME"));
-    g_config.password = ToUtf8(ReadEnvironment(L"EASY_NET_HOOK_PASSWORD"));
+    g_config.username = ToUtf8(attached_process ? std::wstring(attached.username)
+                                                : ReadEnvironment(L"EASY_NET_HOOK_USERNAME"));
+    g_config.password = ToUtf8(attached_process ? std::wstring(attached.password)
+                                                : ReadEnvironment(L"EASY_NET_HOOK_PASSWORD"));
     g_config.valid = ParseProxyAddress(proxy, g_config.proxy, g_config.proxy_length) &&
                      g_config.username.size() <= 255 && g_config.password.size() <= 255;
     if (!g_config.valid) {
@@ -859,9 +919,254 @@ int NegotiateSocks5(SOCKET socket, const sockaddr* destination, int destination_
     return ReceiveExact(socket, ignored.data(), ignored.size()) ? 0 : WSAECONNABORTED;
 }
 
+void RememberProxiedPeer(SOCKET socket,
+                         const sockaddr* original,
+                         int original_length,
+                         const sockaddr* relay,
+                         int relay_length) {
+    ProxiedPeer peer;
+    peer.original_length = (std::min)(original_length, static_cast<int>(sizeof(peer.original)));
+    peer.relay_length = (std::min)(relay_length, static_cast<int>(sizeof(peer.relay)));
+    std::memcpy(&peer.original, original, static_cast<std::size_t>(peer.original_length));
+    std::memcpy(&peer.relay, relay, static_cast<std::size_t>(peer.relay_length));
+    AcquireSRWLockExclusive(&g_proxied_peer_lock);
+    g_proxied_peers[socket] = peer;
+    ReleaseSRWLockExclusive(&g_proxied_peer_lock);
+}
+
+bool FindProxiedPeer(SOCKET socket, ProxiedPeer& peer) {
+    AcquireSRWLockShared(&g_proxied_peer_lock);
+    const auto iterator = g_proxied_peers.find(socket);
+    const bool found = iterator != g_proxied_peers.end();
+    if (found) {
+        peer = iterator->second;
+    }
+    ReleaseSRWLockShared(&g_proxied_peer_lock);
+    return found;
+}
+
+void ForgetProxiedPeer(SOCKET socket) {
+    AcquireSRWLockExclusive(&g_proxied_peer_lock);
+    g_proxied_peers.erase(socket);
+    ReleaseSRWLockExclusive(&g_proxied_peer_lock);
+}
+
+struct RelayContext {
+    std::atomic<long> references{2};
+    std::atomic<SOCKET> listener{INVALID_SOCKET};
+    sockaddr_storage destination{};
+    int destination_length = 0;
+};
+
+struct RelayTicket {
+    RelayContext* context = nullptr;
+    sockaddr_storage endpoint{};
+    int endpoint_length = 0;
+};
+
+void ReleaseRelayContext(RelayContext* context) {
+    if (context != nullptr && context->references.fetch_sub(1) == 1) {
+        delete context;
+    }
+}
+
+void CloseRelayListener(RelayContext* context) {
+    const SOCKET listener = context->listener.exchange(INVALID_SOCKET);
+    if (listener != INVALID_SOCKET) {
+        RealCloseSocket(listener);
+    }
+}
+
+bool PumpRelayDirection(SOCKET source, SOCKET destination, bool& source_open) {
+    std::array<char, 32 * 1024> buffer{};
+    const int received = RealRecv(source, buffer.data(), static_cast<int>(buffer.size()), 0);
+    if (received > 0) {
+        return SendAll(destination, reinterpret_cast<const std::uint8_t*>(buffer.data()),
+                       static_cast<std::size_t>(received));
+    }
+    source_open = false;
+    shutdown(destination, SD_SEND);
+    return received == 0;
+}
+
+void PumpRelay(SOCKET application, SOCKET proxy) {
+    bool application_open = true;
+    bool proxy_open = true;
+    while (application_open || proxy_open) {
+        fd_set readable;
+        FD_ZERO(&readable);
+        if (application_open) {
+            FD_SET(application, &readable);
+        }
+        if (proxy_open) {
+            FD_SET(proxy, &readable);
+        }
+        const int ready = select(0, &readable, nullptr, nullptr, nullptr);
+        if (ready == SOCKET_ERROR) {
+            break;
+        }
+        if (application_open && FD_ISSET(application, &readable) != 0 &&
+            !PumpRelayDirection(application, proxy, application_open)) {
+            break;
+        }
+        if (proxy_open && FD_ISSET(proxy, &readable) != 0 &&
+            !PumpRelayDirection(proxy, application, proxy_open)) {
+            break;
+        }
+    }
+}
+
+unsigned __stdcall RelayThread(void* parameter) {
+    auto* context = static_cast<RelayContext*>(parameter);
+    const SOCKET listener = context->listener.load();
+    const SOCKET application = listener == INVALID_SOCKET
+                                   ? INVALID_SOCKET
+                                   : accept(listener, nullptr, nullptr);
+    CloseRelayListener(context);
+    if (application == INVALID_SOCKET) {
+        ReleaseRelayContext(context);
+        return 0;
+    }
+
+    const Config& config = GetConfig();
+    const auto* proxy_address = reinterpret_cast<const sockaddr*>(&config.proxy);
+    const SOCKET proxy = WSASocketW(proxy_address->sa_family, SOCK_STREAM, IPPROTO_TCP,
+                                    nullptr, 0, 0);
+    if (proxy == INVALID_SOCKET ||
+        RealConnect(proxy, proxy_address, config.proxy_length) != 0 ||
+        NegotiateSocks5(proxy, reinterpret_cast<const sockaddr*>(&context->destination),
+                        context->destination_length) != 0) {
+        if (proxy != INVALID_SOCKET) {
+            RealCloseSocket(proxy);
+        }
+        RealCloseSocket(application);
+        ReleaseRelayContext(context);
+        return 0;
+    }
+
+    PumpRelay(application, proxy);
+    RealCloseSocket(proxy);
+    RealCloseSocket(application);
+    ReleaseRelayContext(context);
+    return 0;
+}
+
+bool CreateLoopbackListener(int family,
+                            SOCKET& listener,
+                            sockaddr_storage& endpoint,
+                            int& endpoint_length) {
+    listener = WSASocketW(family, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, 0);
+    if (listener == INVALID_SOCKET) {
+        return false;
+    }
+    int result = SOCKET_ERROR;
+    if (family == AF_INET) {
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        result = bind(listener, reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+    } else if (family == AF_INET6) {
+        sockaddr_in6 address{};
+        address.sin6_family = AF_INET6;
+        address.sin6_addr = in6addr_loopback;
+        result = bind(listener, reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+    }
+    if (result != 0 || listen(listener, 1) != 0) {
+        RealCloseSocket(listener);
+        listener = INVALID_SOCKET;
+        return false;
+    }
+    endpoint_length = sizeof(endpoint);
+    if (getsockname(listener, reinterpret_cast<sockaddr*>(&endpoint), &endpoint_length) != 0) {
+        RealCloseSocket(listener);
+        listener = INVALID_SOCKET;
+        return false;
+    }
+    return true;
+}
+
+bool StartRelay(const sockaddr* destination, int destination_length, RelayTicket& ticket) {
+    if (destination == nullptr ||
+        (destination->sa_family != AF_INET && destination->sa_family != AF_INET6) ||
+        destination_length <= 0 ||
+        destination_length > static_cast<int>(sizeof(sockaddr_storage))) {
+        WSASetLastError(WSAEINVAL);
+        return false;
+    }
+    auto* context = new (std::nothrow) RelayContext();
+    if (context == nullptr) {
+        WSASetLastError(WSA_NOT_ENOUGH_MEMORY);
+        return false;
+    }
+    context->destination_length = destination_length;
+    std::memcpy(&context->destination, destination, static_cast<std::size_t>(destination_length));
+
+    SOCKET listener = INVALID_SOCKET;
+    if (!CreateLoopbackListener(destination->sa_family, listener,
+                                ticket.endpoint, ticket.endpoint_length)) {
+        ReleaseRelayContext(context);
+        ReleaseRelayContext(context);
+        return false;
+    }
+    context->listener.store(listener);
+    constexpr SIZE_T stack_reservation = 128 * 1024;
+    const auto thread_value = _beginthreadex(nullptr, stack_reservation, RelayThread, context,
+                                             STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+    const HANDLE thread = reinterpret_cast<HANDLE>(thread_value);
+    if (thread == nullptr) {
+        CloseRelayListener(context);
+        ReleaseRelayContext(context);
+        ReleaseRelayContext(context);
+        WSASetLastError(WSA_NOT_ENOUGH_MEMORY);
+        return false;
+    }
+    CloseHandle(thread);
+    ticket.context = context;
+    return true;
+}
+
+void CancelRelay(RelayTicket& ticket) {
+    if (ticket.context != nullptr) {
+        CloseRelayListener(ticket.context);
+    }
+}
+
+void ReleaseRelayTicket(RelayTicket& ticket) {
+    ReleaseRelayContext(ticket.context);
+    ticket.context = nullptr;
+}
+
 int FailSocket(int error) {
     WSASetLastError(error);
     return SOCKET_ERROR;
+}
+
+int ConnectThroughRelay(SOCKET socket, const sockaddr* destination, int destination_length) {
+    ProxiedPeer existing;
+    if (FindProxiedPeer(socket, existing)) {
+        return RealConnect(socket, reinterpret_cast<const sockaddr*>(&existing.relay),
+                           existing.relay_length);
+    }
+
+    RelayTicket ticket;
+    if (!StartRelay(destination, destination_length, ticket)) {
+        return SOCKET_ERROR;
+    }
+    RememberProxiedPeer(socket, destination, destination_length,
+                        reinterpret_cast<const sockaddr*>(&ticket.endpoint), ticket.endpoint_length);
+    const int result = RealConnect(socket, reinterpret_cast<const sockaddr*>(&ticket.endpoint),
+                                   ticket.endpoint_length);
+    const int error = result == SOCKET_ERROR ? WSAGetLastError() : 0;
+    if (result == SOCKET_ERROR && error != WSAEWOULDBLOCK && error != WSAEINPROGRESS &&
+        error != WSAEALREADY) {
+        CancelRelay(ticket);
+        ForgetProxiedPeer(socket);
+    }
+    ReleaseRelayTicket(ticket);
+    if (result == SOCKET_ERROR) {
+        WSASetLastError(error);
+    }
+    return result;
 }
 
 int ProxyConnect(SOCKET socket, const sockaddr* destination, int destination_length) {
@@ -888,8 +1193,7 @@ int ProxyConnect(SOCKET socket, const sockaddr* destination, int destination_len
         return RealConnect(socket, destination, destination_length);
     }
     if (IsSocketNonblocking(socket)) {
-        OutputDebugStringW(L"[Easy-Net Hook] Nonblocking connect blocked; ConnectEx is not supported by this MVP.\n");
-        return FailSocket(WSAEOPNOTSUPP);
+        return ConnectThroughRelay(socket, destination, destination_length);
     }
 
     sockaddr_storage proxy_for_socket{};
@@ -978,14 +1282,44 @@ BOOL PASCAL HookedConnectEx(SOCKET socket,
                             DWORD send_length,
                             LPDWORD bytes_sent,
                             LPOVERLAPPED overlapped) {
-    const auto original = reinterpret_cast<LPFN_CONNECTEX>(
-        InterlockedCompareExchangePointer(&g_real_connect_ex, nullptr, nullptr));
-    if ((!GetConfig().enabled || IsLoopback(destination, destination_length)) && original != nullptr) {
+    LPFN_CONNECTEX original = RealConnectEx;
+    if (original == nullptr) {
+        original = reinterpret_cast<LPFN_CONNECTEX>(
+            InterlockedCompareExchangePointer(&g_fallback_connect_ex, nullptr, nullptr));
+    }
+    const Config& config = GetConfig();
+    const auto* proxy = reinterpret_cast<const sockaddr*>(&config.proxy);
+    if ((!config.enabled || IsLoopback(destination, destination_length) ||
+         SameEndpoint(destination, destination_length, proxy, config.proxy_length)) &&
+        original != nullptr) {
         return original(socket, destination, destination_length, send_buffer, send_length,
                         bytes_sent, overlapped);
     }
-    WSASetLastError(WSAEOPNOTSUPP);
-    return FALSE;
+    if (original == nullptr || !config.valid || destination == nullptr ||
+        SocketType(socket) != SOCK_STREAM) {
+        WSASetLastError(WSAEINVAL);
+        return FALSE;
+    }
+
+    RelayTicket ticket;
+    if (!StartRelay(destination, destination_length, ticket)) {
+        return FALSE;
+    }
+    RememberProxiedPeer(socket, destination, destination_length,
+                        reinterpret_cast<const sockaddr*>(&ticket.endpoint), ticket.endpoint_length);
+    const BOOL result = original(socket, reinterpret_cast<const sockaddr*>(&ticket.endpoint),
+                                 ticket.endpoint_length, send_buffer, send_length,
+                                 bytes_sent, overlapped);
+    const int error = result ? 0 : WSAGetLastError();
+    if (!result && error != ERROR_IO_PENDING && error != WSA_IO_PENDING) {
+        CancelRelay(ticket);
+        ForgetProxiedPeer(socket);
+    }
+    ReleaseRelayTicket(ticket);
+    if (!result) {
+        WSASetLastError(error);
+    }
+    return result;
 }
 
 INT PASCAL HookedWSASendMsg(SOCKET socket,
@@ -994,8 +1328,11 @@ INT PASCAL HookedWSASendMsg(SOCKET socket,
                             LPDWORD bytes_sent,
                             LPWSAOVERLAPPED overlapped,
                             LPWSAOVERLAPPED_COMPLETION_ROUTINE completion) {
-    const auto original = reinterpret_cast<LPFN_WSASENDMSG>(
-        InterlockedCompareExchangePointer(&g_real_wsa_send_msg, nullptr, nullptr));
+    LPFN_WSASENDMSG original = RealWSASendMsg;
+    if (original == nullptr) {
+        original = reinterpret_cast<LPFN_WSASENDMSG>(
+            InterlockedCompareExchangePointer(&g_fallback_wsa_send_msg, nullptr, nullptr));
+    }
     const Config& config = GetConfig();
     if ((!config.enabled || config.allow_udp_direct ||
          (message != nullptr && message->name != nullptr &&
@@ -1018,6 +1355,10 @@ int WSAAPI HookedWSAIoctl(SOCKET socket,
                           LPWSAOVERLAPPED_COMPLETION_ROUTINE completion) {
     const int result = RealWSAIoctl(socket, control_code, input, input_size, output, output_size,
                                     bytes_returned, overlapped, completion);
+    if (result == 0 && control_code == FIONBIO && input != nullptr &&
+        input_size >= sizeof(u_long)) {
+        SetSocketNonblocking(socket, *static_cast<const u_long*>(input) != 0);
+    }
     if (result != 0 || control_code != SIO_GET_EXTENSION_FUNCTION_POINTER ||
         input == nullptr || input_size < sizeof(GUID) || output == nullptr) {
         return result;
@@ -1025,13 +1366,17 @@ int WSAAPI HookedWSAIoctl(SOCKET socket,
 
     const auto* requested = static_cast<const GUID*>(input);
     if (IsEqualGUID(*requested, WSAID_CONNECTEX) && output_size >= sizeof(LPFN_CONNECTEX)) {
-        InterlockedExchangePointer(&g_real_connect_ex,
-                                   reinterpret_cast<PVOID>(*static_cast<LPFN_CONNECTEX*>(output)));
+        if (RealConnectEx == nullptr) {
+            InterlockedExchangePointer(&g_fallback_connect_ex,
+                                       reinterpret_cast<PVOID>(*static_cast<LPFN_CONNECTEX*>(output)));
+        }
         *static_cast<LPFN_CONNECTEX*>(output) = HookedConnectEx;
     } else if (IsEqualGUID(*requested, WSAID_WSASENDMSG) && output_size >= sizeof(LPFN_WSASENDMSG) &&
                GetConfig().enabled && !GetConfig().allow_udp_direct) {
-        InterlockedExchangePointer(&g_real_wsa_send_msg,
-                                   reinterpret_cast<PVOID>(*static_cast<LPFN_WSASENDMSG*>(output)));
+        if (RealWSASendMsg == nullptr) {
+            InterlockedExchangePointer(&g_fallback_wsa_send_msg,
+                                       reinterpret_cast<PVOID>(*static_cast<LPFN_WSASENDMSG*>(output)));
+        }
         *static_cast<LPFN_WSASENDMSG*>(output) = HookedWSASendMsg;
     }
     return result;
@@ -1063,7 +1408,28 @@ int WSAAPI HookedWSAAsyncSelect(SOCKET socket, HWND window, unsigned int message
 
 int WSAAPI HookedCloseSocket(SOCKET socket) {
     SetSocketNonblocking(socket, false);
+    ForgetProxiedPeer(socket);
     return RealCloseSocket(socket);
+}
+
+int WSAAPI HookedGetPeerName(SOCKET socket, sockaddr* address, int* address_length) {
+    const int result = RealGetPeerName(socket, address, address_length);
+    if (result != 0) {
+        return result;
+    }
+    ProxiedPeer peer;
+    if (!FindProxiedPeer(socket, peer)) {
+        return 0;
+    }
+    if (address == nullptr || address_length == nullptr || *address_length < peer.original_length) {
+        if (address_length != nullptr) {
+            *address_length = peer.original_length;
+        }
+        return FailSocket(WSAEFAULT);
+    }
+    std::memcpy(address, &peer.original, static_cast<std::size_t>(peer.original_length));
+    *address_length = peer.original_length;
+    return 0;
 }
 
 BOOL WINAPI HookedCreateProcessW(LPCWSTR application_name,
@@ -1108,9 +1474,107 @@ BOOL WINAPI HookedCreateProcessA(LPCSTR application_name,
                                          current_directory, startup, process, g_dll_path, RealCreateProcessA);
 }
 
+void UpdateProcessThreadsForDetour(std::vector<HANDLE>& opened_threads) {
+    DetourUpdateThread(GetCurrentThread());
+    const DWORD current_process_id = GetCurrentProcessId();
+    const DWORD current_thread_id = GetCurrentThreadId();
+    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    THREADENTRY32 entry{};
+    entry.dwSize = sizeof(entry);
+    if (Thread32First(snapshot, &entry)) {
+        do {
+            if (entry.th32OwnerProcessID != current_process_id ||
+                entry.th32ThreadID == current_thread_id) {
+                continue;
+            }
+            const HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT |
+                                                 THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION,
+                                             FALSE, entry.th32ThreadID);
+            if (thread == nullptr) {
+                continue;
+            }
+            if (DetourUpdateThread(thread) == NO_ERROR) {
+                opened_threads.push_back(thread);
+            } else {
+                CloseHandle(thread);
+            }
+        } while (Thread32Next(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+}
+
+void CloseDetourThreadHandles(std::vector<HANDLE>& threads) {
+    for (const HANDLE thread : threads) {
+        CloseHandle(thread);
+    }
+    threads.clear();
+}
+
+template <typename Function>
+Function ResolveExtensionFunction(const GUID& identifier, int socket_type, int protocol) {
+    WSADATA winsock{};
+    if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
+        return nullptr;
+    }
+    Function result = nullptr;
+    constexpr std::array<int, 2> families{AF_INET, AF_INET6};
+    for (const int family : families) {
+        const SOCKET socket = WSASocketW(family, socket_type, protocol, nullptr, 0,
+                                         WSA_FLAG_OVERLAPPED);
+        if (socket == INVALID_SOCKET) {
+            continue;
+        }
+        DWORD returned = 0;
+        if (RealWSAIoctl(socket, SIO_GET_EXTENSION_FUNCTION_POINTER,
+                         const_cast<GUID*>(&identifier), sizeof(identifier),
+                         &result, sizeof(result), &returned, nullptr, nullptr) == 0 &&
+            result != nullptr) {
+            RealCloseSocket(socket);
+            break;
+        }
+        RealCloseSocket(socket);
+        result = nullptr;
+    }
+    WSACleanup();
+    return result;
+}
+
+unsigned __stdcall InstallExtensionHooks(void*) {
+    RealConnectEx = ResolveExtensionFunction<LPFN_CONNECTEX>(WSAID_CONNECTEX,
+                                                             SOCK_STREAM, IPPROTO_TCP);
+    RealWSASendMsg = ResolveExtensionFunction<LPFN_WSASENDMSG>(WSAID_WSASENDMSG,
+                                                               SOCK_DGRAM, IPPROTO_UDP);
+    if (RealConnectEx == nullptr && RealWSASendMsg == nullptr) {
+        return 0;
+    }
+
+    DetourTransactionBegin();
+    std::vector<HANDLE> threads;
+    UpdateProcessThreadsForDetour(threads);
+    if (RealConnectEx != nullptr) {
+        DetourAttach(reinterpret_cast<PVOID*>(&RealConnectEx), reinterpret_cast<PVOID>(HookedConnectEx));
+    }
+    if (RealWSASendMsg != nullptr) {
+        DetourAttach(reinterpret_cast<PVOID*>(&RealWSASendMsg), reinterpret_cast<PVOID>(HookedWSASendMsg));
+    }
+    const LONG error = DetourTransactionCommit();
+    CloseDetourThreadHandles(threads);
+    if (error == NO_ERROR) {
+        g_connect_ex_hook_attached.store(RealConnectEx != nullptr);
+        g_wsa_send_msg_hook_attached.store(RealWSASendMsg != nullptr);
+    } else {
+        OutputDebugStringW(L"[Easy-Net Hook] Failed to attach extension function hooks.\n");
+    }
+    return 0;
+}
+
 void AttachHooks() {
     DetourTransactionBegin();
-    DetourUpdateThread(GetCurrentThread());
+    std::vector<HANDLE> threads;
+    UpdateProcessThreadsForDetour(threads);
     DetourAttach(reinterpret_cast<PVOID*>(&RealConnect), reinterpret_cast<PVOID>(HookedConnect));
     DetourAttach(reinterpret_cast<PVOID*>(&RealWSAConnect), reinterpret_cast<PVOID>(HookedWSAConnect));
     DetourAttach(reinterpret_cast<PVOID*>(&RealSendTo), reinterpret_cast<PVOID>(HookedSendTo));
@@ -1120,6 +1584,7 @@ void AttachHooks() {
     DetourAttach(reinterpret_cast<PVOID*>(&RealWSAEventSelect), reinterpret_cast<PVOID>(HookedWSAEventSelect));
     DetourAttach(reinterpret_cast<PVOID*>(&RealWSAAsyncSelect), reinterpret_cast<PVOID>(HookedWSAAsyncSelect));
     DetourAttach(reinterpret_cast<PVOID*>(&RealCloseSocket), reinterpret_cast<PVOID>(HookedCloseSocket));
+    DetourAttach(reinterpret_cast<PVOID*>(&RealGetPeerName), reinterpret_cast<PVOID>(HookedGetPeerName));
     DetourAttach(reinterpret_cast<PVOID*>(&RealGetAddrInfoA), reinterpret_cast<PVOID>(HookedGetAddrInfoA));
     DetourAttach(reinterpret_cast<PVOID*>(&RealFreeAddrInfoA), reinterpret_cast<PVOID>(HookedFreeAddrInfoA));
     DetourAttach(reinterpret_cast<PVOID*>(&RealGetAddrInfoW), reinterpret_cast<PVOID>(HookedGetAddrInfoW));
@@ -1129,6 +1594,7 @@ void AttachHooks() {
     DetourAttach(reinterpret_cast<PVOID*>(&RealCreateProcessW), reinterpret_cast<PVOID>(HookedCreateProcessW));
     DetourAttach(reinterpret_cast<PVOID*>(&RealCreateProcessA), reinterpret_cast<PVOID>(HookedCreateProcessA));
     const LONG error = DetourTransactionCommit();
+    CloseDetourThreadHandles(threads);
     if (error != NO_ERROR) {
         OutputDebugStringW(L"[Easy-Net Hook] Failed to attach one or more hooks.\n");
     }
@@ -1136,7 +1602,14 @@ void AttachHooks() {
 
 void DetachHooks() {
     DetourTransactionBegin();
-    DetourUpdateThread(GetCurrentThread());
+    std::vector<HANDLE> threads;
+    UpdateProcessThreadsForDetour(threads);
+    if (g_connect_ex_hook_attached.load() && RealConnectEx != nullptr) {
+        DetourDetach(reinterpret_cast<PVOID*>(&RealConnectEx), reinterpret_cast<PVOID>(HookedConnectEx));
+    }
+    if (g_wsa_send_msg_hook_attached.load() && RealWSASendMsg != nullptr) {
+        DetourDetach(reinterpret_cast<PVOID*>(&RealWSASendMsg), reinterpret_cast<PVOID>(HookedWSASendMsg));
+    }
     DetourDetach(reinterpret_cast<PVOID*>(&RealConnect), reinterpret_cast<PVOID>(HookedConnect));
     DetourDetach(reinterpret_cast<PVOID*>(&RealWSAConnect), reinterpret_cast<PVOID>(HookedWSAConnect));
     DetourDetach(reinterpret_cast<PVOID*>(&RealSendTo), reinterpret_cast<PVOID>(HookedSendTo));
@@ -1146,6 +1619,7 @@ void DetachHooks() {
     DetourDetach(reinterpret_cast<PVOID*>(&RealWSAEventSelect), reinterpret_cast<PVOID>(HookedWSAEventSelect));
     DetourDetach(reinterpret_cast<PVOID*>(&RealWSAAsyncSelect), reinterpret_cast<PVOID>(HookedWSAAsyncSelect));
     DetourDetach(reinterpret_cast<PVOID*>(&RealCloseSocket), reinterpret_cast<PVOID>(HookedCloseSocket));
+    DetourDetach(reinterpret_cast<PVOID*>(&RealGetPeerName), reinterpret_cast<PVOID>(HookedGetPeerName));
     DetourDetach(reinterpret_cast<PVOID*>(&RealGetAddrInfoA), reinterpret_cast<PVOID>(HookedGetAddrInfoA));
     DetourDetach(reinterpret_cast<PVOID*>(&RealFreeAddrInfoA), reinterpret_cast<PVOID>(HookedFreeAddrInfoA));
     DetourDetach(reinterpret_cast<PVOID*>(&RealGetAddrInfoW), reinterpret_cast<PVOID>(HookedGetAddrInfoW));
@@ -1155,6 +1629,7 @@ void DetachHooks() {
     DetourDetach(reinterpret_cast<PVOID*>(&RealCreateProcessW), reinterpret_cast<PVOID>(HookedCreateProcessW));
     DetourDetach(reinterpret_cast<PVOID*>(&RealCreateProcessA), reinterpret_cast<PVOID>(HookedCreateProcessA));
     DetourTransactionCommit();
+    CloseDetourThreadHandles(threads);
 }
 
 }  // namespace
@@ -1167,7 +1642,14 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
         DetourRestoreAfterWith();
         DisableThreadLibraryCalls(module);
         GetModuleFileNameA(module, g_dll_path, static_cast<DWORD>(std::size(g_dll_path)));
+        GetConfig();
         AttachHooks();
+        const auto extension_thread_value = _beginthreadex(nullptr, 0, InstallExtensionHooks,
+                                                           nullptr, 0, nullptr);
+        const HANDLE extension_thread = reinterpret_cast<HANDLE>(extension_thread_value);
+        if (extension_thread != nullptr) {
+            CloseHandle(extension_thread);
+        }
     } else if (reason == DLL_PROCESS_DETACH) {
         DetachHooks();
     }

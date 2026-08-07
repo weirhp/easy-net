@@ -38,6 +38,7 @@ target_compile_definitions(detours PRIVATE WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x06
 target_compile_options(detours PRIVATE /W3 /wd4100 /wd4127 /wd4189 /wd4242 /wd4244 /wd4701)
 
 add_library(easy_net_hook_dll SHARED
+    src/config_ipc.h
     src/dns_resolver.cpp
     src/dns_resolver.h
     src/hook.cpp
@@ -51,14 +52,16 @@ target_link_libraries(easy_net_hook_dll PRIVATE detours ws2_32 normaliz)
 set_target_properties(easy_net_hook_dll PROPERTIES OUTPUT_NAME "easy-net-hook")
 
 add_executable(easy_net_hook_launcher
+    src/browser_proxy.h
+    src/config_ipc.h
     src/launcher.cpp
     src/dns_resolver.cpp
     src/dns_resolver.h
 )
 target_compile_features(easy_net_hook_launcher PRIVATE cxx_std_20)
-target_compile_definitions(easy_net_hook_launcher PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_compile_definitions(easy_net_hook_launcher PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE _WIN32_WINNT=0x0A00)
 target_compile_options(easy_net_hook_launcher PRIVATE /W4 /permissive- /EHsc)
-target_link_libraries(easy_net_hook_launcher PRIVATE detours shell32 ws2_32)
+target_link_libraries(easy_net_hook_launcher PRIVATE detours advapi32 shell32 ws2_32)
 set_target_properties(easy_net_hook_launcher PROPERTIES OUTPUT_NAME "easy-net-hook")
 add_dependencies(easy_net_hook_launcher easy_net_hook_dll)
 
@@ -87,6 +90,23 @@ target_link_libraries(dns_resolver_test PRIVATE ws2_32)
 set_property(TARGET dns_resolver_test PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_test(NAME dns_resolver_test COMMAND dns_resolver_test)
+
+add_executable(config_ipc_test tests/config_ipc_test.cpp src/config_ipc.h)
+target_compile_features(config_ipc_test PRIVATE cxx_std_20)
+target_compile_definitions(config_ipc_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_compile_options(config_ipc_test PRIVATE /W4 /permissive- /EHsc /UNDEBUG)
+set_property(TARGET config_ipc_test PROPERTY
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_test(NAME config_ipc_test COMMAND config_ipc_test)
+
+add_executable(browser_proxy_test tests/browser_proxy_test.cpp src/browser_proxy.h)
+target_compile_features(browser_proxy_test PRIVATE cxx_std_20)
+target_compile_definitions(browser_proxy_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_compile_options(browser_proxy_test PRIVATE /W4 /permissive- /EHsc /UNDEBUG)
+target_link_libraries(browser_proxy_test PRIVATE ws2_32)
+set_property(TARGET browser_proxy_test PROPERTY
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_test(NAME browser_proxy_test COMMAND browser_proxy_test)
 
 add_custom_command(TARGET easy_net_hook_launcher POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

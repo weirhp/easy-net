@@ -3,5 +3,6 @@ server-cf/config.json
 client-lite/dist/
 client-hook/build*/
 client-hook/package/
+client-hook/dist/
 .playwright-mcp/console-2026-06-13T04-23-37-853Z.log
 .playwright-mcp/page-2026-06-13T04-23-40-639Z.yml

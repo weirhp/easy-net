@@ -2,13 +2,21 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <detours.h>
+#include <tlhelp32.h>
 
+#include <cstdint>
+#include <cstring>
+#include <cwchar>
 #include <filesystem>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <vector>
 
+#include "browser_proxy.h"
+#include "config_ipc.h"
 #include "dns_resolver.h"
 
 namespace {
@@ -21,6 +29,9 @@ struct Options {
     bool inject_children = true;
     bool allow_udp_direct = false;
     bool detach = false;
+    bool chatgpt_web = false;
+    std::wstring browser_path;
+    std::optional<DWORD> process_id;
     std::vector<std::wstring> command;
 };
 
@@ -28,13 +39,18 @@ void PrintUsage() {
     std::wcerr
         << L"Easy-Net Hook - launch one Windows application through a SOCKS5 proxy\n\n"
         << L"Usage:\n"
-        << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 [--dns DNS] [options] -- app.exe [args...]\n\n"
+        << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 [--dns DNS] [options] -- app.exe [args...]\n"
+        << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 [--dns DNS] [options] --pid PID\n\n"
+        << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --chatgpt-web [options]\n\n"
         << L"Options:\n"
         << L"  --username VALUE       SOCKS5 username (optional)\n"
         << L"  --password VALUE       SOCKS5 password (optional, max 255 bytes)\n"
         << L"  --dns IP[:PORT]        Use a specific DNS server (default: Windows DNS)\n"
         << L"  --no-children          Do not inject the hook into child processes\n"
         << L"  --allow-udp-direct     Allow UDP to bypass the proxy (may leak traffic)\n"
+        << L"  --pid PID              Inject into an already running process\n"
+        << L"  --chatgpt-web          Open ChatGPT in an isolated Edge/Chrome SOCKS5 session\n"
+        << L"  --browser-path PATH    Browser executable for --chatgpt-web (optional)\n"
         << L"  --detach               Exit after the target process starts\n"
         << L"  --help                  Show this help\n\n"
         << L"The proxy host must be a literal IPv4 address or a bracketed IPv6 address.\n";
@@ -51,12 +67,23 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
         if (argument == L"--") {
             command_started = true;
         } else if (argument == L"--proxy" || argument == L"--username" ||
-                   argument == L"--password" || argument == L"--dns") {
+                   argument == L"--password" || argument == L"--dns" ||
+                   argument == L"--pid" || argument == L"--browser-path") {
             if (++index >= argc) {
                 std::wcerr << L"Missing value for " << argument << L".\n";
                 return false;
             }
-            if (argument == L"--proxy") {
+            if (argument == L"--pid") {
+                wchar_t* end = nullptr;
+                const unsigned long value = std::wcstoul(argv[index], &end, 10);
+                if (value == 0 || end == argv[index] || end == nullptr || *end != L'\0') {
+                    std::wcerr << L"Invalid process ID: " << argv[index] << L".\n";
+                    return false;
+                }
+                options.process_id = static_cast<DWORD>(value);
+            } else if (argument == L"--browser-path") {
+                options.browser_path = argv[index];
+            } else if (argument == L"--proxy") {
                 options.proxy = argv[index];
             } else if (argument == L"--username") {
                 options.username = argv[index];
@@ -69,6 +96,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
             options.inject_children = false;
         } else if (argument == L"--allow-udp-direct") {
             options.allow_udp_direct = true;
+        } else if (argument == L"--chatgpt-web") {
+            options.chatgpt_web = true;
         } else if (argument == L"--detach") {
             options.detach = true;
         } else if (argument == L"--help" || argument == L"-h" || argument == L"/?") {
@@ -84,8 +113,15 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
         std::wcerr << L"--proxy is required.\n";
         return false;
     }
-    if (options.command.empty()) {
-        std::wcerr << L"A target command is required after --.\n";
+    const int target_count = (!options.command.empty() ? 1 : 0) +
+                             (options.process_id.has_value() ? 1 : 0) +
+                             (options.chatgpt_web ? 1 : 0);
+    if (target_count != 1) {
+        std::wcerr << L"Specify exactly one target: a command after --, --pid PID, or --chatgpt-web.\n";
+        return false;
+    }
+    if (!options.browser_path.empty() && !options.chatgpt_web) {
+        std::wcerr << L"--browser-path can only be used with --chatgpt-web.\n";
         return false;
     }
     return true;
@@ -165,6 +201,437 @@ bool SetConfigEnvironment(const Options& options) {
            SetEnvironmentVariableW(L"EASY_NET_HOOK_ALLOW_UDP_DIRECT", options.allow_udp_direct ? L"1" : L"0");
 }
 
+bool BuildConfigBlock(const Options& options, easy_net::ipc::ConfigBlock& block) {
+    block.inject_children = options.inject_children ? 1U : 0U;
+    block.allow_udp_direct = options.allow_udp_direct ? 1U : 0U;
+    return easy_net::ipc::CopyString(block.proxy, options.proxy) &&
+           easy_net::ipc::CopyString(block.username, options.username) &&
+           easy_net::ipc::CopyString(block.password, options.password) &&
+           easy_net::ipc::CopyString(block.dns, options.dns);
+}
+
+class ScopedHandle {
+public:
+    explicit ScopedHandle(HANDLE handle = nullptr) : handle_(handle) {}
+    ~ScopedHandle() {
+        if (handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE) {
+            CloseHandle(handle_);
+        }
+    }
+    ScopedHandle(const ScopedHandle&) = delete;
+    ScopedHandle& operator=(const ScopedHandle&) = delete;
+    ScopedHandle(ScopedHandle&& other) noexcept : handle_(other.release()) {}
+    ScopedHandle& operator=(ScopedHandle&& other) noexcept {
+        if (this != &other) {
+            if (handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE) {
+                CloseHandle(handle_);
+            }
+            handle_ = other.release();
+        }
+        return *this;
+    }
+    HANDLE get() const { return handle_; }
+    HANDLE release() {
+        const HANDLE result = handle_;
+        handle_ = nullptr;
+        return result;
+    }
+
+private:
+    HANDLE handle_;
+};
+
+std::optional<std::wstring> EnvironmentValue(const wchar_t* name) {
+    const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
+    if (required == 0) {
+        return std::nullopt;
+    }
+    std::wstring value(static_cast<std::size_t>(required), L'\0');
+    const DWORD written = GetEnvironmentVariableW(name, value.data(), required);
+    if (written == 0 || written >= required) {
+        return std::nullopt;
+    }
+    value.resize(written);
+    return value;
+}
+
+std::optional<std::filesystem::path> FindChromiumBrowser(const Options& options) {
+    if (!options.browser_path.empty()) {
+        const std::filesystem::path configured(options.browser_path);
+        if (std::filesystem::is_regular_file(configured)) {
+            return configured;
+        }
+        return std::nullopt;
+    }
+
+    std::vector<std::filesystem::path> candidates;
+    const auto program_files_x86 = EnvironmentValue(L"ProgramFiles(x86)");
+    const auto program_files = EnvironmentValue(L"ProgramFiles");
+    const auto local_app_data = EnvironmentValue(L"LOCALAPPDATA");
+    if (program_files_x86) {
+        candidates.emplace_back(std::filesystem::path(*program_files_x86) /
+                                L"Microsoft/Edge/Application/msedge.exe");
+        candidates.emplace_back(std::filesystem::path(*program_files_x86) /
+                                L"Google/Chrome/Application/chrome.exe");
+    }
+    if (program_files) {
+        candidates.emplace_back(std::filesystem::path(*program_files) /
+                                L"Microsoft/Edge/Application/msedge.exe");
+        candidates.emplace_back(std::filesystem::path(*program_files) /
+                                L"Google/Chrome/Application/chrome.exe");
+    }
+    if (local_app_data) {
+        candidates.emplace_back(std::filesystem::path(*local_app_data) /
+                                L"Microsoft/Edge/Application/msedge.exe");
+        candidates.emplace_back(std::filesystem::path(*local_app_data) /
+                                L"Google/Chrome/Application/chrome.exe");
+    }
+    for (const auto& candidate : candidates) {
+        if (std::filesystem::is_regular_file(candidate)) {
+            return candidate;
+        }
+    }
+    return std::nullopt;
+}
+
+int LaunchChatGptWeb(const Options& options) {
+    if (!options.username.empty() || !options.password.empty()) {
+        std::wcerr << L"Chromium does not support SOCKS5 username/password authentication. "
+                      L"Use a local unauthenticated SOCKS5 endpoint for --chatgpt-web.\n";
+        return 2;
+    }
+    std::wstring proxy_host;
+    if (!easy_net::browser::ParseLiteralSocksEndpoint(options.proxy, proxy_host)) {
+        std::wcerr << L"--chatgpt-web requires a literal SOCKS5 address such as 127.0.0.1:1080.\n";
+        return 2;
+    }
+    const auto browser = FindChromiumBrowser(options);
+    if (!browser) {
+        std::wcerr << L"Microsoft Edge or Google Chrome was not found. Use --browser-path PATH.\n";
+        return 3;
+    }
+    const auto local_app_data = EnvironmentValue(L"LOCALAPPDATA");
+    if (!local_app_data) {
+        std::wcerr << L"LOCALAPPDATA is unavailable; cannot create the isolated browser profile.\n";
+        return 3;
+    }
+    const std::filesystem::path profile = std::filesystem::path(*local_app_data) /
+                                          L"EasyNetHook/ChatGPTProfile" /
+                                          easy_net::browser::ProfileKey(options.proxy);
+    std::error_code directory_error;
+    std::filesystem::create_directories(profile, directory_error);
+    if (directory_error) {
+        std::wcerr << L"Cannot create the browser profile: " << profile.wstring() << L".\n";
+        return 3;
+    }
+    if (!options.dns.empty()) {
+        std::wcerr << L"Note: --dns is ignored in --chatgpt-web mode; Chromium sends URL hostnames "
+                      L"to the SOCKS5 proxy.\n";
+    }
+
+    std::vector<std::wstring> command{
+        browser->wstring(),
+        L"--user-data-dir=" + profile.wstring(),
+        L"--proxy-server=socks5://" + options.proxy,
+        L"--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE " + proxy_host,
+        L"--disable-quic",
+        L"--disable-background-networking",
+        L"--disable-component-update",
+        L"--no-first-run",
+        L"--no-default-browser-check",
+        L"https://chatgpt.com/",
+    };
+    std::wstring command_line = BuildCommandLine(command);
+    std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
+    mutable_command.push_back(L'\0');
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(browser->c_str(), mutable_command.data(), nullptr, nullptr, FALSE,
+                        CREATE_DEFAULT_ERROR_MODE, nullptr, nullptr, &startup, &process)) {
+        std::wcerr << L"Cannot start the protected ChatGPT browser session (error "
+                   << GetLastError() << L").\n";
+        return 5;
+    }
+    CloseHandle(process.hThread);
+    std::wcout << L"Opened ChatGPT through SOCKS5 " << options.proxy
+               << L" without DLL injection (PID " << process.dwProcessId << L").\n";
+    if (options.detach) {
+        CloseHandle(process.hProcess);
+        return 0;
+    }
+    WaitForSingleObject(process.hProcess, INFINITE);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(process.hProcess, &exit_code);
+    CloseHandle(process.hProcess);
+    return static_cast<int>(exit_code);
+}
+
+bool SameArchitecture(HANDLE process, std::wstring& error) {
+    using IsWow64Process2Fn = BOOL(WINAPI*)(HANDLE, USHORT*, USHORT*);
+    const auto is_wow64_process2 = reinterpret_cast<IsWow64Process2Fn>(
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "IsWow64Process2"));
+    if (is_wow64_process2 != nullptr) {
+        USHORT current_machine = IMAGE_FILE_MACHINE_UNKNOWN;
+        USHORT current_native = IMAGE_FILE_MACHINE_UNKNOWN;
+        USHORT target_machine = IMAGE_FILE_MACHINE_UNKNOWN;
+        USHORT target_native = IMAGE_FILE_MACHINE_UNKNOWN;
+        if (!is_wow64_process2(GetCurrentProcess(), &current_machine, &current_native) ||
+            !is_wow64_process2(process, &target_machine, &target_native)) {
+            error = L"Cannot inspect target architecture (error " +
+                    std::to_wstring(GetLastError()) + L").";
+            return false;
+        }
+        const USHORT current = current_machine == IMAGE_FILE_MACHINE_UNKNOWN ? current_native : current_machine;
+        const USHORT target = target_machine == IMAGE_FILE_MACHINE_UNKNOWN ? target_native : target_machine;
+        if (current != target) {
+            error = L"Target architecture does not match this package.";
+            return false;
+        }
+        if (target != IMAGE_FILE_MACHINE_I386 && target != IMAGE_FILE_MACHINE_AMD64) {
+            error = L"Only x86 and x64 targets are supported.";
+            return false;
+        }
+        return true;
+    }
+
+    BOOL current_wow64 = FALSE;
+    BOOL target_wow64 = FALSE;
+    if (!IsWow64Process(GetCurrentProcess(), &current_wow64) ||
+        !IsWow64Process(process, &target_wow64)) {
+        error = L"Cannot inspect target architecture (error " +
+                std::to_wstring(GetLastError()) + L").";
+        return false;
+    }
+    if (current_wow64 != target_wow64) {
+        error = L"Target architecture does not match this package.";
+        return false;
+    }
+    return true;
+}
+
+bool HasUnsupportedInjectionPolicy(HANDLE process, DWORD process_id) {
+    bool unsupported = false;
+    HANDLE token = nullptr;
+    if (OpenProcessToken(process, TOKEN_QUERY, &token)) {
+        DWORD is_app_container = 0;
+        DWORD returned = 0;
+        if (GetTokenInformation(token, TokenIsAppContainer, &is_app_container,
+                                sizeof(is_app_container), &returned) &&
+            is_app_container != 0) {
+            std::wcerr << L"PID " << process_id
+                       << L" runs in AppContainer; DLL injection and the loopback relay are not supported.\n";
+            unsupported = true;
+        }
+        CloseHandle(token);
+    }
+
+    HANDLE policy_process = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, process_id);
+    if (policy_process == nullptr) {
+        policy_process = process;
+    }
+    const bool close_policy_process = policy_process != process;
+
+    PROCESS_MITIGATION_BINARY_SIGNATURE_POLICY signature{};
+    if (GetProcessMitigationPolicy(policy_process, ProcessSignaturePolicy,
+                                   &signature, sizeof(signature)) &&
+        (signature.MicrosoftSignedOnly != 0 || signature.StoreSignedOnly != 0 ||
+         signature.MitigationOptIn != 0)) {
+        std::wcerr << L"PID " << process_id
+                   << L" rejects ordinary third-party DLLs through its binary-signature policy.\n";
+        unsupported = true;
+    }
+
+    PROCESS_MITIGATION_DYNAMIC_CODE_POLICY dynamic_code{};
+    if (GetProcessMitigationPolicy(policy_process, ProcessDynamicCodePolicy,
+                                   &dynamic_code, sizeof(dynamic_code)) &&
+        dynamic_code.ProhibitDynamicCode != 0) {
+        std::wcerr << L"PID " << process_id
+                   << L" prohibits dynamic code, so Detours cannot create hook trampolines.\n";
+        unsupported = true;
+    }
+    if (close_policy_process) {
+        CloseHandle(policy_process);
+    }
+
+    if (unsupported) {
+        std::wcerr << L"Use --chatgpt-web for a protected, non-injecting SOCKS5 session.\n";
+    }
+    return unsupported;
+}
+
+std::optional<std::uintptr_t> RemoteModuleBase(DWORD process_id, const wchar_t* module_name) {
+    ScopedHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, process_id));
+    if (snapshot.get() == INVALID_HANDLE_VALUE) {
+        return std::nullopt;
+    }
+    MODULEENTRY32W module{};
+    module.dwSize = sizeof(module);
+    if (!Module32FirstW(snapshot.get(), &module)) {
+        return std::nullopt;
+    }
+    do {
+        if (_wcsicmp(module.szModule, module_name) == 0) {
+            return reinterpret_cast<std::uintptr_t>(module.modBaseAddr);
+        }
+    } while (Module32NextW(snapshot.get(), &module));
+    return std::nullopt;
+}
+
+bool IsModuleLoaded(DWORD process_id, const std::filesystem::path& dll_path) {
+    ScopedHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, process_id));
+    if (snapshot.get() == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    MODULEENTRY32W module{};
+    module.dwSize = sizeof(module);
+    if (!Module32FirstW(snapshot.get(), &module)) {
+        return false;
+    }
+    do {
+        if (_wcsicmp(module.szModule, dll_path.filename().c_str()) == 0) {
+            return true;
+        }
+    } while (Module32NextW(snapshot.get(), &module));
+    return false;
+}
+
+std::optional<ScopedHandle> CreateConfigMapping(DWORD process_id, const Options& options) {
+    easy_net::ipc::ConfigBlock block;
+    if (!BuildConfigBlock(options, block)) {
+        std::wcerr << L"Proxy, DNS, username, or password is too long.\n";
+        return std::nullopt;
+    }
+    const std::wstring name = easy_net::ipc::ConfigMappingName(process_id);
+    ScopedHandle mapping(CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+                                            sizeof(block), name.c_str()));
+    if (mapping.get() == nullptr) {
+        std::wcerr << L"Cannot create the configuration mapping (error "
+                   << GetLastError() << L").\n";
+        return std::nullopt;
+    }
+    void* view = MapViewOfFile(mapping.get(), FILE_MAP_WRITE, 0, 0, sizeof(block));
+    if (view == nullptr) {
+        std::wcerr << L"Cannot map the configuration (error " << GetLastError() << L").\n";
+        return std::nullopt;
+    }
+    std::memcpy(view, &block, sizeof(block));
+    UnmapViewOfFile(view);
+    return mapping;
+}
+
+bool InjectRunningProcess(DWORD process_id,
+                          const std::filesystem::path& dll_path,
+                          const Options& options) {
+    ScopedHandle query_process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process_id));
+    if (query_process.get() == nullptr) {
+        std::wcerr << L"Cannot inspect PID " << process_id << L" (error " << GetLastError()
+                   << L"). The process may be protected.\n";
+        return false;
+    }
+    std::wstring architecture_error;
+    if (!SameArchitecture(query_process.get(), architecture_error)) {
+        std::wcerr << architecture_error << L" Use the x86 package for a 32-bit target and x64 for x64.\n";
+        return false;
+    }
+    if (HasUnsupportedInjectionPolicy(query_process.get(), process_id)) {
+        return false;
+    }
+
+    constexpr DWORD access = PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
+                             PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ |
+                             SYNCHRONIZE;
+    ScopedHandle process(OpenProcess(access, FALSE, process_id));
+    if (process.get() == nullptr) {
+        std::wcerr << L"Cannot open PID " << process_id << L" (error " << GetLastError()
+                   << L"). Try running the matching package as administrator.\n";
+        return false;
+    }
+    if (IsModuleLoaded(process_id, dll_path)) {
+        std::wcerr << L"The hook DLL is already loaded in PID " << process_id
+                   << L"; restart that process to change its configuration.\n";
+        return false;
+    }
+
+    auto mapping = CreateConfigMapping(process_id, options);
+    if (!mapping) {
+        return false;
+    }
+
+    const std::wstring dll = dll_path.wstring();
+    const SIZE_T bytes = (dll.size() + 1) * sizeof(wchar_t);
+    void* remote_path = VirtualAllocEx(process.get(), nullptr, bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (remote_path == nullptr) {
+        std::wcerr << L"Cannot allocate target memory (error " << GetLastError() << L").\n";
+        return false;
+    }
+    bool success = false;
+    bool remote_path_can_be_freed = true;
+    do {
+        SIZE_T written = 0;
+        if (!WriteProcessMemory(process.get(), remote_path, dll.c_str(), bytes, &written) ||
+            written != bytes) {
+            std::wcerr << L"Cannot write the DLL path to the target (error " << GetLastError() << L").\n";
+            break;
+        }
+        HMODULE local_kernel32 = GetModuleHandleW(L"kernel32.dll");
+        const FARPROC local_load_library = GetProcAddress(local_kernel32, "LoadLibraryW");
+        HMODULE local_export_module = nullptr;
+        if (local_kernel32 == nullptr || local_load_library == nullptr ||
+            !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                reinterpret_cast<LPCWSTR>(local_load_library),
+                                &local_export_module)) {
+            std::wcerr << L"Cannot resolve LoadLibraryW in the target.\n";
+            break;
+        }
+        wchar_t export_module_path[MAX_PATH]{};
+        if (GetModuleFileNameW(local_export_module, export_module_path,
+                               static_cast<DWORD>(std::size(export_module_path))) == 0) {
+            std::wcerr << L"Cannot locate the LoadLibraryW module.\n";
+            break;
+        }
+        const std::filesystem::path export_module(export_module_path);
+        const auto remote_export_module = RemoteModuleBase(process_id,
+                                                            export_module.filename().c_str());
+        if (!remote_export_module) {
+            std::wcerr << L"Cannot locate " << export_module.filename().wstring()
+                       << L" in the target.\n";
+            break;
+        }
+        const auto offset = reinterpret_cast<std::uintptr_t>(local_load_library) -
+                            reinterpret_cast<std::uintptr_t>(local_export_module);
+        const auto remote_load_library = reinterpret_cast<LPTHREAD_START_ROUTINE>(
+            *remote_export_module + offset);
+        ScopedHandle thread(CreateRemoteThread(process.get(), nullptr, 0, remote_load_library,
+                                               remote_path, 0, nullptr));
+        if (thread.get() == nullptr) {
+            std::wcerr << L"Cannot start the injection thread (error " << GetLastError() << L").\n";
+            break;
+        }
+        const DWORD wait = WaitForSingleObject(thread.get(), 15000);
+        if (wait != WAIT_OBJECT_0) {
+            remote_path_can_be_freed = false;
+            std::wcerr << L"The target injection thread did not finish within 15 seconds (wait="
+                       << wait << L").\n";
+            break;
+        }
+        if (!IsModuleLoaded(process_id, dll_path)) {
+            std::wcerr << L"The target did not load the hook DLL. Windows may have blocked injection.\n";
+            break;
+        }
+        success = true;
+    } while (false);
+    if (remote_path_can_be_freed) {
+        VirtualFreeEx(process.get(), remote_path, 0, MEM_RELEASE);
+    }
+    if (success) {
+        std::wcout << L"Attached PID " << process_id << L" through SOCKS5 " << options.proxy << L".\n";
+    }
+    return success;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -172,6 +639,9 @@ int wmain(int argc, wchar_t** argv) {
     if (!ParseOptions(argc, argv, options)) {
         PrintUsage();
         return 2;
+    }
+    if (options.chatgpt_web) {
+        return LaunchChatGptWeb(options);
     }
     if (!options.dns.empty()) {
         easy_net::dns::Endpoint dns_server;
@@ -192,6 +662,10 @@ int wmain(int argc, wchar_t** argv) {
         std::wcerr << L"Hook DLL not found: " << dll_path.wstring() << L"\n";
         return 3;
     }
+    if (options.process_id) {
+        return InjectRunningProcess(*options.process_id, dll_path, options) ? 0 : 5;
+    }
+
     const auto detours_dll_path = ToDetoursPath(dll_path.wstring());
     if (!detours_dll_path) {
         std::wcerr << L"The DLL path cannot be represented by the current Windows ANSI code page. "

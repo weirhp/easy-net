@@ -38,6 +38,7 @@ target_compile_definitions(detours PRIVATE WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x06
 target_compile_options(detours PRIVATE /W3 /wd4100 /wd4127 /wd4189 /wd4242 /wd4244 /wd4701)
 
 add_library(easy_net_hook_dll SHARED
+    src/child_injection.h
     src/config_ipc.h
     src/dns_resolver.cpp
     src/dns_resolver.h
@@ -107,6 +108,14 @@ target_link_libraries(browser_proxy_test PRIVATE ws2_32)
 set_property(TARGET browser_proxy_test PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_test(NAME browser_proxy_test COMMAND browser_proxy_test)
+
+add_executable(child_injection_test tests/child_injection_test.cpp src/child_injection.h)
+target_compile_features(child_injection_test PRIVATE cxx_std_20)
+target_compile_definitions(child_injection_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_compile_options(child_injection_test PRIVATE /W4 /permissive- /EHsc /UNDEBUG)
+set_property(TARGET child_injection_test PROPERTY
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_test(NAME child_injection_test COMMAND child_injection_test)
 
 add_custom_command(TARGET easy_net_hook_launcher POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

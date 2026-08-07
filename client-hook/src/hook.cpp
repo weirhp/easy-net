@@ -21,6 +21,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "child_injection.h"
 #include "config_ipc.h"
 #include "dns_resolver.h"
 #include "socks5_protocol.h"
@@ -1443,7 +1444,8 @@ BOOL WINAPI HookedCreateProcessW(LPCWSTR application_name,
                                  LPSTARTUPINFOW startup,
                                  LPPROCESS_INFORMATION process) {
     const Config& config = GetConfig();
-    if (!config.enabled || !config.inject_children) {
+    if (!config.enabled || !config.inject_children ||
+        !easy_net::child::ShouldInject(command_line)) {
         return RealCreateProcessW(application_name, command_line, process_attributes, thread_attributes,
                                   inherit_handles, creation_flags, environment, current_directory,
                                   startup, process);
@@ -1464,7 +1466,8 @@ BOOL WINAPI HookedCreateProcessA(LPCSTR application_name,
                                  LPSTARTUPINFOA startup,
                                  LPPROCESS_INFORMATION process) {
     const Config& config = GetConfig();
-    if (!config.enabled || !config.inject_children) {
+    if (!config.enabled || !config.inject_children ||
+        !easy_net::child::ShouldInject(command_line)) {
         return RealCreateProcessA(application_name, command_line, process_attributes, thread_attributes,
                                   inherit_handles, creation_flags, environment, current_directory,
                                   startup, process);

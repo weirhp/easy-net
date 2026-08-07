@@ -162,7 +162,7 @@ Chromium 的 SOCKS5 模式不支持用户名密码，因此网页模式只能连
 
 默认行为：
 
-- 向目标进程及其通过 `CreateProcessA/W` 创建的子进程加载 Hook。
+- 向目标进程及其通过 `CreateProcessA/W` 创建的普通子进程加载 Hook。对于 Chromium/Electron，自动跳过 renderer、GPU、crashpad、storage 等子进程，只注入 `network.mojom.NetworkService`，避免沙箱渲染器因 DLL 注入而出现空白窗口。
 - 外部阻塞式 TCP 连接直接在原套接字中完成 SOCKS5 握手。
 - 非阻塞 `connect` 和 `ConnectEx` 使用按连接创建的本地回环中继，保留事件和 IOCP 完成语义。
 - 回环地址连接直接放行，保证目标程序仍可访问本机服务。
@@ -215,6 +215,7 @@ DNS 查询是目标进程到指定 DNS 服务的普通 UDP/TCP 流量，会绕�
 ### 进程与兼容性
 
 - `--pid` 采用标准远程 `LoadLibraryW` 注入，只影响注入后新建的连接；已经建立的连接仍保持原路径。
+- Chromium/Electron 子进程采用网络服务定向注入；其 renderer、GPU、crashpad 和非网络 utility 子进程不会加载 Hook。`--no-children` 会连网络服务也一并跳过，因此不适合需要代理 Chromium/Electron 流量的场景。
 - `--appx` 先通过 Windows 包激活 API 启动或唤醒应用，再采用与 `--pid` 相同的方式注入。激活到注入之间存在很短的时间窗口，极早建立的连接可能需要在应用内重新连接。
 - 附加目标和启动器必须同为 x86 或同为 x64。ARM64 目标目前不支持。
 - `--pid` 会预检 AppContainer、二进制签名策略和动态代码策略。受保护进程不会继续注入，ChatGPT 可改用 `--chatgpt-web`。

@@ -2,7 +2,7 @@
 
 Easy-Net Hook 是一个轻量 Windows 应用代理器。它通过 Microsoft Detours 在目标进程内 Hook Winsock API，把 TCP `connect`、`WSAConnect` 和 `ConnectEx` 改写为 SOCKS5 `CONNECT`。
 
-它直接复用 Easy-Net Lite、SSH `-D` 或其他客户端提供的 SOCKS5 端口，例如 `127.0.0.1:1080`。它既能启动新进程，也能用 `--pid` 附加到已运行进程；不安装驱动，也不修改目标程序文件。
+它直接复用 Easy-Net Lite、SSH `-D` 或其他客户端提供的 SOCKS5 端口，例如 `127.0.0.1:1080`。它既能启动普通新进程，也能通过 `--appx` 激活打包桌面应用，或用 `--pid` 附加到已运行进程；不安装驱动，也不修改目标程序文件。
 
 > 这仍不是 Proxifier 的完整替代品。请先阅读“当前边界”，尤其是运行中进程、UDP 和 DNS 部分。
 
@@ -100,7 +100,23 @@ IPv6 DNS 地址带端口时使用方括号：
 
 ### ChatGPT Windows 客户端
 
-先在任务管理器“详细信息”页查找 ChatGPT 的 PID，或者用 PowerShell：
+Microsoft Store/MSIX 版 ChatGPT 必须通过 Windows 包入口激活。不要把 `WindowsApps` 里的 `ChatGPT.exe` 直接放在 `--` 后面；直接创建该 EXE 可能只留下托盘后台状态，而没有向应用发送显示主窗口所需的启动激活事件。
+
+先完全退出 ChatGPT，再在 PowerShell 中获取它的 AppUserModelID 并启动：
+
+```powershell
+$chatgptAppId = (Get-StartApps | Where-Object Name -eq "ChatGPT" | Select-Object -First 1).AppID
+if (-not $chatgptAppId) { throw "ChatGPT AppID was not found." }
+
+.\easy-net-hook.exe `
+  --proxy 127.0.0.1:1080 `
+  --appx $chatgptAppId `
+  --detach
+```
+
+`--appx` 使用 Windows `IApplicationActivationManager` 发出正式的 Launch 激活，然后向 API 返回的应用进程加载 Hook。若 ChatGPT 已经在运行，Windows 可能复用旧实例；此时已经建立的连接不会迁移到代理，所以首次测试前应从托盘彻底退出。
+
+也可以在任务管理器“详细信息”页查找 ChatGPT 的 PID，或者用 PowerShell：
 
 ```powershell
 Get-Process *ChatGPT* | Select-Object Id, ProcessName, Path
@@ -114,7 +130,7 @@ Get-Process *ChatGPT* | ForEach-Object {
 }
 ```
 
-为了避免登录长连接在注入前已经直连，测试时可先断开网络、启动 ChatGPT、完成上述附加，再恢复网络。若应用已经联网，附加后需要在应用内触发重新登录或重新连接；完全退出进程会同时卸载 Hook。
+为了避免登录长连接在注入前已经直连，测试时可先断开网络、使用 `--appx` 启动或完成上述附加，再恢复网络。若应用已经联网，附加后需要在应用内触发重新登录或重新连接；完全退出进程会同时卸载 Hook。
 
 默认不配置 `--dns`，让 ChatGPT 继续使用 Windows 系统 DNS。若需要指定 DNS，可在每次附加时添加 `--dns 223.5.5.5:53`。ChatGPT 更新后进程结构可能变化；如果出现 `msedgewebview2.exe` 等独立网络子进程，需要对实际发起连接的同架构进程单独附加。
 
@@ -159,6 +175,7 @@ Chromium 的 SOCKS5 模式不支持用户名密码，因此网页模式只能连
 ```text
 --no-children       不向子进程加载 Hook
 --pid PID           附加到一个已运行的同架构进程
+--appx AUMID        正式激活打包桌面应用，然后附加返回的进程
 --chatgpt-web       不注入，使用独立 Edge/Chrome SOCKS5 会话打开 ChatGPT
 --browser-path PATH 为网页模式指定 Edge/Chrome 可执行文件
 --dns IP[:PORT]     指定普通 DNS 服务；端口默认 53
@@ -198,11 +215,12 @@ DNS 查询是目标进程到指定 DNS 服务的普通 UDP/TCP 流量，会绕�
 ### 进程与兼容性
 
 - `--pid` 采用标准远程 `LoadLibraryW` 注入，只影响注入后新建的连接；已经建立的连接仍保持原路径。
+- `--appx` 先通过 Windows 包激活 API 启动或唤醒应用，再采用与 `--pid` 相同的方式注入。激活到注入之间存在很短的时间窗口，极早建立的连接可能需要在应用内重新连接。
 - 附加目标和启动器必须同为 x86 或同为 x64。ARM64 目标目前不支持。
 - `--pid` 会预检 AppContainer、二进制签名策略和动态代码策略。受保护进程不会继续注入，ChatGPT 可改用 `--chatgpt-web`。
 - 子进程若传入完全自定义的环境块，可能不会继承代理配置。
 - 64 位父进程启动 32 位子进程（或反向）时，子进程自动注入会失败；完整产品需要同时部署两种架构并使用辅助注入器。
-- 未覆盖商店应用的包激活入口、`CreateProcessAsUser`、Windows 服务、受保护/AppContainer 进程以及内核态网络；普通全信任打包桌面进程只能在启动后尝试 `--pid`。
+- `--appx` 支持普通全信任打包桌面应用的 Launch 激活；仍未覆盖 `CreateProcessAsUser`、Windows 服务、受保护/AppContainer 进程以及内核态网络。
 - 反作弊、EDR 和安全软件可能阻止或检测 API Hook。
 - 目标程序不应再单独配置同一个 SOCKS5，否则可能形成双重代理。
 
@@ -218,7 +236,8 @@ DNS 查询是目标进程到指定 DNS 服务的普通 UDP/TCP 流量，会绕�
 ```text
 easy-net-hook.exe
   ├─ DetourCreateProcessWithDllExW（启动新进程）
-  └─ --pid + LoadLibraryW（附加运行中进程）
+  ├─ --appx + IApplicationActivationManager（激活打包应用）
+  └─ --pid / --appx + LoadLibraryW（附加运行中进程）
        └─ 目标程序 + easy-net-hook.dll
             ├─ Hook connect / WSAConnect / ConnectEx
             ├─ 阻塞 TCP：原套接字直接连接 SOCKS5

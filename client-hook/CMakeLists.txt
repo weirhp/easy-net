@@ -61,7 +61,7 @@ add_executable(easy_net_hook_launcher
 target_compile_features(easy_net_hook_launcher PRIVATE cxx_std_20)
 target_compile_definitions(easy_net_hook_launcher PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE _WIN32_WINNT=0x0A00)
 target_compile_options(easy_net_hook_launcher PRIVATE /W4 /permissive- /EHsc)
-target_link_libraries(easy_net_hook_launcher PRIVATE detours advapi32 shell32 ws2_32)
+target_link_libraries(easy_net_hook_launcher PRIVATE detours advapi32 ole32 shell32 ws2_32)
 set_target_properties(easy_net_hook_launcher PROPERTIES OUTPUT_NAME "easy-net-hook")
 add_dependencies(easy_net_hook_launcher easy_net_hook_dll)
 

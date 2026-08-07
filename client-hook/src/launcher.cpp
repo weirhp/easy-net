@@ -2,12 +2,14 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <detours.h>
+#include <shobjidl.h>
 #include <tlhelp32.h>
 
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <optional>
@@ -31,6 +33,7 @@ struct Options {
     bool detach = false;
     bool chatgpt_web = false;
     std::wstring browser_path;
+    std::wstring app_user_model_id;
     std::optional<DWORD> process_id;
     std::vector<std::wstring> command;
 };
@@ -41,6 +44,7 @@ void PrintUsage() {
         << L"Usage:\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 [--dns DNS] [options] -- app.exe [args...]\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 [--dns DNS] [options] --pid PID\n\n"
+        << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 [--dns DNS] [options] --appx AUMID\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --chatgpt-web [options]\n\n"
         << L"Options:\n"
         << L"  --username VALUE       SOCKS5 username (optional)\n"
@@ -49,6 +53,7 @@ void PrintUsage() {
         << L"  --no-children          Do not inject the hook into child processes\n"
         << L"  --allow-udp-direct     Allow UDP to bypass the proxy (may leak traffic)\n"
         << L"  --pid PID              Inject into an already running process\n"
+        << L"  --appx AUMID           Activate a packaged desktop app, then inject it\n"
         << L"  --chatgpt-web          Open ChatGPT in an isolated Edge/Chrome SOCKS5 session\n"
         << L"  --browser-path PATH    Browser executable for --chatgpt-web (optional)\n"
         << L"  --detach               Exit after the target process starts\n"
@@ -68,7 +73,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
             command_started = true;
         } else if (argument == L"--proxy" || argument == L"--username" ||
                    argument == L"--password" || argument == L"--dns" ||
-                   argument == L"--pid" || argument == L"--browser-path") {
+                   argument == L"--pid" || argument == L"--browser-path" ||
+                   argument == L"--appx") {
             if (++index >= argc) {
                 std::wcerr << L"Missing value for " << argument << L".\n";
                 return false;
@@ -83,6 +89,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
                 options.process_id = static_cast<DWORD>(value);
             } else if (argument == L"--browser-path") {
                 options.browser_path = argv[index];
+            } else if (argument == L"--appx") {
+                options.app_user_model_id = argv[index];
             } else if (argument == L"--proxy") {
                 options.proxy = argv[index];
             } else if (argument == L"--username") {
@@ -115,9 +123,11 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
     }
     const int target_count = (!options.command.empty() ? 1 : 0) +
                              (options.process_id.has_value() ? 1 : 0) +
+                             (!options.app_user_model_id.empty() ? 1 : 0) +
                              (options.chatgpt_web ? 1 : 0);
     if (target_count != 1) {
-        std::wcerr << L"Specify exactly one target: a command after --, --pid PID, or --chatgpt-web.\n";
+        std::wcerr << L"Specify exactly one target: a command after --, --pid PID, "
+                      L"--appx AUMID, or --chatgpt-web.\n";
         return false;
     }
     if (!options.browser_path.empty() && !options.chatgpt_web) {
@@ -632,6 +642,61 @@ bool InjectRunningProcess(DWORD process_id,
     return success;
 }
 
+int ActivatePackagedApplication(const Options& options,
+                                const std::filesystem::path& dll_path) {
+    const HRESULT com_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool uninitialize_com = SUCCEEDED(com_result);
+    if (FAILED(com_result) && com_result != RPC_E_CHANGED_MODE) {
+        std::wcerr << L"Cannot initialize COM for packaged app activation (HRESULT 0x"
+                   << std::hex << static_cast<unsigned long>(com_result) << std::dec << L").\n";
+        return 5;
+    }
+
+    IApplicationActivationManager* activation_manager = nullptr;
+    HRESULT result = CoCreateInstance(CLSID_ApplicationActivationManager, nullptr,
+                                      CLSCTX_LOCAL_SERVER,
+                                      IID_PPV_ARGS(&activation_manager));
+    DWORD process_id = 0;
+    if (SUCCEEDED(result)) {
+        result = activation_manager->ActivateApplication(options.app_user_model_id.c_str(),
+                                                         nullptr, AO_NONE, &process_id);
+        activation_manager->Release();
+    }
+    if (uninitialize_com) {
+        CoUninitialize();
+    }
+    if (FAILED(result) || process_id == 0) {
+        std::wcerr << L"Cannot activate packaged app " << options.app_user_model_id
+                   << L" (HRESULT 0x" << std::hex << static_cast<unsigned long>(result)
+                   << std::dec << L"). Use Get-StartApps to verify its AppID.\n";
+        return 5;
+    }
+
+    std::wcout << L"Activated packaged app PID " << process_id << L" ("
+               << options.app_user_model_id << L").\n";
+    if (!InjectRunningProcess(process_id, dll_path, options)) {
+        std::wcerr << L"The packaged app was activated normally, but its process could not be hooked.\n";
+        return 5;
+    }
+    if (options.detach) {
+        return 0;
+    }
+
+    ScopedHandle process(OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                                     FALSE, process_id));
+    if (process.get() == nullptr) {
+        std::wcerr << L"Cannot wait for activated PID " << process_id << L" (error "
+                   << GetLastError() << L").\n";
+        return 5;
+    }
+    WaitForSingleObject(process.get(), INFINITE);
+    DWORD exit_code = 1;
+    if (!GetExitCodeProcess(process.get(), &exit_code)) {
+        std::wcerr << L"Cannot read the target exit code (error " << GetLastError() << L").\n";
+    }
+    return static_cast<int>(exit_code);
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -664,6 +729,9 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (options.process_id) {
         return InjectRunningProcess(*options.process_id, dll_path, options) ? 0 : 5;
+    }
+    if (!options.app_user_model_id.empty()) {
+        return ActivatePackagedApplication(options, dll_path);
     }
 
     const auto detours_dll_path = ToDetoursPath(dll_path.wstring());

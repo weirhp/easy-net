@@ -75,6 +75,7 @@ export default {
 
       const targetHost = url.searchParams.get('host') || request.headers.get('x-target-host');
       const targetPort = parseInt(url.searchParams.get('port') || request.headers.get('x-target-port'));
+      const protocolV2 = request.headers.get('x-easy-net-protocol') === '2';
 
       if (!targetHost || !targetPort) {
         return new Response('Missing target parameters', { status: 400 });
@@ -105,7 +106,7 @@ export default {
           try { socket.close(); } catch (e) {}
           try { serverWS.close(); } catch (e) {}
         };
-        
+
         // 当收到本地客户端发来的 WebSocket 数据包时，将其二进制流安全写入 TCP Socket 中
         serverWS.addEventListener('message', async (event) => {
           try {
@@ -137,8 +138,24 @@ export default {
           }
         };
 
-        // 在后台异步搬运 TCP 数据到 WebSocket (无需使用 ctx.waitUntil，防止事件超时挂起)
-        pipeToWS();
+        // v2 客户端必须等 Cloudflare 确认目标 TCP 已连接后才收到 READY。旧客户端维持
+        // 原有行为，避免升级服务端后影响尚未更新的 Easy-Net Lite。
+        if (protocolV2) {
+          socket.opened.then(() => {
+            if (!isClosed) {
+              serverWS.send('READY');
+              pipeToWS();
+            }
+          }).catch((error) => {
+            if (!isClosed) {
+              try { serverWS.send(`ERROR ${error?.name || 'target connection failed'}`); } catch (e) {}
+              setTimeout(safeClose, 25);
+            }
+          });
+        } else {
+          // 在后台异步搬运 TCP 数据到 WebSocket (无需使用 ctx.waitUntil，防止事件超时挂起)
+          pipeToWS();
+        }
 
         // 监听连接关闭事件
         serverWS.addEventListener('close', () => {
@@ -150,9 +167,11 @@ export default {
         });
 
         // 将客户端一侧 of WS 实例放入 101 Switching Protocols 响应中返回
+        const responseHeaders = protocolV2 ? { 'X-Easy-Net-Protocol': '2' } : undefined;
         return new Response(null, {
           status: 101,
-          webSocket: clientWS
+          webSocket: clientWS,
+          headers: responseHeaders
         });
 
       } catch (err) {

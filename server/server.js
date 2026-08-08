@@ -28,6 +28,8 @@ const LOGIN_LOCK_MINUTES = positiveNumber(process.env.LOGIN_LOCK_MINUTES, 15);
 const LOGIN_FAILURE_WINDOW_MINUTES = positiveNumber(process.env.LOGIN_FAILURE_WINDOW_MINUTES, 15);
 const SESSION_TTL_HOURS = positiveNumber(process.env.SESSION_TTL_HOURS, 12);
 const TRAFFIC_FLUSH_SECONDS = positiveNumber(process.env.TRAFFIC_FLUSH_SECONDS, 5);
+const TUNNEL_PROTOCOL_HEADER = 'x-easy-net-protocol';
+const TUNNEL_PROTOCOL_V2 = '2';
 
 const allowedLegacySecrets = process.env.SECRETS
   ? process.env.SECRETS.split(',').map(s => s.trim()).filter(Boolean)
@@ -1155,6 +1157,12 @@ const wss = new WebSocket.Server({
   perMessageDeflate: false
 });
 
+wss.on('headers', (headers, request) => {
+  if (request.headers[TUNNEL_PROTOCOL_HEADER] === TUNNEL_PROTOCOL_V2) {
+    headers.push(`X-Easy-Net-Protocol: ${TUNNEL_PROTOCOL_V2}`);
+  }
+});
+
 server.on('upgrade', (request, socket, head) => {
   const parsedUrl = url.parse(request.url, true);
   const pathname = stripContextPath(parsedUrl.pathname);
@@ -1199,10 +1207,13 @@ server.on('upgrade', (request, socket, head) => {
 wss.on('connection', (ws, req) => {
   const user = ws.clientUser;
   const { host, port } = ws.clientTarget;
+  const protocolV2 = req.headers[TUNNEL_PROTOCOL_HEADER] === TUNNEL_PROTOCOL_V2;
 
   try {
     console.log(`[Easy-Net] [连接] 用户 [${user.username}] 请求网络连接 -> ${host}:${port}`);
     let targetPausedForBackpressure = false;
+    let targetReady = false;
+    let v2TargetErrorPending = false;
 
     const updateWsBackpressureStats = () => {
       const bufferedAmount = ws.bufferedAmount || 0;
@@ -1242,6 +1253,8 @@ wss.on('connection', (ws, req) => {
     const targetSocket = net.connect(port, host, () => {
       console.log(`[Easy-Net] [连接] 成功与目标建立连接 -> ${host}:${port}`);
       targetSocket.setKeepAlive(true, 30000);
+      targetReady = true;
+      if (protocolV2 && ws.readyState === WebSocket.OPEN) ws.send('READY');
     });
     ws.targetSocket = targetSocket;
 
@@ -1289,13 +1302,21 @@ wss.on('connection', (ws, req) => {
       runtimeStats.targetErrors++;
       addConnectionStat(user.id, 'failedConnections');
       console.error(`[Easy-Net] [错误] 无法连接到目标 ${host}:${port}: ${err.message}`);
-      ws.close();
-      cleanupConnection();
+      if (protocolV2 && !targetReady && ws.readyState === WebSocket.OPEN) {
+        v2TargetErrorPending = true;
+        ws.send(`ERROR ${err.code || 'target connection failed'}`, () => {
+          ws.close();
+          cleanupConnection();
+        });
+      } else {
+        ws.close();
+        cleanupConnection();
+      }
     });
 
     targetSocket.on('close', () => {
       console.log(`[Easy-Net] [关闭] 目标主机已断开连接 -> ${host}:${port}`);
-      ws.close();
+      if (!v2TargetErrorPending) ws.close();
       cleanupConnection();
     });
 

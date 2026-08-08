@@ -20,8 +20,12 @@ import (
 )
 
 const (
-	heartbeatInterval = 25 * time.Second
-	heartbeatTimeout  = 60 * time.Second
+	heartbeatInterval    = 25 * time.Second
+	heartbeatTimeout     = 60 * time.Second
+	tunnelProtocolHeader = "X-Easy-Net-Protocol"
+	tunnelProtocolV2     = "2"
+	tunnelReadyMessage   = "READY"
+	tunnelErrorPrefix    = "ERROR "
 )
 
 type Config struct {
@@ -127,6 +131,7 @@ func (t *Transport) DialContext(ctx context.Context, network, address string) (n
 	headers.Set("Authorization", "Bearer "+t.secret)
 	headers.Set("X-Target-Host", host)
 	headers.Set("X-Target-Port", port)
+	headers.Set(tunnelProtocolHeader, tunnelProtocolV2)
 	headers.Set("User-Agent", "Easy-Net-Lite/"+version.Value)
 	conn, resp, err := dialer.DialContext(ctx, u.String(), headers)
 	if err != nil {
@@ -135,6 +140,27 @@ func (t *Transport) DialContext(ctx context.Context, network, address string) (n
 			return nil, fmt.Errorf("WebSocket 握手失败（HTTP %d）：%w", resp.StatusCode, err)
 		}
 		return nil, fmt.Errorf("连接 WebSocket：%w", err)
+	}
+	if resp != nil && resp.Header.Get(tunnelProtocolHeader) == tunnelProtocolV2 {
+		deadline := time.Now().Add(10 * time.Second)
+		if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+			deadline = contextDeadline
+		}
+		_ = conn.SetReadDeadline(deadline)
+		kind, payload, readyErr := conn.ReadMessage()
+		_ = conn.SetReadDeadline(time.Time{})
+		if readyErr != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("等待远端目标连接就绪：%w", readyErr)
+		}
+		message := string(payload)
+		if kind != websocket.TextMessage || message != tunnelReadyMessage {
+			_ = conn.Close()
+			if strings.HasPrefix(message, tunnelErrorPrefix) {
+				return nil, fmt.Errorf("远端目标连接失败：%s", strings.TrimSpace(strings.TrimPrefix(message, tunnelErrorPrefix)))
+			}
+			return nil, errors.New("WebSocket 服务端返回了无效的目标连接状态")
+		}
 	}
 	stream := &streamConn{conn: conn, remote: wsAddr(u.Host), heartbeatDone: make(chan struct{})}
 	stream.lastPong.Store(time.Now().UnixNano())

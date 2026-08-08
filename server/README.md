@@ -118,6 +118,11 @@ X-Target-Host: 目标主机
 X-Target-Port: 目标端口
 ```
 
+Easy-Net Lite 0.1.4 起会额外发送 `X-Easy-Net-Protocol: 2`。支持该版本的服务端会在目标 TCP
+真正建立后返回同名响应头，并通过 WebSocket 文本帧发送 `READY`；如果目标连接失败则发送
+`ERROR ...`。客户端只有收到 `READY` 后才向本地应用报告 SOCKS5 CONNECT 成功，避免把远端
+连接失败表现为稍后的 `ECONNRESET`。新服务端仍兼容未发送该请求头的旧客户端。
+
 旧客户端仍可使用查询参数兼容接口：
 
 ```text

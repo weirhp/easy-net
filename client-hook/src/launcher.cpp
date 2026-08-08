@@ -662,8 +662,10 @@ int LaunchAntigravity(const Options& options) {
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
+    const std::wstring working_directory = executable->parent_path().wstring();
     if (!CreateProcessW(executable->c_str(), mutable_command.data(), nullptr, nullptr, FALSE,
-                        CREATE_DEFAULT_ERROR_MODE | CREATE_SUSPENDED, nullptr, nullptr,
+                        CREATE_DEFAULT_ERROR_MODE | CREATE_SUSPENDED, nullptr,
+                        working_directory.c_str(),
                         &startup, &process)) {
         std::wcerr << L"Cannot start Antigravity IDE (error " << GetLastError() << L").\n";
         return 5;

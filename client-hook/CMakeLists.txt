@@ -53,6 +53,7 @@ target_link_libraries(easy_net_hook_dll PRIVATE detours ws2_32 normaliz)
 set_target_properties(easy_net_hook_dll PROPERTIES OUTPUT_NAME "easy-net-hook")
 
 add_executable(easy_net_hook_launcher
+    src/easy_net_hook.manifest
     src/easy_net_hook.rc
     src/browser_proxy.h
     src/config_ipc.h

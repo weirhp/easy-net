@@ -385,6 +385,14 @@ int LaunchChatGptApp(const Options& options) {
                    << GetLastError() << L").\n";
         return 4;
     }
+    for (const auto& [name, value] :
+         easy_net::browser::NativeSocksEnvironment(options.proxy)) {
+        if (!SetEnvironmentVariableW(name.c_str(), value.c_str())) {
+            std::wcerr << L"Cannot configure the ChatGPT backend proxy environment (error "
+                       << GetLastError() << L").\n";
+            return 4;
+        }
+    }
     if (!options.dns.empty()) {
         std::wcerr << L"Note: --dns is ignored in --chatgpt-app mode; Chromium sends URL hostnames "
                       L"to the SOCKS5 proxy.\n";
@@ -411,8 +419,9 @@ int LaunchChatGptApp(const Options& options) {
         return 5;
     }
     CloseHandle(process.hThread);
-    std::wcout << L"Opened the ChatGPT app through native SOCKS5 " << options.proxy
-               << L" without DLL injection (PID " << process.dwProcessId << L").\n";
+    std::wcout << L"Opened the ChatGPT app and Codex backend through native SOCKS5 "
+               << options.proxy << L" without DLL injection (PID " << process.dwProcessId
+               << L").\n";
     if (options.detach) {
         CloseHandle(process.hProcess);
         return 0;

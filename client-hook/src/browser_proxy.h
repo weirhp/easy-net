@@ -6,6 +6,7 @@
 #include <cwchar>
 #include <cwctype>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace easy_net::browser {
@@ -57,6 +58,19 @@ inline std::vector<std::wstring> NativeSocksArguments(const std::wstring& proxy,
         L"--proxy-server=socks5://" + proxy,
         L"--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE " + proxy_host,
         L"--disable-quic",
+    };
+}
+
+inline std::vector<std::pair<std::wstring, std::wstring>> NativeSocksEnvironment(
+    const std::wstring& proxy) {
+    const std::wstring proxy_url = L"socks5h://" + proxy;
+    return {
+        {L"ALL_PROXY", proxy_url},
+        {L"HTTP_PROXY", proxy_url},
+        {L"HTTPS_PROXY", proxy_url},
+        {L"WS_PROXY", proxy_url},
+        {L"WSS_PROXY", proxy_url},
+        {L"NO_PROXY", L"localhost,127.0.0.1,::1"},
     };
 }
 

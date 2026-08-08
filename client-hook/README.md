@@ -109,7 +109,7 @@ IPv6 DNS 地址带端口时使用方括号：
   --detach
 ```
 
-`--chatgpt-app` 会自动查找已安装的 Microsoft Store/MSIX 版 ChatGPT，创建独立的 `%LOCALAPPDATA%\EasyNetHook\ChatGPTAppProfile` 用户目录，并用 Chromium 原生 SOCKS5 参数启动第二个实例。URL 域名交给 SOCKS5 代理解析，同时禁用 QUIC，避免 UDP 绕过。该模式不加载 `easy-net-hook.dll`，因此比 API Hook 更轻，也不会因为向 Chromium 沙箱或网络服务注入 DLL 而出现托盘图标存在但主窗口空白的问题。
+`--chatgpt-app` 会自动查找已安装的 Microsoft Store/MSIX 版 ChatGPT，创建独立的 `%LOCALAPPDATA%\EasyNetHook\ChatGPTAppProfile` 用户目录，并用 Chromium 原生 SOCKS5 参数启动第二个实例。它还为 ChatGPT 启动的 `codex.exe` 后端设置 `ALL_PROXY`、HTTP/HTTPS 和 WebSocket 代理环境变量，确保界面请求与实际对话请求都进入 SOCKS5。域名通过 `socks5h://` 交给代理端解析，同时禁用 QUIC，避免 UDP 绕过。该模式不加载 `easy-net-hook.dll`，因此比 API Hook 更轻，也不会因为向 Chromium 沙箱或网络服务注入 DLL 而出现托盘图标存在但主窗口空白的问题。
 
 原来手动启动的 ChatGPT 可以继续运行。专用模式使用隔离配置目录，所以首次启动的登录状态和原实例相互独立。
 

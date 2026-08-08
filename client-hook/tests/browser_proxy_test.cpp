@@ -21,5 +21,19 @@ int wmain() {
     assert(arguments[0] == L"--proxy-server=socks5://127.0.0.1:1080");
     assert(arguments[1] == L"--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1");
     assert(arguments[2] == L"--disable-quic");
+
+    const auto environment = easy_net::browser::NativeSocksEnvironment(L"127.0.0.1:1080");
+    assert(environment.size() == 6);
+    assert(environment[0].first == L"ALL_PROXY");
+    assert(environment[0].second == L"socks5h://127.0.0.1:1080");
+    assert(environment[1].first == L"HTTP_PROXY");
+    assert(environment[2].first == L"HTTPS_PROXY");
+    assert(environment[3].first == L"WS_PROXY");
+    assert(environment[4].first == L"WSS_PROXY");
+    for (std::size_t index = 0; index < 5; ++index) {
+        assert(environment[index].second == L"socks5h://127.0.0.1:1080");
+    }
+    assert(environment[5].first == L"NO_PROXY");
+    assert(environment[5].second == L"localhost,127.0.0.1,::1");
     return 0;
 }

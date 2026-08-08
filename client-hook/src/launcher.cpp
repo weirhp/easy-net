@@ -1,6 +1,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <appmodel.h>
 #include <detours.h>
 #include <shobjidl.h>
 #include <tlhelp32.h>
@@ -31,6 +32,7 @@ struct Options {
     bool inject_children = true;
     bool allow_udp_direct = false;
     bool detach = false;
+    bool chatgpt_app = false;
     bool chatgpt_web = false;
     std::wstring browser_path;
     std::wstring app_user_model_id;
@@ -45,6 +47,7 @@ void PrintUsage() {
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 [--dns DNS] [options] -- app.exe [args...]\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 [--dns DNS] [options] --pid PID\n\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 [--dns DNS] [options] --appx AUMID\n"
+        << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --chatgpt-app [options]\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --chatgpt-web [options]\n\n"
         << L"Options:\n"
         << L"  --username VALUE       SOCKS5 username (optional)\n"
@@ -54,6 +57,7 @@ void PrintUsage() {
         << L"  --allow-udp-direct     Allow UDP to bypass the proxy (may leak traffic)\n"
         << L"  --pid PID              Inject into an already running process\n"
         << L"  --appx AUMID           Activate a packaged desktop app, then inject it\n"
+        << L"  --chatgpt-app          Open the installed ChatGPT app with native Chromium SOCKS5\n"
         << L"  --chatgpt-web          Open ChatGPT in an isolated Edge/Chrome SOCKS5 session\n"
         << L"  --browser-path PATH    Browser executable for --chatgpt-web (optional)\n"
         << L"  --detach               Exit after the target process starts\n"
@@ -104,6 +108,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
             options.inject_children = false;
         } else if (argument == L"--allow-udp-direct") {
             options.allow_udp_direct = true;
+        } else if (argument == L"--chatgpt-app") {
+            options.chatgpt_app = true;
         } else if (argument == L"--chatgpt-web") {
             options.chatgpt_web = true;
         } else if (argument == L"--detach") {
@@ -122,12 +128,13 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
         return false;
     }
     const int target_count = (!options.command.empty() ? 1 : 0) +
-                             (options.process_id.has_value() ? 1 : 0) +
-                             (!options.app_user_model_id.empty() ? 1 : 0) +
-                             (options.chatgpt_web ? 1 : 0);
+                              (options.process_id.has_value() ? 1 : 0) +
+                              (!options.app_user_model_id.empty() ? 1 : 0) +
+                              (options.chatgpt_app ? 1 : 0) +
+                              (options.chatgpt_web ? 1 : 0);
     if (target_count != 1) {
         std::wcerr << L"Specify exactly one target: a command after --, --pid PID, "
-                      L"--appx AUMID, or --chatgpt-web.\n";
+                      L"--appx AUMID, --chatgpt-app, or --chatgpt-web.\n";
         return false;
     }
     if (!options.browser_path.empty() && !options.chatgpt_web) {
@@ -304,6 +311,119 @@ std::optional<std::filesystem::path> FindChromiumBrowser(const Options& options)
     return std::nullopt;
 }
 
+std::optional<std::filesystem::path> FindChatGptExecutable() {
+    constexpr wchar_t package_family[] = L"OpenAI.Codex_2p2nqsd0c76g0";
+    UINT32 count = 0;
+    UINT32 buffer_length = 0;
+    LONG result = GetPackagesByPackageFamily(package_family, &count, nullptr,
+                                             &buffer_length, nullptr);
+    if (result != ERROR_INSUFFICIENT_BUFFER || count == 0 || buffer_length == 0) {
+        return std::nullopt;
+    }
+
+    std::vector<PWSTR> package_names(count);
+    std::vector<wchar_t> name_buffer(buffer_length);
+    result = GetPackagesByPackageFamily(package_family, &count, package_names.data(),
+                                        &buffer_length, name_buffer.data());
+    if (result != ERROR_SUCCESS) {
+        return std::nullopt;
+    }
+
+    for (UINT32 index = 0; index < count; ++index) {
+        UINT32 path_length = 0;
+        result = GetStagedPackagePathByFullName(package_names[index], &path_length, nullptr);
+        if (result != ERROR_INSUFFICIENT_BUFFER || path_length == 0) {
+            continue;
+        }
+        std::vector<wchar_t> path_buffer(path_length);
+        result = GetStagedPackagePathByFullName(package_names[index], &path_length,
+                                                path_buffer.data());
+        if (result != ERROR_SUCCESS) {
+            continue;
+        }
+        const std::filesystem::path executable =
+            std::filesystem::path(path_buffer.data()) / L"app/ChatGPT.exe";
+        if (std::filesystem::is_regular_file(executable)) {
+            return executable;
+        }
+    }
+    return std::nullopt;
+}
+
+int LaunchChatGptApp(const Options& options) {
+    if (!options.username.empty() || !options.password.empty()) {
+        std::wcerr << L"Chromium does not support SOCKS5 username/password authentication. "
+                      L"Use a local unauthenticated SOCKS5 endpoint for --chatgpt-app.\n";
+        return 2;
+    }
+    std::wstring proxy_host;
+    if (!easy_net::browser::ParseLiteralSocksEndpoint(options.proxy, proxy_host)) {
+        std::wcerr << L"--chatgpt-app requires a literal SOCKS5 address such as 127.0.0.1:1080.\n";
+        return 2;
+    }
+    const auto executable = FindChatGptExecutable();
+    if (!executable) {
+        std::wcerr << L"The installed OpenAI.Codex package or app/ChatGPT.exe was not found.\n";
+        return 3;
+    }
+    const auto local_app_data = EnvironmentValue(L"LOCALAPPDATA");
+    if (!local_app_data) {
+        std::wcerr << L"LOCALAPPDATA is unavailable; cannot create the isolated ChatGPT profile.\n";
+        return 3;
+    }
+    const std::filesystem::path profile = std::filesystem::path(*local_app_data) /
+                                          L"EasyNetHook/ChatGPTAppProfile" /
+                                          easy_net::browser::ProfileKey(options.proxy);
+    std::error_code directory_error;
+    std::filesystem::create_directories(profile, directory_error);
+    if (directory_error) {
+        std::wcerr << L"Cannot create the ChatGPT profile: " << profile.wstring() << L".\n";
+        return 3;
+    }
+    if (!SetEnvironmentVariableW(L"CODEX_ELECTRON_USER_DATA_PATH", profile.c_str())) {
+        std::wcerr << L"Cannot prepare the isolated ChatGPT environment (error "
+                   << GetLastError() << L").\n";
+        return 4;
+    }
+    if (!options.dns.empty()) {
+        std::wcerr << L"Note: --dns is ignored in --chatgpt-app mode; Chromium sends URL hostnames "
+                      L"to the SOCKS5 proxy.\n";
+    }
+
+    std::vector<std::wstring> command{
+        executable->wstring(),
+        L"--user-data-dir=" + profile.wstring(),
+    };
+    const auto proxy_arguments = easy_net::browser::NativeSocksArguments(options.proxy, proxy_host);
+    command.insert(command.end(), proxy_arguments.begin(), proxy_arguments.end());
+    command.push_back(L"--no-first-run");
+
+    std::wstring command_line = BuildCommandLine(command);
+    std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
+    mutable_command.push_back(L'\0');
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(executable->c_str(), mutable_command.data(), nullptr, nullptr, FALSE,
+                        CREATE_DEFAULT_ERROR_MODE, nullptr, nullptr, &startup, &process)) {
+        std::wcerr << L"Cannot start the ChatGPT app (error " << GetLastError() << L").\n";
+        return 5;
+    }
+    CloseHandle(process.hThread);
+    std::wcout << L"Opened the ChatGPT app through native SOCKS5 " << options.proxy
+               << L" without DLL injection (PID " << process.dwProcessId << L").\n";
+    if (options.detach) {
+        CloseHandle(process.hProcess);
+        return 0;
+    }
+    WaitForSingleObject(process.hProcess, INFINITE);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(process.hProcess, &exit_code);
+    CloseHandle(process.hProcess);
+    return static_cast<int>(exit_code);
+}
+
 int LaunchChatGptWeb(const Options& options) {
     if (!options.username.empty() || !options.password.empty()) {
         std::wcerr << L"Chromium does not support SOCKS5 username/password authentication. "
@@ -342,15 +462,12 @@ int LaunchChatGptWeb(const Options& options) {
     std::vector<std::wstring> command{
         browser->wstring(),
         L"--user-data-dir=" + profile.wstring(),
-        L"--proxy-server=socks5://" + options.proxy,
-        L"--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE " + proxy_host,
-        L"--disable-quic",
-        L"--disable-background-networking",
-        L"--disable-component-update",
-        L"--no-first-run",
-        L"--no-default-browser-check",
-        L"https://chatgpt.com/",
     };
+    const auto proxy_arguments = easy_net::browser::NativeSocksArguments(options.proxy, proxy_host);
+    command.insert(command.end(), proxy_arguments.begin(), proxy_arguments.end());
+    command.insert(command.end(), {L"--disable-background-networking", L"--disable-component-update",
+                                   L"--no-first-run", L"--no-default-browser-check",
+                                   L"https://chatgpt.com/"});
     std::wstring command_line = BuildCommandLine(command);
     std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
     mutable_command.push_back(L'\0');
@@ -707,6 +824,9 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (options.chatgpt_web) {
         return LaunchChatGptWeb(options);
+    }
+    if (options.chatgpt_app) {
+        return LaunchChatGptApp(options);
     }
     if (!options.dns.empty()) {
         easy_net::dns::Endpoint dns_server;

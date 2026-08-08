@@ -100,9 +100,22 @@ IPv6 DNS 地址带端口时使用方括号：
 
 ### ChatGPT Windows 客户端
 
-Microsoft Store/MSIX 版 ChatGPT 必须通过 Windows 包入口激活。不要把 `WindowsApps` 里的 `ChatGPT.exe` 直接放在 `--` 后面；直接创建该 EXE 可能只留下托盘后台状态，而没有向应用发送显示主窗口所需的启动激活事件。
+推荐使用专用的原生代理模式：
 
-先完全退出 ChatGPT，再在 PowerShell 中获取它的 AppUserModelID 并启动：
+```powershell
+.\easy-net-hook.exe `
+  --proxy 127.0.0.1:1080 `
+  --chatgpt-app `
+  --detach
+```
+
+`--chatgpt-app` 会自动查找已安装的 Microsoft Store/MSIX 版 ChatGPT，创建独立的 `%LOCALAPPDATA%\EasyNetHook\ChatGPTAppProfile` 用户目录，并用 Chromium 原生 SOCKS5 参数启动第二个实例。URL 域名交给 SOCKS5 代理解析，同时禁用 QUIC，避免 UDP 绕过。该模式不加载 `easy-net-hook.dll`，因此比 API Hook 更轻，也不会因为向 Chromium 沙箱或网络服务注入 DLL 而出现托盘图标存在但主窗口空白的问题。
+
+原来手动启动的 ChatGPT 可以继续运行。专用模式使用隔离配置目录，所以首次启动的登录状态和原实例相互独立。
+
+Chromium 的 SOCKS5 模式不支持用户名密码，因此 `--chatgpt-app` 只能连接免认证端口；建议将认证和上游连接放在 `127.0.0.1` 上的本地代理程序中完成。该模式通过代理端解析 URL 域名，`--dns` 会被忽略。
+
+以下 `--appx` 方式仍可用于其他普通打包桌面应用，但不推荐用于 ChatGPT。ChatGPT 的 Chromium 网络服务与当前 DLL Hook 的异步套接字行为不完全兼容，可能只出现托盘图标和空白窗口：
 
 ```powershell
 $chatgptAppId = (Get-StartApps | Where-Object Name -eq "ChatGPT" | Select-Object -First 1).AppID
@@ -132,7 +145,7 @@ Get-Process *ChatGPT* | ForEach-Object {
 
 为了避免登录长连接在注入前已经直连，测试时可先断开网络、使用 `--appx` 启动或完成上述附加，再恢复网络。若应用已经联网，附加后需要在应用内触发重新登录或重新连接；完全退出进程会同时卸载 Hook。
 
-默认不配置 `--dns`，让 ChatGPT 继续使用 Windows 系统 DNS。若需要指定 DNS，可在每次附加时添加 `--dns 223.5.5.5:53`。ChatGPT 更新后进程结构可能变化；如果出现 `msedgewebview2.exe` 等独立网络子进程，需要对实际发起连接的同架构进程单独附加。
+默认不配置 `--dns`，让附加模式中的 ChatGPT 继续使用 Windows 系统 DNS。若需要指定 DNS，可在每次附加时添加 `--dns 223.5.5.5:53`。ChatGPT 更新后进程结构可能变化；如果出现 `msedgewebview2.exe` 等独立网络子进程，需要对实际发起连接的同架构进程单独附加。
 
 ChatGPT/Chromium 可能优先尝试 QUIC。外部 UDP 默认被拒绝后通常会回退 TCP；如果客户端版本没有回退，就仍然无法联网。不要为了“能打开”直接使用 `--allow-udp-direct`，否则 QUIC 会绕过 SOCKS5。
 
@@ -176,6 +189,7 @@ Chromium 的 SOCKS5 模式不支持用户名密码，因此网页模式只能连
 --no-children       不向子进程加载 Hook
 --pid PID           附加到一个已运行的同架构进程
 --appx AUMID        正式激活打包桌面应用，然后附加返回的进程
+--chatgpt-app       不注入，使用独立配置启动 ChatGPT 客户端的原生 SOCKS5 模式
 --chatgpt-web       不注入，使用独立 Edge/Chrome SOCKS5 会话打开 ChatGPT
 --browser-path PATH 为网页模式指定 Edge/Chrome 可执行文件
 --dns IP[:PORT]     指定普通 DNS 服务；端口默认 53

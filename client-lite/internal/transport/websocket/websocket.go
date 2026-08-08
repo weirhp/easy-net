@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"easy-net/client-lite/internal/datagram"
+	"easy-net/client-lite/internal/transport"
 	"easy-net/client-lite/internal/version"
 
 	"github.com/gorilla/websocket"
@@ -24,6 +26,9 @@ const (
 	heartbeatTimeout     = 60 * time.Second
 	tunnelProtocolHeader = "X-Easy-Net-Protocol"
 	tunnelProtocolV2     = "2"
+	tunnelProtocolV3     = "3"
+	tunnelNetworkHeader  = "X-Easy-Net-Network"
+	tunnelNetworkUDP     = "udp"
 	tunnelReadyMessage   = "READY"
 	tunnelErrorPrefix    = "ERROR "
 )
@@ -36,12 +41,13 @@ type Config struct {
 }
 
 type Transport struct {
-	url             *url.URL
-	secret          string
-	legacyQueryAuth bool
-	mu              sync.Mutex
-	connections     map[*streamConn]struct{}
-	closed          bool
+	url               *url.URL
+	secret            string
+	legacyQueryAuth   bool
+	mu                sync.Mutex
+	connections       map[*streamConn]struct{}
+	packetConnections map[*packetConn]struct{}
+	closed            bool
 }
 
 func New(cfg Config) (*Transport, error) {
@@ -86,8 +92,84 @@ func New(cfg Config) (*Transport, error) {
 	}
 	return &Transport{
 		url: u, secret: cfg.Secret, legacyQueryAuth: cfg.LegacyQueryAuth,
-		connections: make(map[*streamConn]struct{}),
+		connections:       make(map[*streamConn]struct{}),
+		packetConnections: make(map[*packetConn]struct{}),
 	}, nil
+}
+
+func (t *Transport) OpenPacketContext(ctx context.Context) (transport.PacketConn, error) {
+	t.mu.Lock()
+	closed := t.closed
+	t.mu.Unlock()
+	if closed {
+		return nil, errors.New("WebSocket 代理已停止")
+	}
+
+	u := *t.url
+	if t.legacyQueryAuth {
+		query := u.Query()
+		query.Set("secret", t.secret)
+		u.RawQuery = query.Encode()
+	}
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+		TLSClientConfig:  &tls.Config{MinVersion: tls.VersionTLS12},
+		Proxy:            http.ProxyFromEnvironment,
+	}
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+t.secret)
+	headers.Set(tunnelProtocolHeader, tunnelProtocolV3)
+	headers.Set(tunnelNetworkHeader, tunnelNetworkUDP)
+	headers.Set("User-Agent", "Easy-Net-Lite/"+version.Value)
+	conn, response, err := dialer.DialContext(ctx, u.String(), headers)
+	if err != nil {
+		if response != nil {
+			_ = response.Body.Close()
+			return nil, fmt.Errorf("UDP WebSocket 握手失败（HTTP %d）：%w", response.StatusCode, err)
+		}
+		return nil, fmt.Errorf("连接 UDP WebSocket：%w", err)
+	}
+	if response == nil || response.Header.Get(tunnelProtocolHeader) != tunnelProtocolV3 {
+		_ = conn.Close()
+		return nil, errors.New("WebSocket 服务端版本过旧，不支持 Easy-Net UDP 协议")
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	_ = conn.SetReadDeadline(deadline)
+	kind, payload, readyErr := conn.ReadMessage()
+	_ = conn.SetReadDeadline(time.Time{})
+	if readyErr != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("等待 UDP 会话就绪：%w", readyErr)
+	}
+	if kind != websocket.TextMessage || string(payload) != tunnelReadyMessage {
+		_ = conn.Close()
+		return nil, errors.New("WebSocket 服务端返回了无效的 UDP 会话状态")
+	}
+
+	packet := &packetConn{conn: conn, heartbeatDone: make(chan struct{})}
+	packet.lastPong.Store(time.Now().UnixNano())
+	packet.onClose = func() {
+		t.mu.Lock()
+		delete(t.packetConnections, packet)
+		t.mu.Unlock()
+	}
+	conn.SetPongHandler(func(string) error {
+		packet.lastPong.Store(time.Now().UnixNano())
+		return nil
+	})
+	t.mu.Lock()
+	if t.closed {
+		t.mu.Unlock()
+		_ = packet.Close()
+		return nil, errors.New("WebSocket 代理已停止")
+	}
+	t.packetConnections[packet] = struct{}{}
+	t.mu.Unlock()
+	go packet.heartbeat()
+	return packet, nil
 }
 
 func (t *Transport) Start(context.Context) error {
@@ -196,6 +278,10 @@ func (t *Transport) Close() error {
 	for conn := range t.connections {
 		connections = append(connections, conn)
 	}
+	packetConnections := make([]*packetConn, 0, len(t.packetConnections))
+	for conn := range t.packetConnections {
+		packetConnections = append(packetConnections, conn)
+	}
 	t.mu.Unlock()
 	var firstErr error
 	for _, conn := range connections {
@@ -203,7 +289,102 @@ func (t *Transport) Close() error {
 			firstErr = err
 		}
 	}
+	for _, conn := range packetConnections {
+		if err := conn.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	return firstErr
+}
+
+type packetConn struct {
+	conn          *websocket.Conn
+	write         sync.Mutex
+	closeOnce     sync.Once
+	heartbeatDone chan struct{}
+	lastPong      atomic.Int64
+	onClose       func()
+}
+
+func (c *packetConn) ReadPacket(buffer []byte) (int, string, error) {
+	for {
+		kind, frame, err := c.conn.ReadMessage()
+		if err != nil {
+			c.close(false)
+			return 0, "", err
+		}
+		if kind != websocket.BinaryMessage {
+			continue
+		}
+		source, payload, err := datagram.Decode(frame)
+		if err != nil {
+			continue
+		}
+		if len(buffer) < len(payload) {
+			return 0, "", io.ErrShortBuffer
+		}
+		return copy(buffer, payload), source, nil
+	}
+}
+
+func (c *packetConn) WritePacket(payload []byte, destination string) error {
+	frame, err := datagram.Encode(destination, payload)
+	if err != nil {
+		return err
+	}
+	c.write.Lock()
+	defer c.write.Unlock()
+	if err := c.conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+		c.close(false)
+		return err
+	}
+	return nil
+}
+
+func (c *packetConn) heartbeat() {
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.heartbeatDone:
+			return
+		case now := <-ticker.C:
+			if now.Sub(time.Unix(0, c.lastPong.Load())) > heartbeatTimeout {
+				c.close(false)
+				return
+			}
+			c.write.Lock()
+			err := c.conn.WriteControl(websocket.PingMessage, nil, now.Add(5*time.Second))
+			c.write.Unlock()
+			if err != nil {
+				c.close(false)
+				return
+			}
+		}
+	}
+}
+
+func (c *packetConn) close(sendControl bool) error {
+	var closeErr error
+	c.closeOnce.Do(func() {
+		close(c.heartbeatDone)
+		if sendControl {
+			c.write.Lock()
+			_ = c.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+			c.write.Unlock()
+		}
+		closeErr = c.conn.Close()
+		if c.onClose != nil {
+			c.onClose()
+		}
+	})
+	return closeErr
+}
+
+func (c *packetConn) Close() error { return c.close(true) }
+func (c *packetConn) SetDeadline(deadline time.Time) error {
+	_ = c.conn.SetReadDeadline(deadline)
+	return c.conn.SetWriteDeadline(deadline)
 }
 
 type streamConn struct {

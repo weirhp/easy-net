@@ -5,7 +5,7 @@
 
 ## 轻量桌面客户端
 
-Windows/macOS WebSocket + SSH 客户端见 [`client-lite`](client-lite/README.md)。
+Windows/macOS WebSocket + SSH 客户端见 [`client-lite`](client-lite/README.md)。WebSocket 模式支持 SOCKS5 TCP、UDP ASSOCIATE、DNS 和 QUIC 数据报；SSH 模式支持 TCP。
 
 ## Windows 应用级 Hook 代理（实验性）
 

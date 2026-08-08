@@ -22,6 +22,7 @@ Easy-Net 服务端基于 Node.js 和 WebSocket，负责接收本地客户端代�
 - 代理连接：`/tunnel`
   - 客户端连接密钥从数据库用户读取，不再依赖 `SECRETS` 白名单。
   - 用户被停用或超过每日/月周期额度后会拒绝或关闭连接。
+  - TCP 使用协议 v2；UDP/DNS/QUIC 使用向后兼容的 WebSocket 数据报协议 v3。
 
 ## 本地数据库
 
@@ -122,6 +123,26 @@ Easy-Net Lite 0.1.4 起会额外发送 `X-Easy-Net-Protocol: 2`。支持该版�
 真正建立后返回同名响应头，并通过 WebSocket 文本帧发送 `READY`；如果目标连接失败则发送
 `ERROR ...`。客户端只有收到 `READY` 后才向本地应用报告 SOCKS5 CONNECT 成功，避免把远端
 连接失败表现为稍后的 `ECONNRESET`。新服务端仍兼容未发送该请求头的旧客户端。
+
+### UDP WebSocket 协议 v3
+
+Easy-Net Lite 0.2.0 起支持 SOCKS5 `UDP ASSOCIATE`。客户端为每个 UDP 关联建立独立 WebSocket：
+
+```text
+Authorization: Bearer 用户连接密钥
+X-Easy-Net-Protocol: 3
+X-Easy-Net-Network: udp
+```
+
+服务端返回 `X-Easy-Net-Protocol: 3` 并发送文本帧 `READY` 后开始转发。每条二进制 WebSocket 消息对应一个完整 UDP 数据报，格式为：
+
+```text
+ATYP | DST.ADDR | DST.PORT | UDP PAYLOAD
+```
+
+地址编码与 SOCKS5 一致，支持域名、IPv4 和 IPv6。服务端按目标地址选择 UDP4/UDP6 socket，响应帧携带真实来源地址。每个 UDP 负载最大 65507 字节，流量仍计入用户每日/月周期配额；WebSocket 待发送缓冲达到限制时会丢弃新的 UDP 响应，避免无界内存增长。
+
+UDP 是无连接协议，服务端不会把单次 ICMP/目标不可达错误当作整个关联终止；WebSocket 关闭、配额耗尽或心跳失败时会关闭该会话的全部 UDP socket。生产环境仍应使用 `wss://`，否则 UDP 内容也会以未加密 WebSocket 传输。
 
 旧客户端仍可使用查询参数兼容接口：
 

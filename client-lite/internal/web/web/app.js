@@ -138,6 +138,7 @@ function renderProfiles() {
     const profile = item.profile;
     const busy = appState.busy.has(profile.id);
     const type = profile.type === "ssh" ? "SSH" : "WebSocket";
+    const localCapabilities = profile.type === "ssh" ? "SOCKS5 TCP / HTTP" : "SOCKS5 TCP+UDP / HTTP";
     const statusClass = busy || item.starting ? "busy" : item.running ? "running" : "";
     const statusText = item.starting ? "正在启动" : busy ? "正在处理" : item.running ? "本地监听中" : "已停止";
     const endpoint = profile.type === "ssh" ? `${profile.ssh.host}:${profile.ssh.port}` : profile.websocket.url;
@@ -158,7 +159,7 @@ function renderProfiles() {
             <span class="status ${statusClass}">${statusText}</span>
             ${profile.autoStart ? `<span class="badge">自动启动</span>` : ""}
           </div>
-          <p class="endpoint">SOCKS5 / HTTP ${escapeHTML(profile.listenHost)}:${profile.listenPort} · ${escapeHTML(endpoint)}</p>
+          <p class="endpoint">${localCapabilities} ${escapeHTML(profile.listenHost)}:${profile.listenPort} · ${escapeHTML(endpoint)}</p>
 		  <div class="connection-row">${connectionStatus}</div>
 		  ${item.error ? `<p class="error">启动错误：${escapeHTML(item.error)}</p>` : ""}
 		  ${item.connectionError ? `<p class="error connection-error">连接失败：${escapeHTML(item.connectionError)}</p>` : ""}

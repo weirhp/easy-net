@@ -1,6 +1,7 @@
 const http = require('http');
 const WebSocket = require('ws');
 const net = require('net');
+const dgram = require('dgram');
 const url = require('url');
 const fs = require('fs');
 const path = require('path');
@@ -30,6 +31,9 @@ const SESSION_TTL_HOURS = positiveNumber(process.env.SESSION_TTL_HOURS, 12);
 const TRAFFIC_FLUSH_SECONDS = positiveNumber(process.env.TRAFFIC_FLUSH_SECONDS, 5);
 const TUNNEL_PROTOCOL_HEADER = 'x-easy-net-protocol';
 const TUNNEL_PROTOCOL_V2 = '2';
+const TUNNEL_PROTOCOL_V3 = '3';
+const TUNNEL_NETWORK_HEADER = 'x-easy-net-network';
+const MAX_UDP_PAYLOAD_BYTES = 65507;
 
 const allowedLegacySecrets = process.env.SECRETS
   ? process.env.SECRETS.split(',').map(s => s.trim()).filter(Boolean)
@@ -1158,7 +1162,10 @@ const wss = new WebSocket.Server({
 });
 
 wss.on('headers', (headers, request) => {
-  if (request.headers[TUNNEL_PROTOCOL_HEADER] === TUNNEL_PROTOCOL_V2) {
+  if (request.headers[TUNNEL_PROTOCOL_HEADER] === TUNNEL_PROTOCOL_V3 &&
+      request.headers[TUNNEL_NETWORK_HEADER] === 'udp') {
+    headers.push(`X-Easy-Net-Protocol: ${TUNNEL_PROTOCOL_V3}`);
+  } else if (request.headers[TUNNEL_PROTOCOL_HEADER] === TUNNEL_PROTOCOL_V2) {
     headers.push(`X-Easy-Net-Protocol: ${TUNNEL_PROTOCOL_V2}`);
   }
 });
@@ -1172,9 +1179,12 @@ server.on('upgrade', (request, socket, head) => {
   const host = String(parsedUrl.query.host || request.headers['x-target-host'] || '').trim();
   const port = Number(parsedUrl.query.port || request.headers['x-target-port']);
   const validTarget = host.length > 0 && host.length <= 253 && Number.isInteger(port) && port >= 1 && port <= 65535;
+  const requestedNetwork = String(request.headers[TUNNEL_NETWORK_HEADER] || 'tcp').toLowerCase();
+  const udpTunnel = requestedNetwork === 'udp' && request.headers[TUNNEL_PROTOCOL_HEADER] === TUNNEL_PROTOCOL_V3;
+  const validNetwork = requestedNetwork === 'tcp' || udpTunnel;
   const user = secret ? get('SELECT * FROM users WHERE secret = ? AND active = 1', [secret]) : null;
 
-  if (pathname === '/tunnel' && user && validTarget) {
+  if (pathname === '/tunnel' && user && validNetwork && (udpTunnel || validTarget)) {
     const usage = getUserUsage(user.id);
     const totalToday = usage.today.uploadBytes + usage.today.downloadBytes;
     const totalMonth = usage.month.uploadBytes + usage.month.downloadBytes;
@@ -1189,6 +1199,7 @@ server.on('upgrade', (request, socket, head) => {
     wss.handleUpgrade(request, socket, head, ws => {
       ws.clientUser = user;
       ws.clientTarget = { host, port };
+      ws.clientNetwork = udpTunnel ? 'udp' : 'tcp';
       wss.emit('connection', ws, request);
     });
   } else {
@@ -1204,8 +1215,184 @@ server.on('upgrade', (request, socket, head) => {
   }
 });
 
+function decodeUdpFrame(value) {
+  const frame = Buffer.from(value);
+  if (frame.length < 1) throw new Error('empty UDP frame');
+  let offset = 1;
+  let host;
+  switch (frame[0]) {
+    case 0x01:
+      if (frame.length < offset + 4 + 2) throw new Error('truncated IPv4 UDP frame');
+      host = `${frame[offset]}.${frame[offset + 1]}.${frame[offset + 2]}.${frame[offset + 3]}`;
+      offset += 4;
+      break;
+    case 0x03: {
+      if (frame.length < offset + 1) throw new Error('truncated domain UDP frame');
+      const length = frame[offset++];
+      if (length === 0 || frame.length < offset + length + 2) throw new Error('invalid domain UDP frame');
+      host = frame.subarray(offset, offset + length).toString('utf8');
+      offset += length;
+      break;
+    }
+    case 0x04: {
+      if (frame.length < offset + 16 + 2) throw new Error('truncated IPv6 UDP frame');
+      const groups = [];
+      for (let index = 0; index < 16; index += 2) {
+        groups.push(frame.readUInt16BE(offset + index).toString(16));
+      }
+      host = groups.join(':');
+      offset += 16;
+      break;
+    }
+    default:
+      throw new Error('unsupported UDP address type');
+  }
+  const port = frame.readUInt16BE(offset);
+  offset += 2;
+  const payload = frame.subarray(offset);
+  if (port === 0 || payload.length > MAX_UDP_PAYLOAD_BYTES) throw new Error('invalid UDP destination or payload');
+  if (host.length === 0 || host.length > 253 || host.includes('\0')) throw new Error('invalid UDP host');
+  return { host, port, payload };
+}
+
+function ipv6ToBuffer(value) {
+  let address = String(value).split('%')[0].toLowerCase();
+  const lastColon = address.lastIndexOf(':');
+  if (address.includes('.') && lastColon >= 0) {
+    const ipv4 = address.slice(lastColon + 1).split('.').map(Number);
+    if (ipv4.length !== 4 || ipv4.some(part => !Number.isInteger(part) || part < 0 || part > 255)) {
+      throw new Error('invalid embedded IPv4 address');
+    }
+    address = `${address.slice(0, lastColon)}:${((ipv4[0] << 8) | ipv4[1]).toString(16)}:${((ipv4[2] << 8) | ipv4[3]).toString(16)}`;
+  }
+  const halves = address.split('::');
+  if (halves.length > 2) throw new Error('invalid IPv6 address');
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const missing = 8 - head.length - tail.length;
+  if ((halves.length === 1 && missing !== 0) || missing < 0) throw new Error('invalid IPv6 address');
+  const groups = [...head, ...Array(missing).fill('0'), ...tail];
+  if (groups.length !== 8 || groups.some(group => !/^[0-9a-f]{1,4}$/i.test(group))) {
+    throw new Error('invalid IPv6 address');
+  }
+  const output = Buffer.alloc(16);
+  groups.forEach((group, index) => output.writeUInt16BE(parseInt(group, 16), index * 2));
+  return output;
+}
+
+function encodeUdpFrame(host, port, payload) {
+  const family = net.isIP(host);
+  let address;
+  if (family === 4) {
+    address = Buffer.from([0x01, ...host.split('.').map(Number)]);
+  } else if (family === 6) {
+    address = Buffer.concat([Buffer.from([0x04]), ipv6ToBuffer(host)]);
+  } else {
+    const domain = Buffer.from(host, 'utf8');
+    if (domain.length === 0 || domain.length > 255) throw new Error('invalid UDP source domain');
+    address = Buffer.concat([Buffer.from([0x03, domain.length]), domain]);
+  }
+  const portBuffer = Buffer.alloc(2);
+  portBuffer.writeUInt16BE(port);
+  return Buffer.concat([address, portBuffer, payload]);
+}
+
+function handleUdpTunnel(ws, user) {
+  console.log(`[Easy-Net] [UDP] 用户 [${user.username}] 建立 UDP 关联`);
+  const sockets = new Map();
+  let hasCleaned = false;
+
+  runtimeStats.totalConnections++;
+  runtimeStats.activeConnections++;
+  if (runtimeStats.activeConnections > runtimeStats.maxActiveConnections) {
+    runtimeStats.maxActiveConnections = runtimeStats.activeConnections;
+  }
+  addConnectionStat(user.id, 'connections');
+
+  const cleanup = () => {
+    if (hasCleaned) return;
+    hasCleaned = true;
+    if (runtimeStats.activeConnections > 0) runtimeStats.activeConnections--;
+    sockets.forEach(socket => {
+      try { socket.close(); } catch (_) { /* already closed */ }
+    });
+    sockets.clear();
+  };
+  const closeForQuota = () => {
+    runtimeStats.quotaClosedConnections++;
+    ws.close(1008, 'Traffic quota exceeded');
+    cleanup();
+  };
+  const getSocket = host => {
+    const family = net.isIP(host) === 6 ? 'udp6' : 'udp4';
+    if (sockets.has(family)) return sockets.get(family);
+    const socket = dgram.createSocket(family);
+    socket.on('message', (payload, remote) => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if ((ws.bufferedAmount || 0) >= WS_BACKPRESSURE_LIMIT_BYTES) {
+        runtimeStats.backpressureEvents++;
+        return;
+      }
+      let frame;
+      try {
+        frame = encodeUdpFrame(remote.address, remote.port, payload);
+      } catch (err) {
+        runtimeStats.targetErrors++;
+        return;
+      }
+      ws.send(frame, { binary: true }, err => {
+        if (err) {
+          runtimeStats.websocketErrors++;
+          cleanup();
+        }
+      });
+      if (!addTraffic(user.id, 0, payload.length, user)) closeForQuota();
+    });
+    socket.on('error', err => {
+      runtimeStats.targetErrors++;
+      addConnectionStat(user.id, 'failedConnections');
+      console.error(`[Easy-Net] [UDP错误] ${family}: ${err.message}`);
+    });
+    sockets.set(family, socket);
+    return socket;
+  };
+
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+  ws.on('message', (value, isBinary) => {
+    if (!isBinary || hasCleaned) return;
+    let datagram;
+    try {
+      datagram = decodeUdpFrame(value);
+    } catch (_) {
+      return;
+    }
+    const socket = getSocket(datagram.host);
+    socket.send(datagram.payload, datagram.port, datagram.host, err => {
+      if (err) {
+        runtimeStats.targetErrors++;
+        addConnectionStat(user.id, 'failedConnections');
+      }
+    });
+    if (!addTraffic(user.id, datagram.payload.length, 0, user)) closeForQuota();
+  });
+  ws.on('close', cleanup);
+  ws.on('error', err => {
+    runtimeStats.websocketErrors++;
+    console.error(`[Easy-Net] [UDP错误] WebSocket: ${err.message}`);
+    cleanup();
+  });
+  ws.send('READY', err => {
+    if (err) cleanup();
+  });
+}
+
 wss.on('connection', (ws, req) => {
   const user = ws.clientUser;
+  if (ws.clientNetwork === 'udp') {
+    handleUdpTunnel(ws, user);
+    return;
+  }
   const { host, port } = ws.clientTarget;
   const protocolV2 = req.headers[TUNNEL_PROTOCOL_HEADER] === TUNNEL_PROTOCOL_V2;
 

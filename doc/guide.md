@@ -85,7 +85,7 @@ function main(config, profileName) {
     type: "socks5",
     server: "127.0.0.1",
     port: 1080, // 需与 client-config.json 中的 localPort 保持一致
-    udp: false  // 显式关闭 UDP，使 DNS/UDP 流量自动走直连或其它分流
+    udp: true   // Easy-Net Lite 0.2.0 + 新版 server 支持 SOCKS5 UDP ASSOCIATE
   };
 
   // 初始化节点列表并将新节点插入到首位

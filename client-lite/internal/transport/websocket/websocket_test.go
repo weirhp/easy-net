@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,8 +10,74 @@ import (
 	"testing"
 	"time"
 
+	"easy-net/client-lite/internal/datagram"
+
 	gorillaws "github.com/gorilla/websocket"
 )
+
+func TestOpenPacketContextRelaysUDPDatagrams(t *testing.T) {
+	serverErrors := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(tunnelProtocolHeader) != tunnelProtocolV3 ||
+			r.Header.Get(tunnelNetworkHeader) != tunnelNetworkUDP ||
+			r.Header.Get("Authorization") != "Bearer token" {
+			http.Error(w, "invalid UDP tunnel headers", http.StatusBadRequest)
+			return
+		}
+		conn, err := (&gorillaws.Upgrader{}).Upgrade(w, r, http.Header{
+			tunnelProtocolHeader: []string{tunnelProtocolV3},
+		})
+		if err != nil {
+			serverErrors <- err
+			return
+		}
+		defer conn.Close()
+		if err := conn.WriteMessage(gorillaws.TextMessage, []byte(tunnelReadyMessage)); err != nil {
+			serverErrors <- err
+			return
+		}
+		kind, frame, err := conn.ReadMessage()
+		if err != nil {
+			serverErrors <- err
+			return
+		}
+		destination, payload, err := datagram.Decode(frame)
+		if err != nil || kind != gorillaws.BinaryMessage || destination != "dns.example:53" || string(payload) != "query" {
+			serverErrors <- fmt.Errorf("unexpected UDP frame: kind=%d destination=%q payload=%q err=%v", kind, destination, payload, err)
+			return
+		}
+		reply, err := datagram.Encode("127.0.0.1:53", []byte("answer"))
+		if err == nil {
+			err = conn.WriteMessage(gorillaws.BinaryMessage, reply)
+		}
+		serverErrors <- err
+	}))
+	defer server.Close()
+
+	outbound, err := New(Config{URL: "ws" + strings.TrimPrefix(server.URL, "http"), Secret: "token", AllowInsecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, err := outbound.OpenPacketContext(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer packet.Close()
+	if err := packet.WritePacket([]byte("query"), "dns.example:53"); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, 64)
+	size, source, err := packet.ReadPacket(buffer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source != "127.0.0.1:53" || string(buffer[:size]) != "answer" {
+		t.Fatalf("unexpected UDP response: %q %q", source, buffer[:size])
+	}
+	if err := <-serverErrors; err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestDialContextUsesEasyNetProtocolAndRelaysBytes(t *testing.T) {
 	serverErrors := make(chan error, 1)

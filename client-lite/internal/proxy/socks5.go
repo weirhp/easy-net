@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"easy-net/client-lite/internal/datagram"
 	"easy-net/client-lite/internal/transport"
 )
 
@@ -28,6 +29,17 @@ const (
 	protocolSOCKS5 proxyProtocol = iota
 	protocolHTTPConnect
 )
+
+const (
+	commandConnect      byte = 0x01
+	commandUDPAssociate byte = 0x03
+)
+
+type proxyRequest struct {
+	protocol proxyProtocol
+	command  byte
+	target   string
+}
 
 type DialResultHandler func(target string, err error)
 
@@ -137,23 +149,31 @@ func (s *Server) acceptLoop(ctx context.Context) {
 func (s *Server) handle(ctx context.Context, local net.Conn) {
 	_ = local.SetDeadline(time.Now().Add(15 * time.Second))
 	reader := bufio.NewReader(local)
-	protocol, target, err := readProxyRequest(local, reader)
+	request, err := readProxyRequest(local, reader)
 	if err != nil {
 		return
 	}
+	if request.command == commandUDPAssociate {
+		s.handleUDPAssociate(ctx, local, reader)
+		return
+	}
+	if request.command != commandConnect {
+		writeReply(local, 0x07)
+		return
+	}
 	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	remote, err := s.transport.DialContext(dialCtx, "tcp", target)
+	remote, err := s.transport.DialContext(dialCtx, "tcp", request.target)
 	cancel()
 	if s.onDialResult != nil {
-		s.onDialResult(target, err)
+		s.onDialResult(request.target, err)
 	}
 	if err != nil {
-		writeConnectFailure(local, protocol)
+		writeConnectFailure(local, request.protocol)
 		return
 	}
 	defer remote.Close()
 	_ = local.SetDeadline(time.Time{})
-	writeConnectSuccess(local, protocol)
+	writeConnectSuccess(local, request.protocol)
 
 	done := make(chan struct{}, 2)
 	// 使用同一个 bufio.Reader，确保 CONNECT 请求之后被预读的 TLS 数据不会丢失。
@@ -172,28 +192,28 @@ func (s *Server) handle(ctx context.Context, local net.Conn) {
 	}
 }
 
-func readProxyRequest(conn net.Conn, reader *bufio.Reader) (proxyProtocol, string, error) {
+func readProxyRequest(conn net.Conn, reader *bufio.Reader) (proxyRequest, error) {
 	first, err := reader.Peek(1)
 	if err != nil {
-		return protocolSOCKS5, "", err
+		return proxyRequest{}, err
 	}
 	if first[0] == 0x05 {
 		if err := handshake(conn, reader); err != nil {
-			return protocolSOCKS5, "", err
+			return proxyRequest{}, err
 		}
-		target, err := parseRequest(reader)
+		command, target, err := parseRequest(reader)
 		if err != nil {
 			writeReply(conn, 0x07)
-			return protocolSOCKS5, "", err
+			return proxyRequest{}, err
 		}
-		return protocolSOCKS5, target, nil
+		return proxyRequest{protocol: protocolSOCKS5, command: command, target: target}, nil
 	}
 	target, status, err := parseHTTPConnect(reader)
 	if err != nil {
 		writeHTTPReply(conn, status)
-		return protocolHTTPConnect, "", err
+		return proxyRequest{}, err
 	}
-	return protocolHTTPConnect, target, nil
+	return proxyRequest{protocol: protocolHTTPConnect, command: commandConnect, target: target}, nil
 }
 
 func handshake(conn net.Conn, reader io.Reader) error {
@@ -218,50 +238,157 @@ func handshake(conn net.Conn, reader io.Reader) error {
 	return fmt.Errorf("客户端未提供免认证方式")
 }
 
-func parseRequest(reader io.Reader) (string, error) {
+func parseRequest(reader io.Reader) (byte, string, error) {
 	head := make([]byte, 4)
 	if _, err := io.ReadFull(reader, head); err != nil {
-		return "", err
+		return 0, "", err
 	}
-	if head[0] != 0x05 || head[1] != 0x01 {
-		return "", fmt.Errorf("仅支持 SOCKS5 CONNECT")
+	if head[0] != 0x05 || (head[1] != commandConnect && head[1] != commandUDPAssociate) {
+		return head[1], "", fmt.Errorf("不支持的 SOCKS5 命令")
 	}
 	var host string
 	switch head[3] {
 	case 0x01:
 		buf := make([]byte, 4)
 		if _, err := io.ReadFull(reader, buf); err != nil {
-			return "", err
+			return 0, "", err
 		}
 		host = net.IP(buf).String()
 	case 0x03:
 		length := []byte{0}
 		if _, err := io.ReadFull(reader, length); err != nil {
-			return "", err
+			return 0, "", err
 		}
 		if length[0] == 0 {
-			return "", fmt.Errorf("域名不能为空")
+			return 0, "", fmt.Errorf("域名不能为空")
 		}
 		buf := make([]byte, int(length[0]))
 		if _, err := io.ReadFull(reader, buf); err != nil {
-			return "", err
+			return 0, "", err
 		}
 		host = string(buf)
 	case 0x04:
 		buf := make([]byte, 16)
 		if _, err := io.ReadFull(reader, buf); err != nil {
-			return "", err
+			return 0, "", err
 		}
 		host = net.IP(buf).String()
 	default:
-		return "", fmt.Errorf("不支持的地址类型")
+		return 0, "", fmt.Errorf("不支持的地址类型")
 	}
 	portBytes := make([]byte, 2)
 	if _, err := io.ReadFull(reader, portBytes); err != nil {
-		return "", err
+		return 0, "", err
 	}
 	port := binary.BigEndian.Uint16(portBytes)
-	return net.JoinHostPort(host, strconv.Itoa(int(port))), nil
+	return head[1], net.JoinHostPort(host, strconv.Itoa(int(port))), nil
+}
+
+func (s *Server) handleUDPAssociate(ctx context.Context, control net.Conn, reader *bufio.Reader) {
+	associationCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	remote, err := transport.OpenPacketContext(associationCtx, s.transport)
+	if s.onDialResult != nil {
+		s.onDialResult("UDP ASSOCIATE", err)
+	}
+	if err != nil {
+		writeReply(control, 0x07)
+		return
+	}
+	defer remote.Close()
+
+	controlHost, _, err := net.SplitHostPort(control.RemoteAddr().String())
+	if err != nil {
+		writeReply(control, 0x01)
+		return
+	}
+	controlIP := net.ParseIP(controlHost)
+	localHost, _, err := net.SplitHostPort(control.LocalAddr().String())
+	if err != nil {
+		writeReply(control, 0x01)
+		return
+	}
+	bindIP := net.ParseIP(localHost)
+	network := "udp6"
+	if bindIP == nil || bindIP.To4() != nil {
+		network = "udp4"
+	}
+	relay, err := net.ListenUDP(network, &net.UDPAddr{IP: bindIP, Port: 0})
+	if err != nil {
+		writeReply(control, 0x01)
+		return
+	}
+	defer relay.Close()
+	_ = control.SetDeadline(time.Time{})
+	writeReplyAddress(control, relay.LocalAddr())
+
+	done := make(chan struct{}, 3)
+	var clientMu sync.RWMutex
+	var clientAddress *net.UDPAddr
+
+	go func() {
+		buffer := make([]byte, 1)
+		_, _ = reader.Read(buffer)
+		done <- struct{}{}
+	}()
+	go func() {
+		buffer := make([]byte, datagram.MaxPayloadSize+512)
+		for {
+			size, source, readErr := relay.ReadFromUDP(buffer)
+			if readErr != nil {
+				done <- struct{}{}
+				return
+			}
+			if controlIP == nil || !source.IP.Equal(controlIP) {
+				continue
+			}
+			clientMu.Lock()
+			if clientAddress == nil {
+				clientAddress = &net.UDPAddr{IP: append(net.IP(nil), source.IP...), Port: source.Port, Zone: source.Zone}
+			}
+			accepted := source.IP.Equal(clientAddress.IP) && source.Port == clientAddress.Port
+			clientMu.Unlock()
+			if !accepted {
+				continue
+			}
+			destination, payload, decodeErr := datagram.DecodeSOCKS5(buffer[:size])
+			if decodeErr != nil {
+				continue
+			}
+			if writeErr := remote.WritePacket(payload, destination); writeErr != nil {
+				done <- struct{}{}
+				return
+			}
+		}
+	}()
+	go func() {
+		buffer := make([]byte, datagram.MaxPayloadSize)
+		for {
+			size, source, readErr := remote.ReadPacket(buffer)
+			if readErr != nil {
+				done <- struct{}{}
+				return
+			}
+			packet, encodeErr := datagram.EncodeSOCKS5(source, buffer[:size])
+			if encodeErr != nil {
+				continue
+			}
+			clientMu.RLock()
+			client := clientAddress
+			clientMu.RUnlock()
+			if client != nil {
+				if _, writeErr := relay.WriteToUDP(packet, client); writeErr != nil {
+					done <- struct{}{}
+					return
+				}
+			}
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-associationCtx.Done():
+	}
 }
 
 func parseHTTPConnect(reader *bufio.Reader) (string, int, error) {
@@ -331,6 +458,26 @@ func normalizeConnectTarget(target string) (string, error) {
 
 func writeReply(conn net.Conn, code byte) {
 	_, _ = conn.Write([]byte{0x05, code, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+}
+
+func writeReplyAddress(conn net.Conn, address net.Addr) {
+	host, portText, err := net.SplitHostPort(address.String())
+	if err != nil {
+		writeReply(conn, 0x01)
+		return
+	}
+	port, _ := strconv.Atoi(portText)
+	ip := net.ParseIP(host)
+	reply := []byte{0x05, 0x00, 0x00}
+	if ipv4 := ip.To4(); ipv4 != nil {
+		reply = append(reply, 0x01)
+		reply = append(reply, ipv4...)
+	} else {
+		reply = append(reply, 0x04)
+		reply = append(reply, ip.To16()...)
+	}
+	reply = binary.BigEndian.AppendUint16(reply, uint16(port))
+	_, _ = conn.Write(reply)
 }
 
 func writeConnectSuccess(conn net.Conn, protocol proxyProtocol) {

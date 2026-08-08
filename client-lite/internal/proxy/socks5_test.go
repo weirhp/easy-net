@@ -3,12 +3,18 @@ package proxy
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"easy-net/client-lite/internal/datagram"
+	"easy-net/client-lite/internal/transport"
 )
 
 type echoTransport struct{ targets chan string }
@@ -36,6 +42,164 @@ func (d *directTransport) Start(context.Context) error { return nil }
 func (d *directTransport) Close() error                { return nil }
 func (d *directTransport) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	return (&net.Dialer{}).DialContext(ctx, network, address)
+}
+
+type packetEchoTransport struct{}
+
+func (p *packetEchoTransport) Start(context.Context) error { return nil }
+func (p *packetEchoTransport) Close() error                { return nil }
+func (p *packetEchoTransport) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, errors.New("unexpected stream dial")
+}
+func (p *packetEchoTransport) OpenPacketContext(context.Context) (transport.PacketConn, error) {
+	return &packetEchoConn{packets: make(chan packetEcho, 1), closed: make(chan struct{})}, nil
+}
+
+type packetEcho struct {
+	payload []byte
+	address string
+}
+
+type packetEchoConn struct {
+	packets chan packetEcho
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func (p *packetEchoConn) WritePacket(payload []byte, destination string) error {
+	copyOfPayload := append([]byte(nil), payload...)
+	select {
+	case p.packets <- packetEcho{payload: copyOfPayload, address: destination}:
+		return nil
+	case <-p.closed:
+		return net.ErrClosed
+	}
+}
+func (p *packetEchoConn) ReadPacket(buffer []byte) (int, string, error) {
+	select {
+	case packet := <-p.packets:
+		return copy(buffer, packet.payload), packet.address, nil
+	case <-p.closed:
+		return 0, "", net.ErrClosed
+	}
+}
+func (p *packetEchoConn) SetDeadline(time.Time) error { return nil }
+func (p *packetEchoConn) Close() error {
+	p.once.Do(func() { close(p.closed) })
+	return nil
+}
+
+func TestSOCKS5UDPAssociateAndRelay(t *testing.T) {
+	server := NewServer("127.0.0.1:0", &packetEchoTransport{})
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	control, err := net.DialTimeout("tcp", server.Address(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	if _, err := control.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		t.Fatal(err)
+	}
+	method := make([]byte, 2)
+	if _, err := io.ReadFull(control, method); err != nil || method[1] != 0 {
+		t.Fatalf("UDP method negotiation failed: %v %v", method, err)
+	}
+	if _, err := control.Write([]byte{0x05, commandUDPAssociate, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	relayAddress, code, err := readSOCKS5ReplyAddress(control)
+	if err != nil || code != 0 {
+		t.Fatalf("UDP associate failed: address=%q code=%d err=%v", relayAddress, code, err)
+	}
+
+	client, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	relay, err := net.ResolveUDPAddr("udp", relayAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := datagram.EncodeSOCKS5("dns.example:53", []byte("query"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.WriteToUDP(request, relay); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, 65535)
+	size, _, err := client.ReadFromUDP(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, payload, err := datagram.DecodeSOCKS5(response[:size])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source != "dns.example:53" || string(payload) != "query" {
+		t.Fatalf("unexpected UDP response: %q %q", source, payload)
+	}
+}
+
+func TestSOCKS5UDPAssociateRejectsUnsupportedTransport(t *testing.T) {
+	server := NewServer("127.0.0.1:0", &failingTransport{err: errors.New("unused")})
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+	control, err := net.DialTimeout("tcp", server.Address(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	_, _ = control.Write([]byte{0x05, 0x01, 0x00})
+	method := make([]byte, 2)
+	_, _ = io.ReadFull(control, method)
+	_, _ = control.Write([]byte{0x05, commandUDPAssociate, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+	_, code, err := readSOCKS5ReplyAddress(control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0x07 {
+		t.Fatalf("unexpected SOCKS5 reply code: %d", code)
+	}
+}
+
+func readSOCKS5ReplyAddress(reader io.Reader) (string, byte, error) {
+	head := make([]byte, 4)
+	if _, err := io.ReadFull(reader, head); err != nil {
+		return "", 0, err
+	}
+	var host string
+	switch head[3] {
+	case 0x01:
+		value := make([]byte, 4)
+		if _, err := io.ReadFull(reader, value); err != nil {
+			return "", 0, err
+		}
+		host = net.IP(value).String()
+	case 0x04:
+		value := make([]byte, 16)
+		if _, err := io.ReadFull(reader, value); err != nil {
+			return "", 0, err
+		}
+		host = net.IP(value).String()
+	default:
+		return "", 0, errors.New("unexpected reply address type")
+	}
+	portBytes := make([]byte, 2)
+	if _, err := io.ReadFull(reader, portBytes); err != nil {
+		return "", 0, err
+	}
+	return net.JoinHostPort(host, strconv.Itoa(int(binary.BigEndian.Uint16(portBytes)))), head[1], nil
 }
 
 func TestSOCKS5ConnectAndRelay(t *testing.T) {

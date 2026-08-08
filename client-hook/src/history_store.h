@@ -18,6 +18,7 @@ struct Entry {
     std::wstring proxy;
     std::wstring dns;
     std::wstring last_used;
+    bool isolated = false;
 };
 
 inline std::wstring EscapeField(std::wstring_view value) {
@@ -100,11 +101,12 @@ inline std::vector<Entry> Parse(std::wstring_view text) {
         }
         if (!line.empty()) {
             auto fields = ParseFields(line);
-            if (fields.size() == 7) {
+            if (fields.size() == 7 || fields.size() == 8) {
+                const bool isolated = fields.size() == 8 && fields[7] == L"1";
                 entries.push_back({std::move(fields[0]), std::move(fields[1]),
                                    std::move(fields[2]), std::move(fields[3]),
                                    std::move(fields[4]), std::move(fields[5]),
-                                   std::move(fields[6])});
+                                   std::move(fields[6]), isolated});
             }
         }
         start = end + 1;
@@ -115,9 +117,10 @@ inline std::vector<Entry> Parse(std::wstring_view text) {
 inline std::wstring Serialize(const std::vector<Entry>& entries) {
     std::wstring result;
     for (const auto& entry : entries) {
+        const std::wstring isolated = entry.isolated ? L"1" : L"0";
         const std::wstring_view fields[]{entry.mode,      entry.name, entry.path,
                                          entry.arguments, entry.proxy, entry.dns,
-                                         entry.last_used};
+                                         entry.last_used, isolated};
         for (std::size_t index = 0; index < std::size(fields); ++index) {
             if (index != 0) {
                 result.push_back(L'\t');
@@ -137,7 +140,7 @@ inline bool SameLaunch(const Entry& left, const Entry& right) {
     return CaseInsensitiveEquals(left.mode, right.mode) &&
            CaseInsensitiveEquals(left.path, right.path) && left.arguments == right.arguments &&
            CaseInsensitiveEquals(left.proxy, right.proxy) &&
-           CaseInsensitiveEquals(left.dns, right.dns);
+           CaseInsensitiveEquals(left.dns, right.dns) && left.isolated == right.isolated;
 }
 
 inline void Upsert(std::vector<Entry>& entries, Entry entry, std::size_t maximum_entries = 30) {

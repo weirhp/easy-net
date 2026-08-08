@@ -67,7 +67,7 @@ THIRD-PARTY-LICENSES\Detours-LICENSE.md
 
 界面可以选择 ChatGPT、Antigravity IDE 或通用 Hook 模式，填写 SOCKS5 地址、程序路径、启动参数和可选 DNS。每次成功启动后会自动记录配置，之后可在左侧列表双击快捷启动，也可以删除单条记录或清空全部记录。
 
-记录最多保留 30 条，保存在 `%LOCALAPPDATA%\EasyNetHook\launcher-history.tsv`。其中不保存代理用户名或密码。ChatGPT 和 Antigravity 仍使用各自隔离且可复用的用户目录，因此不会占用手动启动实例的配置目录。
+记录最多保留 30 条，保存在 `%LOCALAPPDATA%\EasyNetHook\launcher-history.tsv`。其中不保存代理用户名或密码。ChatGPT 使用隔离且可复用的用户目录；Antigravity 默认复用桌面版的用户目录和登录状态，也可以在界面中勾选“使用独立配置”。
 
 ### 通用程序
 
@@ -123,6 +123,8 @@ IPv6 DNS 地址带端口时使用方括号：
   --detach
 ```
 
+默认模式不传 `--user-data-dir`，因此会使用桌面快捷方式启动时相同的登录状态、设置和最近工作区。启动前必须从托盘完全退出原有 Antigravity；否则 Electron 会把新命令转交给已经运行、但没有继承代理的旧实例，启动器会检测这种情况并停止。
+
 启动器会优先从当前运行实例获取安装路径，也会查找常用的用户级和系统级安装目录。找不到时可以明确指定：
 
 ```powershell
@@ -143,11 +145,21 @@ IPv6 DNS 地址带端口时使用方括号：
   -- "D:\work\my-project"
 ```
 
-该模式用 Chromium 原生 SOCKS5 参数代理 Antigravity IDE 的网络服务，并把大小写形式的 `ALL_PROXY`、HTTP/HTTPS、WebSocket 和 `NO_PROXY` 环境变量传给其子进程。由扩展启动的 `language_server_windows_x64.exe` 会继承 `socks5h://` 代理配置；另有一个轻量 `easy-net-hook.exe` 监视器，只向 language server 加载兜底 Hook，把不遵守代理环境变量的外部 TCP 连接也送入 SOCKS5。监视器随 IDE 退出，并会处理 language server 的重启。
+如果需要和桌面版并行运行，或不希望改动正常配置，可以使用独立配置：
+
+```powershell
+.\easy-net-hook.exe `
+  --proxy 127.0.0.1:1082 `
+  --antigravity `
+  --antigravity-isolated `
+  --detach
+```
+
+独立配置保存在 `%LOCALAPPDATA%\EasyNetHook\AntigravityProfile`，首次使用需要单独登录。
+
+该模式用 Chromium 原生 SOCKS5 参数代理 Antigravity IDE 的网络服务，并把大小写形式的 `ALL_PROXY`、HTTP/HTTPS、WebSocket 和 `NO_PROXY` 环境变量传给其子进程。代理环境使用兼容性更广的 `socks5://` URL，并把 localhost、IPv4/IPv6 回环地址保留为直连，避免登录回调和 IDE 本地 RPC 被代理。由扩展启动的 `language_server_windows_x64.exe` 会继承这些设置；另有一个轻量 `easy-net-hook.exe` 监视器，只向 language server 加载兜底 Hook，把不遵守代理环境变量的外部 TCP 连接也送入 SOCKS5。监视器随 IDE 退出，并会处理 language server 的重启。
 
 Antigravity 的 Electron 主进程、network service、renderer 和 GPU 进程都不加载 `easy-net-hook.dll`，因此不会触碰其 Chromium 沙箱；只有普通的 x64 language server 使用 Hook。该模式必须使用 x64 包，也不支持 SOCKS5 用户名密码。请使用本机免认证 SOCKS5 端口。默认情况下，兜底 Hook 的域名仍由 Windows DNS 解析；配置 `--dns IP[:PORT]` 后仅 language server 的兜底解析改用指定 DNS，Chromium URL 域名仍交给 SOCKS5 代理。
-
-它使用 `%LOCALAPPDATA%\EasyNetHook\AntigravityProfile` 下按代理地址隔离且可复用的配置目录，可以和手动启动的 Antigravity 同时运行。
 
 ### ChatGPT Windows 客户端
 
@@ -160,7 +172,7 @@ Antigravity 的 Electron 主进程、network service、renderer 和 GPU 进程�
   --detach
 ```
 
-`--chatgpt-app` 会自动查找已安装的 Microsoft Store/MSIX 版 ChatGPT，创建独立的 `%LOCALAPPDATA%\EasyNetHook\ChatGPTAppProfile` 用户目录，并用 Chromium 原生 SOCKS5 参数启动第二个实例。它还为 ChatGPT 启动的 `codex.exe` 后端设置 `ALL_PROXY`、HTTP/HTTPS 和 WebSocket 代理环境变量，确保界面请求与实际对话请求都进入 SOCKS5。域名通过 `socks5h://` 交给代理端解析，同时禁用 QUIC，避免 UDP 绕过。该模式不加载 `easy-net-hook.dll`，因此比 API Hook 更轻，也不会因为向 Chromium 沙箱或网络服务注入 DLL 而出现托盘图标存在但主窗口空白的问题。
+`--chatgpt-app` 会自动查找已安装的 Microsoft Store/MSIX 版 ChatGPT，创建独立的 `%LOCALAPPDATA%\EasyNetHook\ChatGPTAppProfile` 用户目录，并用 Chromium 原生 SOCKS5 参数启动第二个实例。它还为 ChatGPT 启动的 `codex.exe` 后端设置 `ALL_PROXY`、HTTP/HTTPS 和 WebSocket 代理环境变量，确保界面请求与实际对话请求都进入 SOCKS5。后端环境继续使用 `socks5h://`，Chromium 也通过代理解析 URL 域名并禁用 QUIC，避免 UDP 绕过。该模式不加载 `easy-net-hook.dll`，因此比 API Hook 更轻，也不会因为向 Chromium 沙箱或网络服务注入 DLL 而出现托盘图标存在但主窗口空白的问题。
 
 原来手动启动的 ChatGPT 可以继续运行。专用模式使用隔离配置目录，所以首次启动的登录状态和原实例相互独立。
 
@@ -243,6 +255,7 @@ Chromium 的 SOCKS5 模式不支持用户名密码，因此网页模式只能连
 --appx AUMID        正式激活打包桌面应用，然后附加返回的进程
 --antigravity       原生代理启动 IDE，并只为 x64 language server 启用兜底 Hook
 --antigravity-path  指定 Antigravity IDE.exe；通常可以自动查找
+--antigravity-isolated 使用独立用户目录；默认复用桌面版登录状态
 --chatgpt-app       不注入，使用独立配置启动 ChatGPT 客户端的原生 SOCKS5 模式
 --chatgpt-web       不注入，使用独立 Edge/Chrome SOCKS5 会话打开 ChatGPT
 --browser-path PATH 为网页模式指定 Edge/Chrome 可执行文件
@@ -282,7 +295,7 @@ DNS 查询是目标进程到指定 DNS 服务的普通 UDP/TCP 流量，会绕�
 
 ### 进程与兼容性
 
-- `--chatgpt-app` 使用原生代理参数及继承环境，不注入 DLL。`--antigravity` 同样不向 Electron 进程注入，但会监视其后代并只 Hook `language_server_windows_x64.exe`，兜底处理忽略代理环境变量的外部 TCP。
+- `--chatgpt-app` 使用原生代理参数及继承环境，不注入 DLL。`--antigravity` 默认复用正常登录配置，同样不向 Electron 进程注入，但会监视其后代并只 Hook `language_server_windows_x64.exe`，兜底处理忽略代理环境变量的外部 TCP。
 - `--pid` 采用标准远程 `LoadLibraryW` 注入，只影响注入后新建的连接；已经建立的连接仍保持原路径。
 - Chromium/Electron 子进程采用网络服务定向注入；其 renderer、GPU、crashpad 和非网络 utility 子进程不会加载 Hook。`--no-children` 会连网络服务也一并跳过，因此不适合需要代理 Chromium/Electron 流量的场景。
 - `--appx` 先通过 Windows 包激活 API 启动或唤醒应用，再采用与 `--pid` 相同的方式注入。激活到注入之间存在很短的时间窗口，极早建立的连接可能需要在应用内重新连接。
@@ -307,7 +320,7 @@ DNS 查询是目标进程到指定 DNS 服务的普通 UDP/TCP 流量，会绕�
 easy-net-hook.exe
   ├─ GUI + 本地历史记录（快捷启动常用配置）
   ├─ --chatgpt-app（原生 SOCKS5 参数 + 后端代理环境）
-  ├─ --antigravity（IDE 原生代理 + language server 专用兜底 Hook）
+  ├─ --antigravity（默认配置/可选隔离配置 + IDE 原生代理 + LS 兜底 Hook）
   ├─ DetourCreateProcessWithDllExW（启动普通新进程）
   ├─ --appx + IApplicationActivationManager（激活打包应用）
   └─ --pid / --appx + LoadLibraryW（附加运行中进程）

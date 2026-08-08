@@ -218,10 +218,13 @@ void UpdateModeUi(GuiState& state) {
     const int mode = static_cast<int>(SendDlgItemMessageW(state.dialog, IDC_MODE, CB_GETCURSEL,
                                                            0, 0));
     const bool chatgpt = mode == 0;
+    const bool antigravity = mode == 1;
     EnableWindow(GetDlgItem(state.dialog, IDC_PATH), !chatgpt);
     EnableWindow(GetDlgItem(state.dialog, IDC_BROWSE), !chatgpt);
     EnableWindow(GetDlgItem(state.dialog, IDC_ARGUMENTS), !chatgpt);
     EnableWindow(GetDlgItem(state.dialog, IDC_DNS), !chatgpt);
+    ShowWindow(GetDlgItem(state.dialog, IDC_ISOLATED), antigravity ? SW_SHOW : SW_HIDE);
+    EnableWindow(GetDlgItem(state.dialog, IDC_ISOLATED), antigravity);
     if (chatgpt) {
         SetControlText(state.dialog, IDC_PATH, L"");
         SetControlText(state.dialog, IDC_HINT,
@@ -229,8 +232,8 @@ void UpdateModeUi(GuiState& state) {
                        L"无需 DLL 注入。首次启动可能需要稍候。");
     } else if (mode == 1) {
         SetControlText(state.dialog, IDC_HINT,
-                       L"程序路径可留空自动查找。IDE 与 language_server 后端都通过代理。\r\n"
-                       L"language server 使用兜底 Hook；可选 DNS。配置目录独立且可复用。");
+                       L"默认复用桌面版登录状态；启动前请完全退出 Antigravity。\r\n"
+                       L"独立配置可并行运行，但需要单独登录；language server 有兜底 Hook。");
     } else {
         SetControlText(state.dialog, IDC_HINT,
                        L"适合普通 Win32 程序。通过 DLL Hook 代理 TCP；可选自定义 DNS。\r\n"
@@ -249,6 +252,8 @@ void LoadEntry(GuiState& state, std::size_t index) {
     SetControlText(state.dialog, IDC_PATH, entry.path);
     SetControlText(state.dialog, IDC_ARGUMENTS, entry.arguments);
     SetControlText(state.dialog, IDC_DNS, entry.dns);
+    CheckDlgButton(state.dialog, IDC_ISOLATED,
+                   entry.isolated ? BST_CHECKED : BST_UNCHECKED);
     UpdateModeUi(state);
     if (entry.mode != kModeChatGpt) {
         SetControlText(state.dialog, IDC_PATH, entry.path);
@@ -291,6 +296,8 @@ easy_net::history::Entry CurrentEntry(GuiState& state) {
     entry.arguments = ControlText(state.dialog, IDC_ARGUMENTS);
     entry.proxy = ControlText(state.dialog, IDC_PROXY);
     entry.dns = ControlText(state.dialog, IDC_DNS);
+    entry.isolated = mode == 1 &&
+                     IsDlgButtonChecked(state.dialog, IDC_ISOLATED) == BST_CHECKED;
     entry.last_used = CurrentTimestamp();
     if (mode == 0) {
         entry.name = L"ChatGPT";
@@ -333,8 +340,14 @@ std::wstring BuildLauncherCommand(const GuiState& state,
         command += L" --chatgpt-app";
     } else if (entry.mode == kModeAntigravity) {
         command += L" --antigravity";
+        if (entry.isolated) {
+            command += L" --antigravity-isolated";
+        }
         if (!entry.path.empty()) {
             command += L" --antigravity-path " + QuoteArgument(entry.path);
+        }
+        if (!entry.dns.empty()) {
+            command += L" --dns " + QuoteArgument(entry.dns);
         }
         if (!entry.arguments.empty()) {
             command += L" -- " + entry.arguments;
@@ -378,6 +391,14 @@ bool LaunchEntry(GuiState& state) {
     }
     CloseHandle(process.hProcess);
     if (wait == WAIT_OBJECT_0 && exit_code != 0) {
+        if (exit_code == 6 && entry.mode == kModeAntigravity && !entry.isolated) {
+            MessageBoxW(state.dialog,
+                        L"检测到 Antigravity 仍在运行。请从托盘完全退出全部 Antigravity "
+                        L"进程后重试，确保新进程能够继承代理；或者勾选“使用独立配置”。",
+                        L"请先退出 Antigravity", MB_OK | MB_ICONWARNING);
+            SetControlText(state.dialog, IDC_STATUS, L"等待退出现有 Antigravity");
+            return false;
+        }
         wchar_t message[160]{};
         swprintf_s(message, L"启动器返回错误代码 %lu。请检查程序路径、代理地址和运行权限。",
                    exit_code);

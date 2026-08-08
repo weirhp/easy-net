@@ -10,7 +10,7 @@ int wmain() {
         {L"hook", L"Demo", L"C:\\Apps\\demo.exe", L"--name \"a\tb\"", L"127.0.0.1:1080",
          L"", L"100"},
         {L"antigravity", L"Antigravity IDE", L"D:\\IDE\\Antigravity IDE.exe",
-         L"D:\\work\nproject", L"127.0.0.1:1082", L"", L"99"},
+         L"D:\\work\nproject", L"127.0.0.1:1082", L"", L"99", true},
     };
     const std::wstring serialized = easy_net::history::Serialize(entries);
     const auto parsed = easy_net::history::Parse(serialized);
@@ -18,6 +18,12 @@ int wmain() {
     assert(parsed[0].path == entries[0].path);
     assert(parsed[0].arguments == entries[0].arguments);
     assert(parsed[1].arguments == entries[1].arguments);
+    assert(parsed[1].isolated);
+
+    const auto legacy = easy_net::history::Parse(
+        L"antigravity\tAntigravity IDE\tD:\\\\IDE.exe\t\t127.0.0.1:1082\t\t98\n");
+    assert(legacy.size() == 1);
+    assert(!legacy[0].isolated);
 
     auto updated = parsed;
     Entry replacement = entries[0];

@@ -17,10 +17,12 @@ int wmain() {
     assert(easy_net::browser::ProfileKey(L"[::1]:1080") == L"___1__1080");
 
     const auto arguments = easy_net::browser::NativeSocksArguments(L"127.0.0.1:1080", L"127.0.0.1");
-    assert(arguments.size() == 3);
+    assert(arguments.size() == 4);
     assert(arguments[0] == L"--proxy-server=socks5://127.0.0.1:1080");
-    assert(arguments[1] == L"--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1");
-    assert(arguments[2] == L"--disable-quic");
+    assert(arguments[1].find(L"EXCLUDE 127.0.0.1") != std::wstring::npos);
+    assert(arguments[1].find(L"EXCLUDE localhost") != std::wstring::npos);
+    assert(arguments[2] == L"--proxy-bypass-list=localhost;127.0.0.1;[::1]");
+    assert(arguments[3] == L"--disable-quic");
 
     const auto environment = easy_net::browser::NativeSocksEnvironment(L"127.0.0.1:1080");
     assert(environment.size() == 10);
@@ -37,8 +39,16 @@ int wmain() {
         assert(environment[index].second == L"socks5h://127.0.0.1:1080");
     }
     assert(environment[8].first == L"NO_PROXY");
-    assert(environment[8].second == L"localhost,127.0.0.1,::1");
+    assert(environment[8].second.find(L"127.0.0.0/8") != std::wstring::npos);
+    assert(environment[8].second ==
+           L"localhost,127.0.0.1,127.0.0.0/8,::1,::1/128");
     assert(environment[9].first == L"no_proxy");
-    assert(environment[9].second == L"localhost,127.0.0.1,::1");
+    assert(environment[9].second ==
+           L"localhost,127.0.0.1,127.0.0.0/8,::1,::1/128");
+
+    const auto compatible =
+        easy_net::browser::NativeSocksEnvironment(L"127.0.0.1:1080", true);
+    assert(compatible[0].second == L"socks5://127.0.0.1:1080");
+    assert(compatible[5].second == L"socks5://127.0.0.1:1080");
     return 0;
 }

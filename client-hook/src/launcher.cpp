@@ -36,6 +36,7 @@ struct Options {
     bool allow_udp_direct = false;
     bool detach = false;
     bool antigravity = false;
+    bool antigravity_isolated = false;
     bool chatgpt_app = false;
     bool chatgpt_web = false;
     std::wstring antigravity_path;
@@ -66,6 +67,7 @@ void PrintUsage() {
         << L"  --appx AUMID           Activate a packaged desktop app, then inject it\n"
         << L"  --antigravity          Open Antigravity IDE and its language server through SOCKS5\n"
         << L"  --antigravity-path P   Antigravity IDE executable (optional)\n"
+        << L"  --antigravity-isolated Use a separate profile instead of the normal login state\n"
         << L"  --chatgpt-app          Open the installed ChatGPT app with native Chromium SOCKS5\n"
         << L"  --chatgpt-web          Open ChatGPT in an isolated Edge/Chrome SOCKS5 session\n"
         << L"  --browser-path PATH    Browser executable for --chatgpt-web (optional)\n"
@@ -121,6 +123,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
             options.allow_udp_direct = true;
         } else if (argument == L"--antigravity") {
             options.antigravity = true;
+        } else if (argument == L"--antigravity-isolated") {
+            options.antigravity_isolated = true;
         } else if (argument == L"--chatgpt-app") {
             options.chatgpt_app = true;
         } else if (argument == L"--chatgpt-web") {
@@ -157,6 +161,10 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
     }
     if (!options.antigravity_path.empty() && !options.antigravity) {
         std::wcerr << L"--antigravity-path can only be used with --antigravity.\n";
+        return false;
+    }
+    if (options.antigravity_isolated && !options.antigravity) {
+        std::wcerr << L"--antigravity-isolated can only be used with --antigravity.\n";
         return false;
     }
     return true;
@@ -438,8 +446,9 @@ std::optional<std::filesystem::path> FindAntigravityExecutable(const Options& op
     return std::nullopt;
 }
 
-bool SetNativeSocksEnvironment(const std::wstring& proxy) {
-    for (const auto& [name, value] : easy_net::browser::NativeSocksEnvironment(proxy)) {
+bool SetNativeSocksEnvironment(const std::wstring& proxy, bool compatible_scheme = false) {
+    for (const auto& [name, value] :
+         easy_net::browser::NativeSocksEnvironment(proxy, compatible_scheme)) {
         if (!SetEnvironmentVariableW(name.c_str(), value.c_str())) {
             return false;
         }
@@ -600,21 +609,31 @@ int LaunchAntigravity(const Options& options) {
         std::wcerr << L"Antigravity IDE.exe was not found. Use --antigravity-path PATH.\n";
         return 3;
     }
-    const auto local_app_data = EnvironmentValue(L"LOCALAPPDATA");
-    if (!local_app_data) {
-        std::wcerr << L"LOCALAPPDATA is unavailable; cannot create the Antigravity profile.\n";
-        return 3;
+    if (!options.antigravity_isolated && FindRunningExecutable(L"Antigravity IDE.exe")) {
+        std::wcerr << L"Antigravity IDE is already running. Fully exit it first so the new "
+                      L"default-profile process can inherit the proxy, or use "
+                      L"--antigravity-isolated.\n";
+        return 6;
     }
-    const std::filesystem::path profile = std::filesystem::path(*local_app_data) /
-                                          L"EasyNetHook/AntigravityProfile" /
-                                          easy_net::browser::ProfileKey(options.proxy);
-    std::error_code directory_error;
-    std::filesystem::create_directories(profile, directory_error);
-    if (directory_error) {
-        std::wcerr << L"Cannot create the Antigravity profile: " << profile.wstring() << L".\n";
-        return 3;
+
+    std::optional<std::filesystem::path> profile;
+    if (options.antigravity_isolated) {
+        const auto local_app_data = EnvironmentValue(L"LOCALAPPDATA");
+        if (!local_app_data) {
+            std::wcerr << L"LOCALAPPDATA is unavailable; cannot create the Antigravity profile.\n";
+            return 3;
+        }
+        profile = std::filesystem::path(*local_app_data) / L"EasyNetHook/AntigravityProfile" /
+                  easy_net::browser::ProfileKey(options.proxy);
+        std::error_code directory_error;
+        std::filesystem::create_directories(*profile, directory_error);
+        if (directory_error) {
+            std::wcerr << L"Cannot create the Antigravity profile: " << profile->wstring()
+                       << L".\n";
+            return 3;
+        }
     }
-    if (!SetNativeSocksEnvironment(options.proxy)) {
+    if (!SetNativeSocksEnvironment(options.proxy, true)) {
         std::wcerr << L"Cannot configure the Antigravity proxy environment (error "
                    << GetLastError() << L").\n";
         return 4;
@@ -627,13 +646,14 @@ int LaunchAntigravity(const Options& options) {
         }
     }
 
-    std::vector<std::wstring> command{
-        executable->wstring(),
-        L"--user-data-dir=" + profile.wstring(),
-    };
+    std::vector<std::wstring> command{executable->wstring()};
+    if (profile) {
+        command.push_back(L"--user-data-dir=" + profile->wstring());
+    }
     const auto proxy_arguments = easy_net::browser::NativeSocksArguments(options.proxy, proxy_host);
     command.insert(command.end(), proxy_arguments.begin(), proxy_arguments.end());
     command.push_back(L"--no-first-run");
+    command.push_back(L"--reuse-window");
     command.insert(command.end(), options.command.begin(), options.command.end());
 
     std::wstring command_line = BuildCommandLine(command);
@@ -667,7 +687,8 @@ int LaunchAntigravity(const Options& options) {
     CloseHandle(process.hThread);
     std::wcout << L"Opened Antigravity IDE through native SOCKS5 " << options.proxy
                << L" and enabled the language-server fallback Hook (PID "
-               << process.dwProcessId << L").\n";
+               << process.dwProcessId << L", profile "
+               << (options.antigravity_isolated ? L"isolated" : L"default") << L").\n";
     if (options.detach) {
         CloseHandle(process.hProcess);
         return 0;

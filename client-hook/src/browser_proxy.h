@@ -56,14 +56,20 @@ inline std::vector<std::wstring> NativeSocksArguments(const std::wstring& proxy,
                                                       const std::wstring& proxy_host) {
     return {
         L"--proxy-server=socks5://" + proxy,
-        L"--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE " + proxy_host,
+        L"--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE " + proxy_host +
+            L", EXCLUDE localhost, EXCLUDE 127.0.0.1, EXCLUDE ::1",
+        L"--proxy-bypass-list=localhost;127.0.0.1;[::1]",
         L"--disable-quic",
     };
 }
 
 inline std::vector<std::pair<std::wstring, std::wstring>> NativeSocksEnvironment(
-    const std::wstring& proxy) {
-    const std::wstring proxy_url = L"socks5h://" + proxy;
+    const std::wstring& proxy, bool compatible_scheme = false) {
+    // Some managed applications do not recognize the curl-style socks5h:// spelling. The
+    // compatible mode matches Cockpit Tools; Chromium hostname routing is still controlled by
+    // --proxy-server/--host-resolver-rules.
+    const std::wstring proxy_url =
+        (compatible_scheme ? L"socks5://" : L"socks5h://") + proxy;
     return {
         {L"ALL_PROXY", proxy_url},
         {L"all_proxy", proxy_url},
@@ -73,8 +79,8 @@ inline std::vector<std::pair<std::wstring, std::wstring>> NativeSocksEnvironment
         {L"https_proxy", proxy_url},
         {L"WS_PROXY", proxy_url},
         {L"WSS_PROXY", proxy_url},
-        {L"NO_PROXY", L"localhost,127.0.0.1,::1"},
-        {L"no_proxy", L"localhost,127.0.0.1,::1"},
+        {L"NO_PROXY", L"localhost,127.0.0.1,127.0.0.0/8,::1,::1/128"},
+        {L"no_proxy", L"localhost,127.0.0.1,127.0.0.0/8,::1,::1/128"},
     };
 }
 

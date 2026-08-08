@@ -1,8 +1,8 @@
 # Easy-Net Hook
 
-Easy-Net Hook 是一个轻量 Windows 应用代理器。它通过 Microsoft Detours 在目标进程内 Hook Winsock API，把 TCP `connect`、`WSAConnect` 和 `ConnectEx` 改写为 SOCKS5 `CONNECT`。
+Easy-Net Hook 是一个轻量 Windows 应用代理器。普通 Win32 程序通过 Microsoft Detours Hook Winsock API，把 TCP `connect`、`WSAConnect` 和 `ConnectEx` 改写为 SOCKS5 `CONNECT`；ChatGPT 和 Antigravity IDE 则使用更稳定的原生代理模式，不向 Electron/Chromium 沙箱注入 DLL。
 
-它直接复用 Easy-Net Lite、SSH `-D` 或其他客户端提供的 SOCKS5 端口，例如 `127.0.0.1:1080`。它既能启动普通新进程，也能通过 `--appx` 激活打包桌面应用，或用 `--pid` 附加到已运行进程；不安装驱动，也不修改目标程序文件。
+它直接复用 Easy-Net Lite、SSH `-D` 或其他客户端提供的 SOCKS5 端口，例如 `127.0.0.1:1080`。它既能通过图形界面保存常用程序并快捷启动，也能通过命令行启动普通新进程、激活打包桌面应用或附加到已运行进程；不安装驱动，也不修改目标程序文件。
 
 > 这仍不是 Proxifier 的完整替代品。请先阅读“当前边界”，尤其是运行中进程、UDP 和 DNS 部分。
 
@@ -57,6 +57,20 @@ THIRD-PARTY-LICENSES\Detours-LICENSE.md
 
 ## 使用
 
+### 图形界面
+
+直接双击 `easy-net-hook.exe`，或者执行：
+
+```powershell
+.\easy-net-hook.exe --gui
+```
+
+界面可以选择 ChatGPT、Antigravity IDE 或通用 Hook 模式，填写 SOCKS5 地址、程序路径、启动参数和可选 DNS。每次成功启动后会自动记录配置，之后可在左侧列表双击快捷启动，也可以删除单条记录或清空全部记录。
+
+记录最多保留 30 条，保存在 `%LOCALAPPDATA%\EasyNetHook\launcher-history.tsv`。其中不保存代理用户名或密码。ChatGPT 和 Antigravity 仍使用各自隔离且可复用的用户目录，因此不会占用手动启动实例的配置目录。
+
+### 通用程序
+
 先启动本地 SOCKS5 服务，再通过启动器打开目标程序：
 
 ```powershell
@@ -97,6 +111,41 @@ IPv6 DNS 地址带端口时使用方括号：
 ```
 
 只能附加相同架构的进程：x64 包对应 x64 目标，Win32 包对应 32 位目标。目标权限高于启动器时，需要以管理员身份运行启动器。注入只影响之后创建的新连接，注入前已经建立的 TCP、HTTP/2 或 WebSocket 连接不会迁移到代理。
+
+### Antigravity IDE
+
+推荐使用 Antigravity 专用模式：
+
+```powershell
+.\easy-net-hook.exe `
+  --proxy 127.0.0.1:1082 `
+  --antigravity `
+  --detach
+```
+
+启动器会优先从当前运行实例获取安装路径，也会查找常用的用户级和系统级安装目录。找不到时可以明确指定：
+
+```powershell
+.\easy-net-hook.exe `
+  --proxy 127.0.0.1:1082 `
+  --antigravity `
+  --antigravity-path "D:\soft\Antigravity IDE\Antigravity IDE.exe" `
+  --detach
+```
+
+在 `--` 后可以继续传递工作区或其他 IDE 参数：
+
+```powershell
+.\easy-net-hook.exe `
+  --proxy 127.0.0.1:1082 `
+  --antigravity `
+  --detach `
+  -- "D:\work\my-project"
+```
+
+该模式用 Chromium 原生 SOCKS5 参数代理 Antigravity IDE 的网络服务，并把大小写形式的 `ALL_PROXY`、HTTP/HTTPS、WebSocket 和 `NO_PROXY` 环境变量传给其子进程。因此由扩展启动的 `language_server_windows_x64.exe` 会继承 `socks5h://` 代理配置，域名交给 SOCKS5 服务解析。它使用 `%LOCALAPPDATA%\EasyNetHook\AntigravityProfile` 下按代理地址隔离且可复用的配置目录，可以和手动启动的 Antigravity 同时运行。
+
+此模式不加载 `easy-net-hook.dll`，不受 Electron 沙箱的 DLL 限制，也不支持 SOCKS5 用户名密码。请使用本机免认证 SOCKS5 端口；`--dns` 在此模式下会被忽略。
 
 ### ChatGPT Windows 客户端
 
@@ -186,9 +235,12 @@ Chromium 的 SOCKS5 模式不支持用户名密码，因此网页模式只能连
 可用参数：
 
 ```text
+--gui               打开图形启动器；不带参数运行时也是此行为
 --no-children       不向子进程加载 Hook
 --pid PID           附加到一个已运行的同架构进程
 --appx AUMID        正式激活打包桌面应用，然后附加返回的进程
+--antigravity       不注入，使用独立配置启动 Antigravity IDE 原生 SOCKS5 模式
+--antigravity-path  指定 Antigravity IDE.exe；通常可以自动查找
 --chatgpt-app       不注入，使用独立配置启动 ChatGPT 客户端的原生 SOCKS5 模式
 --chatgpt-web       不注入，使用独立 Edge/Chrome SOCKS5 会话打开 ChatGPT
 --browser-path PATH 为网页模式指定 Edge/Chrome 可执行文件
@@ -228,6 +280,7 @@ DNS 查询是目标进程到指定 DNS 服务的普通 UDP/TCP 流量，会绕�
 
 ### 进程与兼容性
 
+- `--antigravity` 和 `--chatgpt-app` 使用原生代理参数及继承环境，不注入 DLL；由应用启动的后端只有在自身支持标准代理环境变量时才会跟随代理。
 - `--pid` 采用标准远程 `LoadLibraryW` 注入，只影响注入后新建的连接；已经建立的连接仍保持原路径。
 - Chromium/Electron 子进程采用网络服务定向注入；其 renderer、GPU、crashpad 和非网络 utility 子进程不会加载 Hook。`--no-children` 会连网络服务也一并跳过，因此不适合需要代理 Chromium/Electron 流量的场景。
 - `--appx` 先通过 Windows 包激活 API 启动或唤醒应用，再采用与 `--pid` 相同的方式注入。激活到注入之间存在很短的时间窗口，极早建立的连接可能需要在应用内重新连接。
@@ -250,7 +303,9 @@ DNS 查询是目标进程到指定 DNS 服务的普通 UDP/TCP 流量，会绕�
 
 ```text
 easy-net-hook.exe
-  ├─ DetourCreateProcessWithDllExW（启动新进程）
+  ├─ GUI + 本地历史记录（快捷启动常用配置）
+  ├─ --chatgpt-app / --antigravity（原生 SOCKS5 参数 + 后端代理环境）
+  ├─ DetourCreateProcessWithDllExW（启动普通新进程）
   ├─ --appx + IApplicationActivationManager（激活打包应用）
   └─ --pid / --appx + LoadLibraryW（附加运行中进程）
        └─ 目标程序 + easy-net-hook.dll

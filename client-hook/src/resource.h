@@ -1,0 +1,18 @@
+#pragma once
+
+#define IDD_LAUNCHER 101
+
+#define IDC_TITLE 1000
+#define IDC_HISTORY 1001
+#define IDC_REMOVE_HISTORY 1002
+#define IDC_CLEAR_HISTORY 1003
+#define IDC_MODE 1004
+#define IDC_PROXY 1005
+#define IDC_PATH 1006
+#define IDC_BROWSE 1007
+#define IDC_ARGUMENTS 1008
+#define IDC_DNS 1009
+#define IDC_HINT 1010
+#define IDC_STATUS 1011
+#define IDC_LAUNCH 1012
+#define IDC_SUBTITLE 1013

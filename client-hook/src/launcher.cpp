@@ -15,12 +15,14 @@
 #include <iterator>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
 #include "browser_proxy.h"
 #include "config_ipc.h"
 #include "dns_resolver.h"
+#include "launcher_gui.h"
 
 namespace {
 
@@ -32,8 +34,10 @@ struct Options {
     bool inject_children = true;
     bool allow_udp_direct = false;
     bool detach = false;
+    bool antigravity = false;
     bool chatgpt_app = false;
     bool chatgpt_web = false;
+    std::wstring antigravity_path;
     std::wstring browser_path;
     std::wstring app_user_model_id;
     std::optional<DWORD> process_id;
@@ -47,9 +51,11 @@ void PrintUsage() {
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 [--dns DNS] [options] -- app.exe [args...]\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 [--dns DNS] [options] --pid PID\n\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 [--dns DNS] [options] --appx AUMID\n"
+        << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --antigravity [options] [-- app-args...]\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --chatgpt-app [options]\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --chatgpt-web [options]\n\n"
         << L"Options:\n"
+        << L"  --gui                  Open the graphical launcher (also the default with no arguments)\n"
         << L"  --username VALUE       SOCKS5 username (optional)\n"
         << L"  --password VALUE       SOCKS5 password (optional, max 255 bytes)\n"
         << L"  --dns IP[:PORT]        Use a specific DNS server (default: Windows DNS)\n"
@@ -57,6 +63,8 @@ void PrintUsage() {
         << L"  --allow-udp-direct     Allow UDP to bypass the proxy (may leak traffic)\n"
         << L"  --pid PID              Inject into an already running process\n"
         << L"  --appx AUMID           Activate a packaged desktop app, then inject it\n"
+        << L"  --antigravity          Open Antigravity IDE and its language server through SOCKS5\n"
+        << L"  --antigravity-path P   Antigravity IDE executable (optional)\n"
         << L"  --chatgpt-app          Open the installed ChatGPT app with native Chromium SOCKS5\n"
         << L"  --chatgpt-web          Open ChatGPT in an isolated Edge/Chrome SOCKS5 session\n"
         << L"  --browser-path PATH    Browser executable for --chatgpt-web (optional)\n"
@@ -78,7 +86,7 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
         } else if (argument == L"--proxy" || argument == L"--username" ||
                    argument == L"--password" || argument == L"--dns" ||
                    argument == L"--pid" || argument == L"--browser-path" ||
-                   argument == L"--appx") {
+                   argument == L"--antigravity-path" || argument == L"--appx") {
             if (++index >= argc) {
                 std::wcerr << L"Missing value for " << argument << L".\n";
                 return false;
@@ -93,6 +101,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
                 options.process_id = static_cast<DWORD>(value);
             } else if (argument == L"--browser-path") {
                 options.browser_path = argv[index];
+            } else if (argument == L"--antigravity-path") {
+                options.antigravity_path = argv[index];
             } else if (argument == L"--appx") {
                 options.app_user_model_id = argv[index];
             } else if (argument == L"--proxy") {
@@ -108,6 +118,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
             options.inject_children = false;
         } else if (argument == L"--allow-udp-direct") {
             options.allow_udp_direct = true;
+        } else if (argument == L"--antigravity") {
+            options.antigravity = true;
         } else if (argument == L"--chatgpt-app") {
             options.chatgpt_app = true;
         } else if (argument == L"--chatgpt-web") {
@@ -127,18 +139,23 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
         std::wcerr << L"--proxy is required.\n";
         return false;
     }
-    const int target_count = (!options.command.empty() ? 1 : 0) +
+    const int target_count = ((!options.command.empty() && !options.antigravity) ? 1 : 0) +
                               (options.process_id.has_value() ? 1 : 0) +
                               (!options.app_user_model_id.empty() ? 1 : 0) +
+                              (options.antigravity ? 1 : 0) +
                               (options.chatgpt_app ? 1 : 0) +
                               (options.chatgpt_web ? 1 : 0);
     if (target_count != 1) {
         std::wcerr << L"Specify exactly one target: a command after --, --pid PID, "
-                      L"--appx AUMID, --chatgpt-app, or --chatgpt-web.\n";
+                      L"--appx AUMID, --antigravity, --chatgpt-app, or --chatgpt-web.\n";
         return false;
     }
     if (!options.browser_path.empty() && !options.chatgpt_web) {
         std::wcerr << L"--browser-path can only be used with --chatgpt-web.\n";
+        return false;
+    }
+    if (!options.antigravity_path.empty() && !options.antigravity) {
+        std::wcerr << L"--antigravity-path can only be used with --antigravity.\n";
         return false;
     }
     return true;
@@ -350,6 +367,85 @@ std::optional<std::filesystem::path> FindChatGptExecutable() {
     return std::nullopt;
 }
 
+std::optional<std::filesystem::path> FindRunningExecutable(const wchar_t* executable_name) {
+    ScopedHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    if (snapshot.get() == INVALID_HANDLE_VALUE) {
+        return std::nullopt;
+    }
+
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (!Process32FirstW(snapshot.get(), &entry)) {
+        return std::nullopt;
+    }
+    do {
+        if (_wcsicmp(entry.szExeFile, executable_name) != 0) {
+            continue;
+        }
+        ScopedHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                                         entry.th32ProcessID));
+        if (process.get() == nullptr) {
+            continue;
+        }
+        std::vector<wchar_t> path(32768);
+        DWORD length = static_cast<DWORD>(path.size());
+        if (QueryFullProcessImageNameW(process.get(), 0, path.data(), &length)) {
+            const std::filesystem::path candidate(std::wstring(path.data(), length));
+            if (std::filesystem::is_regular_file(candidate)) {
+                return candidate;
+            }
+        }
+    } while (Process32NextW(snapshot.get(), &entry));
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> FindAntigravityExecutable(const Options& options) {
+    if (!options.antigravity_path.empty()) {
+        const std::filesystem::path configured(options.antigravity_path);
+        if (std::filesystem::is_regular_file(configured)) {
+            return configured;
+        }
+        return std::nullopt;
+    }
+    if (const auto running = FindRunningExecutable(L"Antigravity IDE.exe")) {
+        return running;
+    }
+
+    std::vector<std::filesystem::path> candidates;
+    const auto local_app_data = EnvironmentValue(L"LOCALAPPDATA");
+    const auto program_files = EnvironmentValue(L"ProgramFiles");
+    const auto program_files_x86 = EnvironmentValue(L"ProgramFiles(x86)");
+    const auto add_candidates = [&candidates](const std::wstring& root) {
+        const std::filesystem::path base = std::filesystem::path(root) / L"Antigravity IDE";
+        candidates.emplace_back(base / L"Antigravity IDE.exe");
+        candidates.emplace_back(base / L"_" / L"Antigravity IDE.exe");
+    };
+    if (local_app_data) {
+        add_candidates((std::filesystem::path(*local_app_data) / L"Programs").wstring());
+    }
+    if (program_files) {
+        add_candidates(*program_files);
+    }
+    if (program_files_x86) {
+        add_candidates(*program_files_x86);
+    }
+    for (const auto& candidate : candidates) {
+        if (std::filesystem::is_regular_file(candidate)) {
+            return candidate;
+        }
+    }
+    return std::nullopt;
+}
+
+bool SetNativeSocksEnvironment(const std::wstring& proxy) {
+    for (const auto& [name, value] : easy_net::browser::NativeSocksEnvironment(proxy)) {
+        if (!SetEnvironmentVariableW(name.c_str(), value.c_str())) {
+            return false;
+        }
+    }
+    return true;
+}
+
 int LaunchChatGptApp(const Options& options) {
     if (!options.username.empty() || !options.password.empty()) {
         std::wcerr << L"Chromium does not support SOCKS5 username/password authentication. "
@@ -385,13 +481,10 @@ int LaunchChatGptApp(const Options& options) {
                    << GetLastError() << L").\n";
         return 4;
     }
-    for (const auto& [name, value] :
-         easy_net::browser::NativeSocksEnvironment(options.proxy)) {
-        if (!SetEnvironmentVariableW(name.c_str(), value.c_str())) {
-            std::wcerr << L"Cannot configure the ChatGPT backend proxy environment (error "
-                       << GetLastError() << L").\n";
-            return 4;
-        }
+    if (!SetNativeSocksEnvironment(options.proxy)) {
+        std::wcerr << L"Cannot configure the ChatGPT backend proxy environment (error "
+                   << GetLastError() << L").\n";
+        return 4;
     }
     if (!options.dns.empty()) {
         std::wcerr << L"Note: --dns is ignored in --chatgpt-app mode; Chromium sends URL hostnames "
@@ -420,6 +513,81 @@ int LaunchChatGptApp(const Options& options) {
     }
     CloseHandle(process.hThread);
     std::wcout << L"Opened the ChatGPT app and Codex backend through native SOCKS5 "
+               << options.proxy << L" without DLL injection (PID " << process.dwProcessId
+               << L").\n";
+    if (options.detach) {
+        CloseHandle(process.hProcess);
+        return 0;
+    }
+    WaitForSingleObject(process.hProcess, INFINITE);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(process.hProcess, &exit_code);
+    CloseHandle(process.hProcess);
+    return static_cast<int>(exit_code);
+}
+
+int LaunchAntigravity(const Options& options) {
+    if (!options.username.empty() || !options.password.empty()) {
+        std::wcerr << L"Antigravity Chromium networking does not support SOCKS5 username/password "
+                      L"authentication. Use a local unauthenticated SOCKS5 endpoint.\n";
+        return 2;
+    }
+    std::wstring proxy_host;
+    if (!easy_net::browser::ParseLiteralSocksEndpoint(options.proxy, proxy_host)) {
+        std::wcerr << L"--antigravity requires a literal SOCKS5 address such as 127.0.0.1:1080.\n";
+        return 2;
+    }
+    const auto executable = FindAntigravityExecutable(options);
+    if (!executable) {
+        std::wcerr << L"Antigravity IDE.exe was not found. Use --antigravity-path PATH.\n";
+        return 3;
+    }
+    const auto local_app_data = EnvironmentValue(L"LOCALAPPDATA");
+    if (!local_app_data) {
+        std::wcerr << L"LOCALAPPDATA is unavailable; cannot create the Antigravity profile.\n";
+        return 3;
+    }
+    const std::filesystem::path profile = std::filesystem::path(*local_app_data) /
+                                          L"EasyNetHook/AntigravityProfile" /
+                                          easy_net::browser::ProfileKey(options.proxy);
+    std::error_code directory_error;
+    std::filesystem::create_directories(profile, directory_error);
+    if (directory_error) {
+        std::wcerr << L"Cannot create the Antigravity profile: " << profile.wstring() << L".\n";
+        return 3;
+    }
+    if (!SetNativeSocksEnvironment(options.proxy)) {
+        std::wcerr << L"Cannot configure the Antigravity proxy environment (error "
+                   << GetLastError() << L").\n";
+        return 4;
+    }
+    if (!options.dns.empty()) {
+        std::wcerr << L"Note: --dns is ignored in --antigravity mode; hostnames are resolved "
+                      L"through SOCKS5.\n";
+    }
+
+    std::vector<std::wstring> command{
+        executable->wstring(),
+        L"--user-data-dir=" + profile.wstring(),
+    };
+    const auto proxy_arguments = easy_net::browser::NativeSocksArguments(options.proxy, proxy_host);
+    command.insert(command.end(), proxy_arguments.begin(), proxy_arguments.end());
+    command.push_back(L"--no-first-run");
+    command.insert(command.end(), options.command.begin(), options.command.end());
+
+    std::wstring command_line = BuildCommandLine(command);
+    std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
+    mutable_command.push_back(L'\0');
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(executable->c_str(), mutable_command.data(), nullptr, nullptr, FALSE,
+                        CREATE_DEFAULT_ERROR_MODE, nullptr, nullptr, &startup, &process)) {
+        std::wcerr << L"Cannot start Antigravity IDE (error " << GetLastError() << L").\n";
+        return 5;
+    }
+    CloseHandle(process.hThread);
+    std::wcout << L"Opened Antigravity IDE and language server through native SOCKS5 "
                << options.proxy << L" without DLL injection (PID " << process.dwProcessId
                << L").\n";
     if (options.detach) {
@@ -826,6 +994,19 @@ int ActivatePackagedApplication(const Options& options,
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 1 || (argc == 2 && std::wstring_view(argv[1]) == L"--gui")) {
+        std::vector<wchar_t> module_path(32768);
+        const DWORD length = GetModuleFileNameW(nullptr, module_path.data(),
+                                                static_cast<DWORD>(module_path.size()));
+        if (length == 0 || length >= static_cast<DWORD>(module_path.size())) {
+            MessageBoxW(nullptr, L"Cannot locate easy-net-hook.exe.", L"Easy-Net Hook",
+                        MB_OK | MB_ICONERROR);
+            return 3;
+        }
+        FreeConsole();
+        return RunLauncherGui(GetModuleHandleW(nullptr),
+                              std::wstring(module_path.data(), length));
+    }
     Options options;
     if (!ParseOptions(argc, argv, options)) {
         PrintUsage();
@@ -836,6 +1017,9 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (options.chatgpt_app) {
         return LaunchChatGptApp(options);
+    }
+    if (options.antigravity) {
+        return LaunchAntigravity(options);
     }
     if (!options.dns.empty()) {
         easy_net::dns::Endpoint dns_server;

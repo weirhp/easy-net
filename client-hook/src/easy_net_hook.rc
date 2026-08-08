@@ -1,0 +1,39 @@
+#include <windows.h>
+#include <commctrl.h>
+
+#pragma code_page(65001)
+
+#include "resource.h"
+
+1 RT_MANIFEST "easy_net_hook.manifest"
+
+IDD_LAUNCHER DIALOGEX 0, 0, 660, 420
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
+EXSTYLE WS_EX_APPWINDOW
+CAPTION "Easy-Net Hook"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT           "Easy-Net Hook", IDC_TITLE, 16, 12, 620, 18
+    LTEXT           "轻量 SOCKS5 应用启动器", IDC_SUBTITLE, 16, 31, 620, 12
+
+    GROUPBOX        "最近启动", -1, 14, 52, 300, 350
+    CONTROL         "", IDC_HISTORY, "SysListView32", WS_TABSTOP | WS_BORDER | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS, 26, 73, 276, 274
+    PUSHBUTTON      "删除记录", IDC_REMOVE_HISTORY, 26, 360, 82, 25
+    PUSHBUTTON      "清空记录", IDC_CLEAR_HISTORY, 116, 360, 82, 25
+
+    GROUPBOX        "启动配置", -1, 324, 52, 322, 350
+    LTEXT           "启动模式", -1, 338, 74, 100, 11
+    COMBOBOX        IDC_MODE, 338, 88, 294, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "SOCKS5 代理", -1, 338, 119, 100, 11
+    EDITTEXT        IDC_PROXY, 338, 133, 294, 22, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "程序路径", -1, 338, 164, 100, 11
+    EDITTEXT        IDC_PATH, 338, 178, 226, 22, ES_AUTOHSCROLL | WS_TABSTOP
+    PUSHBUTTON      "浏览...", IDC_BROWSE, 572, 177, 60, 24
+    LTEXT           "启动参数（可选）", -1, 338, 209, 130, 11
+    EDITTEXT        IDC_ARGUMENTS, 338, 223, 294, 22, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "DNS（仅通用 Hook，可选）", -1, 338, 254, 170, 11
+    EDITTEXT        IDC_DNS, 338, 268, 294, 22, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_HINT, 338, 300, 294, 32
+    LTEXT           "就绪", IDC_STATUS, 338, 339, 150, 24
+    DEFPUSHBUTTON   "通过代理启动", IDC_LAUNCH, 500, 348, 132, 32
+END

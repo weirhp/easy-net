@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(easy_net_hook LANGUAGES CXX)
+project(easy_net_hook LANGUAGES CXX RC)
 
 if(NOT WIN32 OR NOT MSVC)
     message(FATAL_ERROR "Easy-Net Hook currently requires Windows and MSVC.")
@@ -47,22 +47,28 @@ add_library(easy_net_hook_dll SHARED
 )
 target_compile_features(easy_net_hook_dll PRIVATE cxx_std_20)
 target_compile_definitions(easy_net_hook_dll PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0601)
-target_compile_options(easy_net_hook_dll PRIVATE /W4 /permissive- /EHsc)
+target_compile_options(easy_net_hook_dll PRIVATE /W4 /permissive- /EHsc /utf-8)
 target_link_options(easy_net_hook_dll PRIVATE "/export:DetourFinishHelperProcess,@1,NONAME")
 target_link_libraries(easy_net_hook_dll PRIVATE detours ws2_32 normaliz)
 set_target_properties(easy_net_hook_dll PROPERTIES OUTPUT_NAME "easy-net-hook")
 
 add_executable(easy_net_hook_launcher
+    src/easy_net_hook.rc
     src/browser_proxy.h
     src/config_ipc.h
+    src/history_store.h
     src/launcher.cpp
+    src/launcher_gui.cpp
+    src/launcher_gui.h
+    src/resource.h
     src/dns_resolver.cpp
     src/dns_resolver.h
 )
 target_compile_features(easy_net_hook_launcher PRIVATE cxx_std_20)
+target_include_directories(easy_net_hook_launcher PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_definitions(easy_net_hook_launcher PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE _WIN32_WINNT=0x0A00)
-target_compile_options(easy_net_hook_launcher PRIVATE /W4 /permissive- /EHsc)
-target_link_libraries(easy_net_hook_launcher PRIVATE detours advapi32 ole32 shell32 ws2_32)
+target_compile_options(easy_net_hook_launcher PRIVATE /W4 /permissive- /EHsc /utf-8)
+target_link_libraries(easy_net_hook_launcher PRIVATE detours advapi32 comctl32 comdlg32 ole32 shell32 ws2_32)
 set_target_properties(easy_net_hook_launcher PROPERTIES OUTPUT_NAME "easy-net-hook")
 add_dependencies(easy_net_hook_launcher easy_net_hook_dll)
 
@@ -116,6 +122,14 @@ target_compile_options(child_injection_test PRIVATE /W4 /permissive- /EHsc /UNDE
 set_property(TARGET child_injection_test PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_test(NAME child_injection_test COMMAND child_injection_test)
+
+add_executable(history_store_test tests/history_store_test.cpp src/history_store.h)
+target_compile_features(history_store_test PRIVATE cxx_std_20)
+target_compile_definitions(history_store_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_compile_options(history_store_test PRIVATE /W4 /permissive- /EHsc /UNDEBUG)
+set_property(TARGET history_store_test PROPERTY
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_test(NAME history_store_test COMMAND history_store_test)
 
 add_custom_command(TARGET easy_net_hook_launcher POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

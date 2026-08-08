@@ -20,6 +20,13 @@ int wmain() {
     assert(parsed[1].arguments == entries[1].arguments);
     assert(parsed[1].isolated);
 
+    Entry wechat{L"wechat", L"微信", L"D:\\Weixin\\Weixin.exe", L"",
+                 L"127.0.0.1:10808", L"223.5.5.5:53", L"102", false, L"proxy"};
+    easy_net::history::Upsert(entries, wechat);
+    const auto with_udp_mode = easy_net::history::Parse(easy_net::history::Serialize(entries));
+    assert(with_udp_mode.front().mode == L"wechat");
+    assert(with_udp_mode.front().udp_mode == L"proxy");
+
     const auto legacy = easy_net::history::Parse(
         L"antigravity\tAntigravity IDE\tD:\\\\IDE.exe\t\t127.0.0.1:1082\t\t98\n");
     assert(legacy.size() == 1);

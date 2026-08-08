@@ -30,7 +30,9 @@ BEGIN
     LTEXT           "启动参数（可选）", -1, 338, 209, 130, 11
     EDITTEXT        IDC_ARGUMENTS, 338, 223, 294, 22, ES_AUTOHSCROLL | WS_TABSTOP
     CONTROL         "使用独立配置（不复用现有登录）", IDC_ISOLATED, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 338, 251, 230, 18
-    LTEXT           "DNS（Hook/Antigravity，可选）", -1, 338, 276, 185, 11
+    LTEXT           "UDP/QUIC", IDC_UDP_LABEL, 338, 251, 64, 11
+    COMBOBOX        IDC_UDP_MODE, 406, 247, 226, 90, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "DNS（Hook/Antigravity/微信，可选）", -1, 338, 276, 210, 11
     EDITTEXT        IDC_DNS, 338, 290, 294, 22, ES_AUTOHSCROLL | WS_TABSTOP
     LTEXT           "", IDC_HINT, 338, 319, 294, 31
     LTEXT           "就绪", IDC_STATUS, 338, 361, 150, 24

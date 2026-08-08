@@ -2,7 +2,8 @@ param(
     [ValidateSet("x64", "Win32")]
     [string]$Architecture = "x64",
     [ValidateSet("Debug", "Release")]
-    [string]$Configuration = "Release"
+    [string]$Configuration = "Release",
+    [switch]$WithTunEngine
 )
 
 $ErrorActionPreference = "Stop"
@@ -74,4 +75,12 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $outputDirectory = Join-Path $buildDirectory $Configuration
+if ($WithTunEngine) {
+    if ($Architecture -ne "x64") {
+        throw "The optional TUN engine is available only for x64 builds."
+    }
+    & (Join-Path $PSScriptRoot "install-tun-engine.ps1") `
+        -Destination (Join-Path $outputDirectory "tun")
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
 Write-Host "Build complete: $outputDirectory"

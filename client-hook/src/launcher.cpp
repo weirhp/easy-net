@@ -4,6 +4,7 @@
 #include <appmodel.h>
 #include <detours.h>
 #include <shobjidl.h>
+#include <shellapi.h>
 #include <tlhelp32.h>
 
 #include <cstdint>
@@ -14,6 +15,7 @@
 #include <iostream>
 #include <iterator>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -24,8 +26,28 @@
 #include "config_ipc.h"
 #include "dns_resolver.h"
 #include "launcher_gui.h"
+#include "tun_config.h"
 
 namespace {
+
+std::optional<std::string> ToUtf8(std::wstring_view value) {
+    if (value.empty()) {
+        return std::string{};
+    }
+    const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+                                         static_cast<int>(value.size()), nullptr, 0, nullptr,
+                                         nullptr);
+    if (size <= 0) {
+        return std::nullopt;
+    }
+    std::string result(static_cast<std::size_t>(size), '\0');
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+                            static_cast<int>(value.size()), result.data(), size, nullptr,
+                            nullptr) != size) {
+        return std::nullopt;
+    }
+    return result;
+}
 
 struct Options {
     std::wstring proxy;
@@ -39,8 +61,12 @@ struct Options {
     bool antigravity_isolated = false;
     bool chatgpt_app = false;
     bool chatgpt_web = false;
+    bool wechat = false;
     std::wstring antigravity_path;
     std::wstring browser_path;
+    std::wstring wechat_path;
+    std::wstring tun_engine_path;
+    easy_net::tun::UdpMode tun_udp_mode = easy_net::tun::UdpMode::automatic;
     std::wstring app_user_model_id;
     std::optional<DWORD> process_id;
     std::vector<std::wstring> command;
@@ -56,6 +82,7 @@ void PrintUsage() {
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --antigravity [options] [-- app-args...]\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --chatgpt-app [options]\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --chatgpt-web [options]\n\n"
+        << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --wechat [options] [-- app-args...]\n\n"
         << L"Options:\n"
         << L"  --gui                  Open the graphical launcher (also the default with no arguments)\n"
         << L"  --username VALUE       SOCKS5 username (optional)\n"
@@ -71,6 +98,10 @@ void PrintUsage() {
         << L"  --chatgpt-app          Open the installed ChatGPT app with native Chromium SOCKS5\n"
         << L"  --chatgpt-web          Open ChatGPT in an isolated Edge/Chrome SOCKS5 session\n"
         << L"  --browser-path PATH    Browser executable for --chatgpt-web (optional)\n"
+        << L"  --wechat               Open WeChat/Weixin through per-process TUN routing\n"
+        << L"  --wechat-path PATH     WeChat.exe or Weixin.exe (optional, auto-detected)\n"
+        << L"  --tun-engine PATH      sing-box.exe used by --wechat (optional, auto-detected)\n"
+        << L"  --tun-udp MODE         auto, proxy, block, or direct (default: auto)\n"
         << L"  --detach               Exit after the target process starts\n"
         << L"  --help                  Show this help\n\n"
         << L"The proxy host must be a literal IPv4 address or a bracketed IPv6 address.\n";
@@ -89,7 +120,9 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
         } else if (argument == L"--proxy" || argument == L"--username" ||
                    argument == L"--password" || argument == L"--dns" ||
                    argument == L"--pid" || argument == L"--browser-path" ||
-                   argument == L"--antigravity-path" || argument == L"--appx") {
+                   argument == L"--antigravity-path" || argument == L"--wechat-path" ||
+                   argument == L"--tun-engine" || argument == L"--tun-udp" ||
+                   argument == L"--appx") {
             if (++index >= argc) {
                 std::wcerr << L"Missing value for " << argument << L".\n";
                 return false;
@@ -106,6 +139,16 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
                 options.browser_path = argv[index];
             } else if (argument == L"--antigravity-path") {
                 options.antigravity_path = argv[index];
+            } else if (argument == L"--wechat-path") {
+                options.wechat_path = argv[index];
+            } else if (argument == L"--tun-engine") {
+                options.tun_engine_path = argv[index];
+            } else if (argument == L"--tun-udp") {
+                const auto value = ToUtf8(argv[index]);
+                if (!value || !easy_net::tun::ParseUdpMode(*value, options.tun_udp_mode)) {
+                    std::wcerr << L"Invalid --tun-udp value. Use auto, proxy, block, or direct.\n";
+                    return false;
+                }
             } else if (argument == L"--appx") {
                 options.app_user_model_id = argv[index];
             } else if (argument == L"--proxy") {
@@ -129,6 +172,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
             options.chatgpt_app = true;
         } else if (argument == L"--chatgpt-web") {
             options.chatgpt_web = true;
+        } else if (argument == L"--wechat") {
+            options.wechat = true;
         } else if (argument == L"--detach") {
             options.detach = true;
         } else if (argument == L"--help" || argument == L"-h" || argument == L"/?") {
@@ -144,15 +189,16 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
         std::wcerr << L"--proxy is required.\n";
         return false;
     }
-    const int target_count = ((!options.command.empty() && !options.antigravity) ? 1 : 0) +
+    const int target_count = ((!options.command.empty() && !options.antigravity && !options.wechat) ? 1 : 0) +
                               (options.process_id.has_value() ? 1 : 0) +
                               (!options.app_user_model_id.empty() ? 1 : 0) +
                               (options.antigravity ? 1 : 0) +
                               (options.chatgpt_app ? 1 : 0) +
-                              (options.chatgpt_web ? 1 : 0);
+                              (options.chatgpt_web ? 1 : 0) +
+                              (options.wechat ? 1 : 0);
     if (target_count != 1) {
         std::wcerr << L"Specify exactly one target: a command after --, --pid PID, "
-                      L"--appx AUMID, --antigravity, --chatgpt-app, or --chatgpt-web.\n";
+                      L"--appx AUMID, --antigravity, --chatgpt-app, --chatgpt-web, or --wechat.\n";
         return false;
     }
     if (!options.browser_path.empty() && !options.chatgpt_web) {
@@ -165,6 +211,15 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
     }
     if (options.antigravity_isolated && !options.antigravity) {
         std::wcerr << L"--antigravity-isolated can only be used with --antigravity.\n";
+        return false;
+    }
+    if (!options.wechat_path.empty() && !options.wechat) {
+        std::wcerr << L"--wechat-path can only be used with --wechat.\n";
+        return false;
+    }
+    if ((!options.tun_engine_path.empty() || options.tun_udp_mode != easy_net::tun::UdpMode::automatic) &&
+        !options.wechat) {
+        std::wcerr << L"--tun-engine and --tun-udp can only be used with --wechat.\n";
         return false;
     }
     return true;
@@ -444,6 +499,546 @@ std::optional<std::filesystem::path> FindAntigravityExecutable(const Options& op
         }
     }
     return std::nullopt;
+}
+
+constexpr const wchar_t* kWeChatProcessNames[]{
+    L"WeChat.exe",        L"Weixin.exe",       L"WeChatAppEx.exe",
+    L"WeChatBrowser.exe", L"WeChatOCR.exe",    L"WeChatPlayer.exe",
+    L"WeChatUtility.exe", L"WeChatWeb.exe",    L"WeChatUpdate.exe",
+    L"xwechat.exe",
+};
+
+bool IsWeChatProcessName(const wchar_t* name) {
+    for (const wchar_t* known : kWeChatProcessNames) {
+        if (_wcsicmp(name, known) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool AnyWeChatProcessRunning() {
+    ScopedHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    if (snapshot.get() == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (!Process32FirstW(snapshot.get(), &entry)) {
+        return false;
+    }
+    do {
+        if (IsWeChatProcessName(entry.szExeFile)) {
+            return true;
+        }
+    } while (Process32NextW(snapshot.get(), &entry));
+    return false;
+}
+
+std::optional<std::wstring> RegistryString(HKEY root, const wchar_t* key,
+                                           const wchar_t* name) {
+    DWORD bytes = 0;
+    const LSTATUS query = RegGetValueW(root, key, name, RRF_RT_REG_SZ, nullptr, nullptr, &bytes);
+    if (query != ERROR_SUCCESS || bytes < sizeof(wchar_t)) {
+        return std::nullopt;
+    }
+    std::wstring value(bytes / sizeof(wchar_t), L'\0');
+    if (RegGetValueW(root, key, name, RRF_RT_REG_SZ, nullptr, value.data(), &bytes) !=
+        ERROR_SUCCESS) {
+        return std::nullopt;
+    }
+    while (!value.empty() && value.back() == L'\0') {
+        value.pop_back();
+    }
+    return value;
+}
+
+std::optional<std::filesystem::path> FindWeChatExecutable(const Options& options) {
+    if (!options.wechat_path.empty()) {
+        const std::filesystem::path configured(options.wechat_path);
+        if (std::filesystem::is_regular_file(configured)) {
+            return configured;
+        }
+        return std::nullopt;
+    }
+    for (const wchar_t* name : {L"Weixin.exe", L"WeChat.exe"}) {
+        if (const auto running = FindRunningExecutable(name)) {
+            return running;
+        }
+    }
+
+    std::vector<std::filesystem::path> candidates;
+    const auto add_install_path = [&candidates](const std::optional<std::wstring>& value) {
+        if (!value || value->empty()) {
+            return;
+        }
+        const std::filesystem::path base(*value);
+        candidates.emplace_back(base / L"Weixin.exe");
+        candidates.emplace_back(base / L"WeChat.exe");
+    };
+    add_install_path(RegistryString(HKEY_CURRENT_USER, L"Software\\Tencent\\WeChat", L"InstallPath"));
+    add_install_path(RegistryString(HKEY_CURRENT_USER, L"Software\\Tencent\\Weixin", L"InstallPath"));
+    add_install_path(RegistryString(HKEY_LOCAL_MACHINE, L"Software\\Tencent\\WeChat", L"InstallPath"));
+    add_install_path(RegistryString(HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Tencent\\WeChat", L"InstallPath"));
+
+    const auto add_root = [&candidates](const std::optional<std::wstring>& root) {
+        if (!root) {
+            return;
+        }
+        const std::filesystem::path base(*root);
+        candidates.emplace_back(base / L"Tencent/Weixin/Weixin.exe");
+        candidates.emplace_back(base / L"Tencent/WeChat/WeChat.exe");
+        candidates.emplace_back(base / L"Weixin/Weixin.exe");
+        candidates.emplace_back(base / L"WeChat/WeChat.exe");
+    };
+    add_root(EnvironmentValue(L"ProgramFiles"));
+    add_root(EnvironmentValue(L"ProgramFiles(x86)"));
+    add_root(EnvironmentValue(L"LOCALAPPDATA"));
+    for (const auto& candidate : candidates) {
+        std::error_code error;
+        if (std::filesystem::is_regular_file(candidate, error)) {
+            return candidate;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> FindTunEngine(const Options& options) {
+    if (!options.tun_engine_path.empty()) {
+        const std::filesystem::path configured(options.tun_engine_path);
+        if (std::filesystem::is_regular_file(configured)) {
+            return configured;
+        }
+        return std::nullopt;
+    }
+    if (const auto directory = CurrentModuleDirectory()) {
+        for (const auto& candidate : {
+                 std::filesystem::path(*directory) / L"tun/sing-box.exe",
+                 std::filesystem::path(*directory) / L"sing-box.exe",
+             }) {
+            if (std::filesystem::is_regular_file(candidate)) {
+                return candidate;
+            }
+        }
+    }
+    std::vector<wchar_t> found(32768);
+    const DWORD length = SearchPathW(nullptr, L"sing-box.exe", nullptr,
+                                     static_cast<DWORD>(found.size()), found.data(), nullptr);
+    if (length > 0 && length < found.size()) {
+        return std::filesystem::path(std::wstring(found.data(), length));
+    }
+    return std::nullopt;
+}
+
+bool IsProcessElevated() {
+    ScopedHandle token;
+    HANDLE raw_token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw_token)) {
+        return false;
+    }
+    token = ScopedHandle(raw_token);
+    TOKEN_ELEVATION elevation{};
+    DWORD returned = 0;
+    return GetTokenInformation(token.get(), TokenElevation, &elevation, sizeof(elevation),
+                               &returned) && elevation.TokenIsElevated != 0;
+}
+
+int RelaunchElevated() {
+    int argument_count = 0;
+    LPWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &argument_count);
+    if (arguments == nullptr || argument_count < 2) {
+        if (arguments != nullptr) {
+            LocalFree(arguments);
+        }
+        return 5;
+    }
+    std::vector<std::wstring> parameters;
+    for (int index = 1; index < argument_count; ++index) {
+        parameters.emplace_back(arguments[index]);
+    }
+    const std::wstring executable(arguments[0]);
+    LocalFree(arguments);
+    const std::wstring parameter_line = BuildCommandLine(parameters);
+
+    SHELLEXECUTEINFOW execute{};
+    execute.cbSize = sizeof(execute);
+    execute.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
+    execute.lpVerb = L"runas";
+    execute.lpFile = executable.c_str();
+    execute.lpParameters = parameter_line.c_str();
+    execute.nShow = SW_HIDE;
+    if (!ShellExecuteExW(&execute)) {
+        std::wcerr << L"Administrator permission is required for TUN mode (error "
+                   << GetLastError() << L").\n";
+        return 5;
+    }
+    ScopedHandle elevated(execute.hProcess);
+    const DWORD wait = WaitForSingleObject(elevated.get(), 15000);
+    if (wait == WAIT_OBJECT_0) {
+        DWORD exit_code = 5;
+        if (GetExitCodeProcess(elevated.get(), &exit_code)) {
+            return static_cast<int>(exit_code);
+        }
+    }
+    return 0;
+}
+
+bool SendAll(SOCKET socket, const std::uint8_t* data, std::size_t size) {
+    std::size_t sent = 0;
+    while (sent < size) {
+        const int count = send(socket, reinterpret_cast<const char*>(data + sent),
+                               static_cast<int>(size - sent), 0);
+        if (count <= 0) {
+            return false;
+        }
+        sent += static_cast<std::size_t>(count);
+    }
+    return true;
+}
+
+bool ReceiveAll(SOCKET socket, std::uint8_t* data, std::size_t size) {
+    std::size_t received = 0;
+    while (received < size) {
+        const int count = recv(socket, reinterpret_cast<char*>(data + received),
+                               static_cast<int>(size - received), 0);
+        if (count <= 0) {
+            return false;
+        }
+        received += static_cast<std::size_t>(count);
+    }
+    return true;
+}
+
+bool Socks5SupportsUdp(const Options& options, const easy_net::tun::Endpoint& endpoint) {
+    WSADATA winsock{};
+    if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
+        return false;
+    }
+    const auto cleanup = [] { WSACleanup(); };
+    sockaddr_storage address{};
+    int address_length = 0;
+    int family = AF_UNSPEC;
+    if (InetPtonA(AF_INET, endpoint.host.c_str(),
+                  &reinterpret_cast<sockaddr_in*>(&address)->sin_addr) == 1) {
+        auto* ipv4 = reinterpret_cast<sockaddr_in*>(&address);
+        ipv4->sin_family = AF_INET;
+        ipv4->sin_port = htons(endpoint.port);
+        address_length = sizeof(*ipv4);
+        family = AF_INET;
+    } else if (InetPtonA(AF_INET6, endpoint.host.c_str(),
+                         &reinterpret_cast<sockaddr_in6*>(&address)->sin6_addr) == 1) {
+        auto* ipv6 = reinterpret_cast<sockaddr_in6*>(&address);
+        ipv6->sin6_family = AF_INET6;
+        ipv6->sin6_port = htons(endpoint.port);
+        address_length = sizeof(*ipv6);
+        family = AF_INET6;
+    } else {
+        cleanup();
+        return false;
+    }
+    const SOCKET socket = ::socket(family, SOCK_STREAM, IPPROTO_TCP);
+    if (socket == INVALID_SOCKET) {
+        cleanup();
+        return false;
+    }
+    const DWORD timeout = 2000;
+    setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout),
+               sizeof(timeout));
+    setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout),
+               sizeof(timeout));
+    bool supported = false;
+    do {
+        if (connect(socket, reinterpret_cast<const sockaddr*>(&address), address_length) != 0) {
+            break;
+        }
+        const bool has_credentials = !options.username.empty() || !options.password.empty();
+        const std::uint8_t greeting_with_auth[]{5, 2, 0, 2};
+        const std::uint8_t greeting_without_auth[]{5, 1, 0};
+        if (!SendAll(socket, has_credentials ? greeting_with_auth : greeting_without_auth,
+                     has_credentials ? sizeof(greeting_with_auth) : sizeof(greeting_without_auth))) {
+            break;
+        }
+        std::uint8_t greeting_reply[2]{};
+        if (!ReceiveAll(socket, greeting_reply, sizeof(greeting_reply)) || greeting_reply[0] != 5 ||
+            greeting_reply[1] == 0xff) {
+            break;
+        }
+        if (greeting_reply[1] == 2) {
+            const auto username = ToUtf8(options.username);
+            const auto password = ToUtf8(options.password);
+            if (!username || !password || username->size() > 255 || password->size() > 255) {
+                break;
+            }
+            std::vector<std::uint8_t> auth{1, static_cast<std::uint8_t>(username->size())};
+            auth.insert(auth.end(), username->begin(), username->end());
+            auth.push_back(static_cast<std::uint8_t>(password->size()));
+            auth.insert(auth.end(), password->begin(), password->end());
+            std::uint8_t auth_reply[2]{};
+            if (!SendAll(socket, auth.data(), auth.size()) ||
+                !ReceiveAll(socket, auth_reply, sizeof(auth_reply)) || auth_reply[1] != 0) {
+                break;
+            }
+        } else if (greeting_reply[1] != 0) {
+            break;
+        }
+        const std::uint8_t udp_associate[]{5, 3, 0, 1, 0, 0, 0, 0, 0, 0};
+        std::uint8_t reply[4]{};
+        if (SendAll(socket, udp_associate, sizeof(udp_associate)) &&
+            ReceiveAll(socket, reply, sizeof(reply)) && reply[0] == 5 && reply[1] == 0) {
+            supported = true;
+        }
+    } while (false);
+    closesocket(socket);
+    cleanup();
+    return supported;
+}
+
+bool WriteUtf8File(const std::filesystem::path& path, const std::string& content) {
+    ScopedHandle file(CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                                  CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+    if (file.get() == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    DWORD written = 0;
+    return content.size() <= MAXDWORD &&
+           WriteFile(file.get(), content.data(), static_cast<DWORD>(content.size()), &written,
+                     nullptr) && written == content.size();
+}
+
+bool StartHiddenProcess(const std::filesystem::path& executable,
+                        const std::vector<std::wstring>& arguments, HANDLE output,
+                        PROCESS_INFORMATION& process) {
+    std::vector<std::wstring> command{executable.wstring()};
+    command.insert(command.end(), arguments.begin(), arguments.end());
+    std::wstring command_line = BuildCommandLine(command);
+    std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
+    mutable_command.push_back(L'\0');
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    BOOL inherit_handles = FALSE;
+    if (output != nullptr && output != INVALID_HANDLE_VALUE) {
+        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.hStdOutput = output;
+        startup.hStdError = output;
+        startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+        inherit_handles = TRUE;
+    }
+    return CreateProcessW(executable.c_str(), mutable_command.data(), nullptr, nullptr,
+                          inherit_handles, CREATE_NO_WINDOW | CREATE_DEFAULT_ERROR_MODE, nullptr,
+                          executable.parent_path().c_str(), &startup, &process) != FALSE;
+}
+
+int WatchWeChat(DWORD root_process_id, DWORD engine_process_id) {
+    ScopedHandle root(OpenProcess(SYNCHRONIZE, FALSE, root_process_id));
+    ScopedHandle engine(OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, engine_process_id));
+    if (engine.get() == nullptr) {
+        return 2;
+    }
+    if (root.get() != nullptr) {
+        WaitForSingleObject(root.get(), INFINITE);
+    }
+    unsigned int empty_checks = 0;
+    while (WaitForSingleObject(engine.get(), 0) == WAIT_TIMEOUT) {
+        if (AnyWeChatProcessRunning()) {
+            empty_checks = 0;
+        } else if (++empty_checks >= 3) {
+            TerminateProcess(engine.get(), 0);
+            WaitForSingleObject(engine.get(), 5000);
+            break;
+        }
+        Sleep(1000);
+    }
+    return 0;
+}
+
+int LaunchWeChat(const Options& options) {
+#if !defined(_WIN64)
+    std::wcerr << L"--wechat TUN mode is available only in the x64 package.\n";
+    return 3;
+#else
+    std::wstring proxy_host;
+    if (!easy_net::browser::ParseLiteralSocksEndpoint(options.proxy, proxy_host)) {
+        std::wcerr << L"--wechat requires a literal SOCKS5 address such as 127.0.0.1:1080.\n";
+        return 2;
+    }
+    if (!options.dns.empty()) {
+        easy_net::dns::Endpoint parsed_dns;
+        if (!easy_net::dns::ParseEndpoint(options.dns, parsed_dns)) {
+            std::wcerr << L"Invalid --dns value. Use a literal IP address with an optional port.\n";
+            return 2;
+        }
+    }
+    const auto executable = FindWeChatExecutable(options);
+    if (!executable) {
+        std::wcerr << L"WeChat.exe or Weixin.exe was not found. Use --wechat-path PATH.\n";
+        return 3;
+    }
+    const auto engine = FindTunEngine(options);
+    if (!engine) {
+        std::wcerr << L"The optional TUN engine was not found. Use the x64-TUN package, place "
+                      L"sing-box.exe in the tun folder, or specify --tun-engine PATH.\n";
+        return 3;
+    }
+    if (AnyWeChatProcessRunning()) {
+        std::wcerr << L"WeChat is already running. Exit it completely before starting TUN mode.\n";
+        return 6;
+    }
+    if (!IsProcessElevated()) {
+        return RelaunchElevated();
+    }
+
+    const auto proxy_text = ToUtf8(options.proxy);
+    easy_net::tun::Endpoint proxy_endpoint;
+    if (!proxy_text || !easy_net::tun::ParseEndpoint(*proxy_text, proxy_endpoint)) {
+        return 2;
+    }
+    easy_net::tun::UdpMode udp_mode = options.tun_udp_mode;
+    if (udp_mode == easy_net::tun::UdpMode::automatic) {
+        udp_mode = Socks5SupportsUdp(options, proxy_endpoint) ? easy_net::tun::UdpMode::proxy
+                                                              : easy_net::tun::UdpMode::block;
+        std::wcout << (udp_mode == easy_net::tun::UdpMode::proxy
+                           ? L"SOCKS5 UDP ASSOCIATE is available; WeChat UDP/QUIC will be proxied.\n"
+                           : L"SOCKS5 UDP ASSOCIATE is unavailable; WeChat UDP is blocked to prevent leaks and TCP fallback will be used where possible.\n");
+    }
+
+    const auto local_app_data = EnvironmentValue(L"LOCALAPPDATA");
+    if (!local_app_data) {
+        std::wcerr << L"LOCALAPPDATA is unavailable; cannot prepare TUN configuration.\n";
+        return 3;
+    }
+    const std::filesystem::path config_directory =
+        std::filesystem::path(*local_app_data) / L"EasyNetHook/Tun";
+    std::error_code directory_error;
+    std::filesystem::create_directories(config_directory, directory_error);
+    if (directory_error) {
+        std::wcerr << L"Cannot create TUN configuration directory.\n";
+        return 3;
+    }
+    const std::filesystem::path config_path = config_directory / L"wechat.json";
+    const std::filesystem::path log_path = config_directory / L"wechat-tun.log";
+    easy_net::tun::Config config;
+    config.proxy = proxy_endpoint;
+    const auto username = ToUtf8(options.username);
+    const auto password = ToUtf8(options.password);
+    if (!username || !password) {
+        std::wcerr << L"Proxy credentials are not valid UTF-8.\n";
+        return 2;
+    }
+    config.username = *username;
+    config.password = *password;
+    config.udp_mode = udp_mode;
+    if (!options.dns.empty()) {
+        const auto dns_text = ToUtf8(options.dns);
+        easy_net::tun::Endpoint dns_endpoint;
+        if (!dns_text || !easy_net::tun::ParseEndpoint(*dns_text, dns_endpoint, 53)) {
+            return 2;
+        }
+        config.dns_host = dns_endpoint.host;
+        config.dns_port = dns_endpoint.port;
+    }
+    if (!WriteUtf8File(config_path, easy_net::tun::BuildConfig(config))) {
+        std::wcerr << L"Cannot write TUN configuration: " << config_path.wstring() << L".\n";
+        return 4;
+    }
+
+    SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+    ScopedHandle log(CreateFileW(log_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 &security, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+    if (log.get() == INVALID_HANDLE_VALUE) {
+        std::wcerr << L"Cannot open TUN log: " << log_path.wstring() << L".\n";
+        return 4;
+    }
+    PROCESS_INFORMATION checker{};
+    if (!StartHiddenProcess(*engine, {L"check", L"-c", config_path.wstring()}, log.get(), checker)) {
+        std::wcerr << L"Cannot validate the TUN configuration (error " << GetLastError() << L").\n";
+        return 5;
+    }
+    CloseHandle(checker.hThread);
+    const DWORD check_wait = WaitForSingleObject(checker.hProcess, 10000);
+    DWORD check_exit = 1;
+    if (check_wait != WAIT_OBJECT_0) {
+        TerminateProcess(checker.hProcess, 5);
+        WaitForSingleObject(checker.hProcess, 5000);
+    } else {
+        GetExitCodeProcess(checker.hProcess, &check_exit);
+    }
+    CloseHandle(checker.hProcess);
+    if (check_wait != WAIT_OBJECT_0 || check_exit != 0) {
+        std::wcerr << L"TUN configuration validation failed. See " << log_path.wstring() << L".\n";
+        return 5;
+    }
+
+    PROCESS_INFORMATION tun_process{};
+    if (!StartHiddenProcess(*engine, {L"run", L"-c", config_path.wstring()}, log.get(),
+                            tun_process)) {
+        std::wcerr << L"Cannot start the TUN engine (error " << GetLastError() << L").\n";
+        return 5;
+    }
+    CloseHandle(tun_process.hThread);
+    if (WaitForSingleObject(tun_process.hProcess, 1500) == WAIT_OBJECT_0) {
+        DWORD engine_exit = 1;
+        GetExitCodeProcess(tun_process.hProcess, &engine_exit);
+        CloseHandle(tun_process.hProcess);
+        std::wcerr << L"The TUN engine exited with code " << engine_exit << L". See "
+                   << log_path.wstring() << L".\n";
+        return 5;
+    }
+
+    std::vector<std::wstring> wechat_command{executable->wstring()};
+    wechat_command.insert(wechat_command.end(), options.command.begin(), options.command.end());
+    std::wstring command_line = BuildCommandLine(wechat_command);
+    std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
+    mutable_command.push_back(L'\0');
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION wechat_process{};
+    if (!CreateProcessW(executable->c_str(), mutable_command.data(), nullptr, nullptr, FALSE,
+                        CREATE_DEFAULT_ERROR_MODE, nullptr, executable->parent_path().c_str(),
+                        &startup, &wechat_process)) {
+        const DWORD error = GetLastError();
+        TerminateProcess(tun_process.hProcess, 5);
+        WaitForSingleObject(tun_process.hProcess, 5000);
+        CloseHandle(tun_process.hProcess);
+        std::wcerr << L"Cannot start WeChat (error " << error << L").\n";
+        return 5;
+    }
+    CloseHandle(wechat_process.hThread);
+    std::wcout << L"Opened " << executable->filename().wstring() << L" through TUN and SOCKS5 "
+               << options.proxy << L" (PID " << wechat_process.dwProcessId << L").\n";
+
+    if (options.detach) {
+        const auto launcher_directory = CurrentModuleDirectory();
+        const std::filesystem::path launcher =
+            launcher_directory ? std::filesystem::path(*launcher_directory) / L"easy-net-hook.exe"
+                               : std::filesystem::path{};
+        PROCESS_INFORMATION watcher{};
+        const bool watcher_started = !launcher.empty() &&
+            StartHiddenProcess(launcher,
+                               {L"--wechat-watch", std::to_wstring(wechat_process.dwProcessId),
+                                std::to_wstring(tun_process.dwProcessId)},
+                               nullptr, watcher);
+        if (!watcher_started) {
+            TerminateProcess(wechat_process.hProcess, 5);
+            TerminateProcess(tun_process.hProcess, 5);
+            WaitForSingleObject(tun_process.hProcess, 5000);
+            CloseHandle(wechat_process.hProcess);
+            CloseHandle(tun_process.hProcess);
+            std::wcerr << L"Cannot start the WeChat TUN lifecycle watcher.\n";
+            return 5;
+        }
+        CloseHandle(watcher.hThread);
+        CloseHandle(watcher.hProcess);
+        CloseHandle(wechat_process.hProcess);
+        CloseHandle(tun_process.hProcess);
+        return 0;
+    }
+
+    const DWORD wechat_id = wechat_process.dwProcessId;
+    const DWORD tun_id = tun_process.dwProcessId;
+    CloseHandle(wechat_process.hProcess);
+    CloseHandle(tun_process.hProcess);
+    return WatchWeChat(wechat_id, tun_id);
+#endif
 }
 
 bool SetNativeSocksEnvironment(const std::wstring& proxy, bool compatible_scheme = false) {
@@ -1186,6 +1781,17 @@ int ActivatePackagedApplication(const Options& options,
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 4 && std::wstring_view(argv[1]) == L"--wechat-watch") {
+        wchar_t* root_end = nullptr;
+        wchar_t* engine_end = nullptr;
+        const unsigned long root_id = std::wcstoul(argv[2], &root_end, 10);
+        const unsigned long engine_id = std::wcstoul(argv[3], &engine_end, 10);
+        if (root_id == 0 || engine_id == 0 || root_end == nullptr || engine_end == nullptr ||
+            *root_end != L'\0' || *engine_end != L'\0') {
+            return 2;
+        }
+        return WatchWeChat(static_cast<DWORD>(root_id), static_cast<DWORD>(engine_id));
+    }
     if (argc >= 5 && std::wstring_view(argv[1]) == L"--antigravity-watch") {
         wchar_t* end = nullptr;
         const unsigned long process_id = std::wcstoul(argv[2], &end, 10);
@@ -1237,6 +1843,9 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (options.antigravity) {
         return LaunchAntigravity(options);
+    }
+    if (options.wechat) {
+        return LaunchWeChat(options);
     }
     if (!options.dns.empty()) {
         easy_net::dns::Endpoint dns_server;

@@ -62,6 +62,7 @@ add_executable(easy_net_hook_launcher
     src/launcher_gui.cpp
     src/launcher_gui.h
     src/resource.h
+    src/tun_config.h
     src/dns_resolver.cpp
     src/dns_resolver.h
 )
@@ -132,6 +133,13 @@ target_compile_options(history_store_test PRIVATE /W4 /permissive- /EHsc /UNDEBU
 set_property(TARGET history_store_test PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_test(NAME history_store_test COMMAND history_store_test)
+
+add_executable(tun_config_test tests/tun_config_test.cpp src/tun_config.h)
+target_compile_features(tun_config_test PRIVATE cxx_std_20)
+target_compile_options(tun_config_test PRIVATE /W4 /permissive- /EHsc /UNDEBUG)
+set_property(TARGET tun_config_test PROPERTY
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_test(NAME tun_config_test COMMAND tun_config_test)
 
 add_custom_command(TARGET easy_net_hook_launcher POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

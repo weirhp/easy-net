@@ -37,7 +37,20 @@ jobs:
 
       - name: Build
         shell: pwsh
-        run: cmake --build client-hook/build --config Release --parallel
+        run: |
+          $buildOutput = & cmake --build client-hook/build --config Release --parallel 2>&1 |
+            Tee-Object -FilePath client-hook/build-output.log
+          $buildExitCode = $LASTEXITCODE
+          if ($buildExitCode -ne 0) {
+            $buildOutput |
+              Where-Object { "$_" -match '(?i)(error [A-Z]+[0-9]+|fatal error|cmake error)' } |
+              Select-Object -Last 20 |
+              ForEach-Object {
+                $message = "$_".Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+                Write-Host "::error::$message"
+              }
+            exit $buildExitCode
+          }
 
       - name: Test
         shell: pwsh

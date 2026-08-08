@@ -1,12 +1,14 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,8 +17,16 @@ import (
 )
 
 const (
-	maxConcurrentClients = 256
-	relayDrainTimeout    = 30 * time.Second
+	maxConcurrentClients      = 256
+	maxHTTPConnectHeaderBytes = 32 * 1024
+	relayDrainTimeout         = 30 * time.Second
+)
+
+type proxyProtocol byte
+
+const (
+	protocolSOCKS5 proxyProtocol = iota
+	protocolHTTPConnect
 )
 
 type DialResultHandler func(target string, err error)
@@ -126,12 +136,9 @@ func (s *Server) acceptLoop(ctx context.Context) {
 
 func (s *Server) handle(ctx context.Context, local net.Conn) {
 	_ = local.SetDeadline(time.Now().Add(15 * time.Second))
-	if err := handshake(local); err != nil {
-		return
-	}
-	target, err := parseRequest(local)
+	reader := bufio.NewReader(local)
+	protocol, target, err := readProxyRequest(local, reader)
 	if err != nil {
-		writeReply(local, 0x07)
 		return
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -141,15 +148,16 @@ func (s *Server) handle(ctx context.Context, local net.Conn) {
 		s.onDialResult(target, err)
 	}
 	if err != nil {
-		writeReply(local, 0x05)
+		writeConnectFailure(local, protocol)
 		return
 	}
 	defer remote.Close()
 	_ = local.SetDeadline(time.Time{})
-	writeReply(local, 0x00)
+	writeConnectSuccess(local, protocol)
 
 	done := make(chan struct{}, 2)
-	go copyAndCloseWrite(remote, local, done)
+	// 使用同一个 bufio.Reader，确保 CONNECT 请求之后被预读的 TLS 数据不会丢失。
+	go copyAndCloseWrite(remote, reader, done)
 	go copyAndCloseWrite(local, remote, done)
 	<-done
 
@@ -164,16 +172,40 @@ func (s *Server) handle(ctx context.Context, local net.Conn) {
 	}
 }
 
-func handshake(conn net.Conn) error {
+func readProxyRequest(conn net.Conn, reader *bufio.Reader) (proxyProtocol, string, error) {
+	first, err := reader.Peek(1)
+	if err != nil {
+		return protocolSOCKS5, "", err
+	}
+	if first[0] == 0x05 {
+		if err := handshake(conn, reader); err != nil {
+			return protocolSOCKS5, "", err
+		}
+		target, err := parseRequest(reader)
+		if err != nil {
+			writeReply(conn, 0x07)
+			return protocolSOCKS5, "", err
+		}
+		return protocolSOCKS5, target, nil
+	}
+	target, status, err := parseHTTPConnect(reader)
+	if err != nil {
+		writeHTTPReply(conn, status)
+		return protocolHTTPConnect, "", err
+	}
+	return protocolHTTPConnect, target, nil
+}
+
+func handshake(conn net.Conn, reader io.Reader) error {
 	head := make([]byte, 2)
-	if _, err := io.ReadFull(conn, head); err != nil {
+	if _, err := io.ReadFull(reader, head); err != nil {
 		return err
 	}
 	if head[0] != 0x05 || head[1] == 0 {
 		return fmt.Errorf("无效的 SOCKS5 握手")
 	}
 	methods := make([]byte, int(head[1]))
-	if _, err := io.ReadFull(conn, methods); err != nil {
+	if _, err := io.ReadFull(reader, methods); err != nil {
 		return err
 	}
 	for _, method := range methods {
@@ -186,9 +218,9 @@ func handshake(conn net.Conn) error {
 	return fmt.Errorf("客户端未提供免认证方式")
 }
 
-func parseRequest(conn net.Conn) (string, error) {
+func parseRequest(reader io.Reader) (string, error) {
 	head := make([]byte, 4)
-	if _, err := io.ReadFull(conn, head); err != nil {
+	if _, err := io.ReadFull(reader, head); err != nil {
 		return "", err
 	}
 	if head[0] != 0x05 || head[1] != 0x01 {
@@ -198,26 +230,26 @@ func parseRequest(conn net.Conn) (string, error) {
 	switch head[3] {
 	case 0x01:
 		buf := make([]byte, 4)
-		if _, err := io.ReadFull(conn, buf); err != nil {
+		if _, err := io.ReadFull(reader, buf); err != nil {
 			return "", err
 		}
 		host = net.IP(buf).String()
 	case 0x03:
 		length := []byte{0}
-		if _, err := io.ReadFull(conn, length); err != nil {
+		if _, err := io.ReadFull(reader, length); err != nil {
 			return "", err
 		}
 		if length[0] == 0 {
 			return "", fmt.Errorf("域名不能为空")
 		}
 		buf := make([]byte, int(length[0]))
-		if _, err := io.ReadFull(conn, buf); err != nil {
+		if _, err := io.ReadFull(reader, buf); err != nil {
 			return "", err
 		}
 		host = string(buf)
 	case 0x04:
 		buf := make([]byte, 16)
-		if _, err := io.ReadFull(conn, buf); err != nil {
+		if _, err := io.ReadFull(reader, buf); err != nil {
 			return "", err
 		}
 		host = net.IP(buf).String()
@@ -225,18 +257,121 @@ func parseRequest(conn net.Conn) (string, error) {
 		return "", fmt.Errorf("不支持的地址类型")
 	}
 	portBytes := make([]byte, 2)
-	if _, err := io.ReadFull(conn, portBytes); err != nil {
+	if _, err := io.ReadFull(reader, portBytes); err != nil {
 		return "", err
 	}
 	port := binary.BigEndian.Uint16(portBytes)
 	return net.JoinHostPort(host, strconv.Itoa(int(port))), nil
 }
 
+func parseHTTPConnect(reader *bufio.Reader) (string, int, error) {
+	total := 0
+	requestLine, err := readHTTPLine(reader, &total)
+	if err != nil {
+		return "", 400, err
+	}
+	parts := strings.Fields(requestLine)
+	if len(parts) != 3 {
+		return "", 400, fmt.Errorf("无效的 HTTP 代理请求行")
+	}
+	if parts[0] != "CONNECT" {
+		return "", 405, fmt.Errorf("HTTP 代理仅支持 CONNECT")
+	}
+	if parts[2] != "HTTP/1.0" && parts[2] != "HTTP/1.1" {
+		return "", 400, fmt.Errorf("不支持的 HTTP 版本")
+	}
+	target, err := normalizeConnectTarget(parts[1])
+	if err != nil {
+		return "", 400, err
+	}
+	for {
+		line, err := readHTTPLine(reader, &total)
+		if err != nil {
+			return "", 400, err
+		}
+		if line == "" {
+			break
+		}
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") || !strings.Contains(line, ":") {
+			return "", 400, fmt.Errorf("无效的 HTTP 代理请求头")
+		}
+	}
+	return target, 0, nil
+}
+
+func readHTTPLine(reader *bufio.Reader, total *int) (string, error) {
+	var line []byte
+	for {
+		part, more, err := reader.ReadLine()
+		if err != nil {
+			return "", err
+		}
+		*total += len(part) + 2
+		if *total > maxHTTPConnectHeaderBytes {
+			return "", fmt.Errorf("HTTP CONNECT 请求头过大")
+		}
+		line = append(line, part...)
+		if !more {
+			return string(line), nil
+		}
+	}
+}
+
+func normalizeConnectTarget(target string) (string, error) {
+	host, portText, err := net.SplitHostPort(target)
+	if err != nil || host == "" {
+		return "", fmt.Errorf("无效的 CONNECT 目标地址")
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return "", fmt.Errorf("无效的 CONNECT 目标端口")
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port)), nil
+}
+
 func writeReply(conn net.Conn, code byte) {
 	_, _ = conn.Write([]byte{0x05, code, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 }
 
-func copyAndCloseWrite(dst net.Conn, src net.Conn, done chan<- struct{}) {
+func writeConnectSuccess(conn net.Conn, protocol proxyProtocol) {
+	if protocol == protocolHTTPConnect {
+		writeHTTPReply(conn, 200)
+		return
+	}
+	writeReply(conn, 0x00)
+}
+
+func writeConnectFailure(conn net.Conn, protocol proxyProtocol) {
+	if protocol == protocolHTTPConnect {
+		writeHTTPReply(conn, 502)
+		return
+	}
+	writeReply(conn, 0x05)
+}
+
+func writeHTTPReply(conn net.Conn, status int) {
+	reason := map[int]string{
+		200: "Connection Established",
+		400: "Bad Request",
+		405: "Method Not Allowed",
+		502: "Bad Gateway",
+	}[status]
+	if reason == "" {
+		status = 500
+		reason = "Internal Server Error"
+	}
+	if status == 200 {
+		_, _ = fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\n\r\n", status, reason)
+		return
+	}
+	allow := ""
+	if status == 405 {
+		allow = "Allow: CONNECT\r\n"
+	}
+	_, _ = fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\n%sConnection: close\r\nContent-Length: 0\r\n\r\n", status, reason, allow)
+}
+
+func copyAndCloseWrite(dst net.Conn, src io.Reader, done chan<- struct{}) {
 	_, _ = io.Copy(dst, src)
 	if closer, ok := dst.(interface{ CloseWrite() error }); ok {
 		_ = closer.CloseWrite()

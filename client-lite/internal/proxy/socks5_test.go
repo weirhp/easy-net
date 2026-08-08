@@ -1,10 +1,12 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -89,6 +91,110 @@ func TestSOCKS5ConnectAndRelay(t *testing.T) {
 	}
 }
 
+func TestHTTPConnectAndRelayBufferedPayload(t *testing.T) {
+	outbound := &echoTransport{targets: make(chan string, 1)}
+	server := NewServer("127.0.0.1:0", outbound)
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	conn, err := net.DialTimeout("tcp", server.Address(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	payload := "early-tls-payload"
+	request := "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nProxy-Connection: keep-alive\r\n\r\n" + payload
+	if _, err := io.WriteString(conn, request); err != nil {
+		t.Fatal(err)
+	}
+
+	reader := bufio.NewReader(conn)
+	statusLine, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(statusLine, " 200 ") {
+		t.Fatalf("unexpected CONNECT response %q", statusLine)
+	}
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if line == "\r\n" {
+			break
+		}
+	}
+	if target := <-outbound.targets; target != "example.com:443" {
+		t.Fatalf("unexpected target %q", target)
+	}
+	echo := make([]byte, len(payload))
+	if _, err := io.ReadFull(reader, echo); err != nil {
+		t.Fatal(err)
+	}
+	if string(echo) != payload {
+		t.Fatalf("buffered tunnel payload was lost: %q", echo)
+	}
+}
+
+func TestHTTPConnectRejectsPlainHTTPProxyRequest(t *testing.T) {
+	outbound := &echoTransport{targets: make(chan string, 1)}
+	server := NewServer("127.0.0.1:0", outbound)
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	conn, err := net.DialTimeout("tcp", server.Address(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := io.WriteString(conn, "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	statusLine, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(statusLine, " 405 ") {
+		t.Fatalf("unexpected HTTP proxy response %q", statusLine)
+	}
+}
+
+func TestHTTPConnectReportsDialFailure(t *testing.T) {
+	wantErr := errors.New("remote authentication failed")
+	results := make(chan error, 1)
+	server := NewServer("127.0.0.1:0", &failingTransport{err: wantErr}, func(_ string, err error) {
+		results <- err
+	})
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	conn, err := net.DialTimeout("tcp", server.Address(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := io.WriteString(conn, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	statusLine, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(statusLine, " 502 ") {
+		t.Fatalf("unexpected CONNECT failure response %q", statusLine)
+	}
+	if err := <-results; !errors.Is(err, wantErr) {
+		t.Fatalf("unexpected dial result: %v", err)
+	}
+}
+
 func TestSOCKS5DrainsResponseAfterClientHalfClose(t *testing.T) {
 	backend, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -163,7 +269,7 @@ func TestSOCKS5RejectsUnsupportedAuthentication(t *testing.T) {
 	defer client.Close()
 	defer server.Close()
 	done := make(chan error, 1)
-	go func() { done <- handshake(server) }()
+	go func() { done <- handshake(server, server) }()
 	_, _ = client.Write([]byte{0x05, 0x01, 0x02})
 	reply := make([]byte, 2)
 	_, _ = io.ReadFull(client, reply)

@@ -158,7 +158,7 @@ function renderProfiles() {
             <span class="status ${statusClass}">${statusText}</span>
             ${profile.autoStart ? `<span class="badge">自动启动</span>` : ""}
           </div>
-          <p class="endpoint">SOCKS5 ${escapeHTML(profile.listenHost)}:${profile.listenPort} · ${escapeHTML(endpoint)}</p>
+          <p class="endpoint">SOCKS5 / HTTP ${escapeHTML(profile.listenHost)}:${profile.listenPort} · ${escapeHTML(endpoint)}</p>
 		  <div class="connection-row">${connectionStatus}</div>
 		  ${item.error ? `<p class="error">启动错误：${escapeHTML(item.error)}</p>` : ""}
 		  ${item.connectionError ? `<p class="error connection-error">连接失败：${escapeHTML(item.connectionError)}</p>` : ""}
@@ -326,7 +326,7 @@ async function profileAction(action, id) {
 				kind: "连接测试",
 				title: "连接测试成功",
 				message: item.profile.type === "ssh" ? "SSH 地址和认证信息验证通过。" : "WebSocket 地址、密钥和隧道握手验证通过。",
-				details: "配置卡片已更新最近连接状态，现在可以通过本地 SOCKS5 端口使用代理。"
+				details: "配置卡片已更新最近连接状态，现在可以通过本地 SOCKS5/HTTP 混合端口使用代理。"
 			});
 		} catch (error) {
 			await loadState(true);
@@ -382,7 +382,7 @@ async function profileAction(action, id) {
   renderProfiles();
   try {
     await api(`/api/profiles/${encodeURIComponent(id)}/${action}`, { method: "POST" });
-    showToast(action === "start" ? "本地 SOCKS5 监听已启动；远端状态会在首次使用或测试后更新" : "代理已停止");
+    showToast(action === "start" ? "本地 SOCKS5/HTTP 监听已启动；远端状态会在首次使用或测试后更新" : "代理已停止");
   } catch (error) {
     if (error.data?.code === "ssh_host_unknown") {
       const trusted = await showConfirmModal({
@@ -480,7 +480,7 @@ async function globalCommand(command) {
     const confirmed = await showConfirmModal({
       kind: "退出程序",
       title: "停止全部代理并退出？",
-      message: "退出后，所有本地 SOCKS5 端口都会停止监听。",
+      message: "退出后，所有本地 SOCKS5/HTTP 混合端口都会停止监听。",
       details: "需要再次使用时，请重新启动 Easy-Net Lite。",
       confirmText: "退出程序",
       danger: true

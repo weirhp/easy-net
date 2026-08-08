@@ -33,7 +33,7 @@ int wmain() {
     assert(!legacy[0].isolated);
 
     auto updated = parsed;
-    Entry replacement = entries[0];
+    Entry replacement = parsed[0];
     replacement.name = L"Renamed";
     replacement.last_used = L"101";
     easy_net::history::Upsert(updated, replacement);

@@ -29,7 +29,7 @@ BEGIN
     PUSHBUTTON      "浏览...", IDC_BROWSE, 572, 177, 60, 24
     LTEXT           "启动参数（可选）", -1, 338, 209, 130, 11
     EDITTEXT        IDC_ARGUMENTS, 338, 223, 294, 22, ES_AUTOHSCROLL | WS_TABSTOP
-    LTEXT           "DNS（仅通用 Hook，可选）", -1, 338, 254, 170, 11
+    LTEXT           "DNS（Hook/Antigravity，可选）", -1, 338, 254, 185, 11
     EDITTEXT        IDC_DNS, 338, 268, 294, 22, ES_AUTOHSCROLL | WS_TABSTOP
     LTEXT           "", IDC_HINT, 338, 300, 294, 32
     LTEXT           "就绪", IDC_STATUS, 338, 339, 150, 24

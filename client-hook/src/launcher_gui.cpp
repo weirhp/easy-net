@@ -218,11 +218,10 @@ void UpdateModeUi(GuiState& state) {
     const int mode = static_cast<int>(SendDlgItemMessageW(state.dialog, IDC_MODE, CB_GETCURSEL,
                                                            0, 0));
     const bool chatgpt = mode == 0;
-    const bool hook = mode == 2;
     EnableWindow(GetDlgItem(state.dialog, IDC_PATH), !chatgpt);
     EnableWindow(GetDlgItem(state.dialog, IDC_BROWSE), !chatgpt);
     EnableWindow(GetDlgItem(state.dialog, IDC_ARGUMENTS), !chatgpt);
-    EnableWindow(GetDlgItem(state.dialog, IDC_DNS), hook);
+    EnableWindow(GetDlgItem(state.dialog, IDC_DNS), !chatgpt);
     if (chatgpt) {
         SetControlText(state.dialog, IDC_PATH, L"");
         SetControlText(state.dialog, IDC_HINT,
@@ -231,7 +230,7 @@ void UpdateModeUi(GuiState& state) {
     } else if (mode == 1) {
         SetControlText(state.dialog, IDC_HINT,
                        L"程序路径可留空自动查找。IDE 与 language_server 后端都通过代理。\r\n"
-                       L"使用独立且可复用的 Antigravity 配置目录。");
+                       L"language server 使用兜底 Hook；可选 DNS。配置目录独立且可复用。");
     } else {
         SetControlText(state.dialog, IDC_HINT,
                        L"适合普通 Win32 程序。通过 DLL Hook 代理 TCP；可选自定义 DNS。\r\n"

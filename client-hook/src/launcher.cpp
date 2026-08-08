@@ -17,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_map>
 #include <vector>
 
 #include "browser_proxy.h"
@@ -446,6 +447,58 @@ bool SetNativeSocksEnvironment(const std::wstring& proxy) {
     return true;
 }
 
+std::wstring AntigravityWatcherEventName(DWORD process_id) {
+    return L"Local\\EasyNetHook_AntigravityWatcher_" + std::to_wstring(process_id);
+}
+
+bool StartAntigravityWatcher(DWORD process_id, const Options& options) {
+    std::vector<wchar_t> module_path(32768);
+    const DWORD length = GetModuleFileNameW(nullptr, module_path.data(),
+                                            static_cast<DWORD>(module_path.size()));
+    if (length == 0 || length >= static_cast<DWORD>(module_path.size())) {
+        return false;
+    }
+    const std::wstring executable(module_path.data(), length);
+    ScopedHandle ready(CreateEventW(nullptr, TRUE, FALSE,
+                                    AntigravityWatcherEventName(process_id).c_str()));
+    if (ready.get() == nullptr) {
+        return false;
+    }
+
+    std::vector<std::wstring> command{
+        executable,
+        L"--antigravity-watch",
+        std::to_wstring(process_id),
+        L"--proxy",
+        options.proxy,
+    };
+    if (!options.dns.empty()) {
+        command.insert(command.end(), {L"--dns", options.dns});
+    }
+    std::wstring command_line = BuildCommandLine(command);
+    std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
+    mutable_command.push_back(L'\0');
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION watcher{};
+    if (!CreateProcessW(executable.c_str(), mutable_command.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW | CREATE_DEFAULT_ERROR_MODE, nullptr, nullptr,
+                        &startup, &watcher)) {
+        return false;
+    }
+    CloseHandle(watcher.hThread);
+    const DWORD wait = WaitForSingleObject(ready.get(), 5000);
+    if (wait != WAIT_OBJECT_0) {
+        TerminateProcess(watcher.hProcess, 4);
+        WaitForSingleObject(watcher.hProcess, 5000);
+        CloseHandle(watcher.hProcess);
+        return false;
+    }
+    CloseHandle(watcher.hProcess);
+    return true;
+}
+
 int LaunchChatGptApp(const Options& options) {
     if (!options.username.empty() || !options.password.empty()) {
         std::wcerr << L"Chromium does not support SOCKS5 username/password authentication. "
@@ -527,6 +580,11 @@ int LaunchChatGptApp(const Options& options) {
 }
 
 int LaunchAntigravity(const Options& options) {
+#if !defined(_WIN64)
+    std::wcerr << L"--antigravity requires the x64 Easy-Net Hook package because its language "
+                  L"server is 64-bit.\n";
+    return 3;
+#endif
     if (!options.username.empty() || !options.password.empty()) {
         std::wcerr << L"Antigravity Chromium networking does not support SOCKS5 username/password "
                       L"authentication. Use a local unauthenticated SOCKS5 endpoint.\n";
@@ -562,8 +620,11 @@ int LaunchAntigravity(const Options& options) {
         return 4;
     }
     if (!options.dns.empty()) {
-        std::wcerr << L"Note: --dns is ignored in --antigravity mode; hostnames are resolved "
-                      L"through SOCKS5.\n";
+        easy_net::dns::Endpoint dns_server;
+        if (!easy_net::dns::ParseEndpoint(options.dns, dns_server)) {
+            std::wcerr << L"Invalid --dns value for the Antigravity language-server fallback.\n";
+            return 2;
+        }
     }
 
     std::vector<std::wstring> command{
@@ -582,14 +643,31 @@ int LaunchAntigravity(const Options& options) {
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
     if (!CreateProcessW(executable->c_str(), mutable_command.data(), nullptr, nullptr, FALSE,
-                        CREATE_DEFAULT_ERROR_MODE, nullptr, nullptr, &startup, &process)) {
+                        CREATE_DEFAULT_ERROR_MODE | CREATE_SUSPENDED, nullptr, nullptr,
+                        &startup, &process)) {
         std::wcerr << L"Cannot start Antigravity IDE (error " << GetLastError() << L").\n";
         return 5;
     }
+    if (!StartAntigravityWatcher(process.dwProcessId, options)) {
+        std::wcerr << L"Cannot start the Antigravity language-server monitor.\n";
+        TerminateProcess(process.hProcess, 5);
+        WaitForSingleObject(process.hProcess, 5000);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        return 5;
+    }
+    if (ResumeThread(process.hThread) == static_cast<DWORD>(-1)) {
+        std::wcerr << L"Cannot resume Antigravity IDE (error " << GetLastError() << L").\n";
+        TerminateProcess(process.hProcess, 5);
+        WaitForSingleObject(process.hProcess, 5000);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        return 5;
+    }
     CloseHandle(process.hThread);
-    std::wcout << L"Opened Antigravity IDE and language server through native SOCKS5 "
-               << options.proxy << L" without DLL injection (PID " << process.dwProcessId
-               << L").\n";
+    std::wcout << L"Opened Antigravity IDE through native SOCKS5 " << options.proxy
+               << L" and enabled the language-server fallback Hook (PID "
+               << process.dwProcessId << L").\n";
     if (options.detach) {
         CloseHandle(process.hProcess);
         return 0;
@@ -936,6 +1014,97 @@ bool InjectRunningProcess(DWORD process_id,
     return success;
 }
 
+bool IsDescendantProcess(DWORD process_id, DWORD root_process_id,
+                         const std::unordered_map<DWORD, DWORD>& parents) {
+    DWORD current = process_id;
+    for (int depth = 0; depth < 64; ++depth) {
+        const auto parent = parents.find(current);
+        if (parent == parents.end() || parent->second == 0 || parent->second == current) {
+            return false;
+        }
+        current = parent->second;
+        if (current == root_process_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int WatchAntigravityLanguageServer(DWORD root_process_id, const std::wstring& proxy,
+                                   const std::wstring& dns) {
+    std::wstring proxy_host;
+    if (!easy_net::browser::ParseLiteralSocksEndpoint(proxy, proxy_host)) {
+        return 2;
+    }
+    (void)proxy_host;
+    if (!dns.empty()) {
+        easy_net::dns::Endpoint dns_server;
+        if (!easy_net::dns::ParseEndpoint(dns, dns_server)) {
+            return 2;
+        }
+    }
+    const auto module_directory = CurrentModuleDirectory();
+    if (!module_directory) {
+        return 3;
+    }
+    const std::filesystem::path dll_path =
+        std::filesystem::path(*module_directory) / L"easy-net-hook.dll";
+    if (!std::filesystem::is_regular_file(dll_path)) {
+        return 3;
+    }
+    ScopedHandle root_process(OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                                          FALSE, root_process_id));
+    if (root_process.get() == nullptr) {
+        return 4;
+    }
+    ScopedHandle ready(OpenEventW(EVENT_MODIFY_STATE, FALSE,
+                                  AntigravityWatcherEventName(root_process_id).c_str()));
+    if (ready.get() == nullptr || !SetEvent(ready.get())) {
+        return 4;
+    }
+
+    Options options;
+    options.proxy = proxy;
+    options.dns = dns;
+    options.inject_children = false;
+    std::unordered_map<DWORD, unsigned int> attempts;
+    while (WaitForSingleObject(root_process.get(), 0) == WAIT_TIMEOUT) {
+        ScopedHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+        if (snapshot.get() != INVALID_HANDLE_VALUE) {
+            std::vector<PROCESSENTRY32W> processes;
+            std::unordered_map<DWORD, DWORD> parents;
+            PROCESSENTRY32W entry{};
+            entry.dwSize = sizeof(entry);
+            if (Process32FirstW(snapshot.get(), &entry)) {
+                do {
+                    processes.push_back(entry);
+                    parents.emplace(entry.th32ProcessID, entry.th32ParentProcessID);
+                } while (Process32NextW(snapshot.get(), &entry));
+            }
+            for (const auto& process : processes) {
+                if (_wcsicmp(process.szExeFile, L"language_server_windows_x64.exe") != 0 ||
+                    !IsDescendantProcess(process.th32ProcessID, root_process_id, parents)) {
+                    continue;
+                }
+                unsigned int& attempt_count = attempts[process.th32ProcessID];
+                if (attempt_count >= 5) {
+                    continue;
+                }
+                if (IsModuleLoaded(process.th32ProcessID, dll_path) ||
+                    InjectRunningProcess(process.th32ProcessID, dll_path, options)) {
+                    attempt_count = 5;
+                } else {
+                    ++attempt_count;
+                }
+            }
+        }
+        if (WaitForSingleObject(root_process.get(), 100) == WAIT_OBJECT_0) {
+            break;
+        }
+    }
+    return 0;
+}
+
 int ActivatePackagedApplication(const Options& options,
                                 const std::filesystem::path& dll_path) {
     const HRESULT com_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -994,6 +1163,31 @@ int ActivatePackagedApplication(const Options& options,
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+    if (argc >= 5 && std::wstring_view(argv[1]) == L"--antigravity-watch") {
+        wchar_t* end = nullptr;
+        const unsigned long process_id = std::wcstoul(argv[2], &end, 10);
+        if (process_id == 0 || end == argv[2] || end == nullptr || *end != L'\0') {
+            return 2;
+        }
+        std::wstring proxy;
+        std::wstring dns;
+        for (int index = 3; index < argc; ++index) {
+            const std::wstring_view argument(argv[index]);
+            if ((argument == L"--proxy" || argument == L"--dns") && index + 1 < argc) {
+                if (argument == L"--proxy") {
+                    proxy = argv[++index];
+                } else {
+                    dns = argv[++index];
+                }
+            } else {
+                return 2;
+            }
+        }
+        if (proxy.empty()) {
+            return 2;
+        }
+        return WatchAntigravityLanguageServer(static_cast<DWORD>(process_id), proxy, dns);
+    }
     if (argc == 1 || (argc == 2 && std::wstring_view(argv[1]) == L"--gui")) {
         std::vector<wchar_t> module_path(32768);
         const DWORD length = GetModuleFileNameW(nullptr, module_path.data(),

@@ -14,7 +14,10 @@ import (
 	"easy-net/client-lite/internal/transport"
 )
 
-const maxConcurrentClients = 256
+const (
+	maxConcurrentClients = 256
+	relayDrainTimeout    = 30 * time.Second
+)
 
 type DialResultHandler func(target string, err error)
 
@@ -149,6 +152,16 @@ func (s *Server) handle(ctx context.Context, local net.Conn) {
 	go copyAndCloseWrite(remote, local, done)
 	go copyAndCloseWrite(local, remote, done)
 	<-done
+
+	// 一侧读到 EOF 只表示该方向已经发送完毕，不代表反方向也没有数据。
+	// 保留连接让剩余响应完成；如果对端一直不结束，再用超时回收连接。
+	timer := time.NewTimer(relayDrainTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	case <-timer.C:
+	}
 }
 
 func handshake(conn net.Conn) error {
@@ -227,8 +240,6 @@ func copyAndCloseWrite(dst net.Conn, src net.Conn, done chan<- struct{}) {
 	_, _ = io.Copy(dst, src)
 	if closer, ok := dst.(interface{ CloseWrite() error }); ok {
 		_ = closer.CloseWrite()
-	} else {
-		_ = dst.Close()
 	}
 	done <- struct{}{}
 }

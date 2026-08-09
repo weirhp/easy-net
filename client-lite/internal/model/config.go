@@ -29,14 +29,17 @@ type Config struct {
 }
 
 type Profile struct {
-	ID         string           `json:"id"`
-	Name       string           `json:"name"`
-	Type       ProxyType        `json:"type"`
-	ListenHost string           `json:"listenHost"`
-	ListenPort int              `json:"listenPort"`
-	AutoStart  bool             `json:"autoStart"`
-	WebSocket  *WebSocketConfig `json:"websocket,omitempty"`
-	SSH        *SSHConfig       `json:"ssh,omitempty"`
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Type       ProxyType `json:"type"`
+	ListenHost string    `json:"listenHost"`
+	ListenPort int       `json:"listenPort"`
+	AutoStart  bool      `json:"autoStart"`
+	// BypassPrivate sends private, loopback, and link-local destinations through
+	// the machine's normal network stack instead of the configured transport.
+	BypassPrivate bool             `json:"bypassPrivate,omitempty"`
+	WebSocket     *WebSocketConfig `json:"websocket,omitempty"`
+	SSH           *SSHConfig       `json:"ssh,omitempty"`
 }
 
 type WebSocketConfig struct {

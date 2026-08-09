@@ -122,7 +122,7 @@ func (s *Service) ExportShare(id string) (sharecode.Payload, error) {
 	if !ok {
 		return sharecode.Payload{}, fmt.Errorf("代理配置不存在")
 	}
-	payload := sharecode.Payload{Name: profile.Name, Type: profile.Type, PreferredPort: profile.ListenPort}
+	payload := sharecode.Payload{Name: profile.Name, Type: profile.Type, PreferredPort: profile.ListenPort, BypassPrivate: profile.BypassPrivate}
 	switch profile.Type {
 	case model.ProxyTypeWebSocket:
 		secret, err := s.getSecret(profile.WebSocket.SecretRef, "WebSocket 密钥")
@@ -172,7 +172,7 @@ func (s *Service) ImportShare(payload sharecode.Payload) (string, error) {
 	id := newID()
 	profile := model.Profile{
 		ID: id, Name: strings.TrimSpace(payload.Name), Type: payload.Type, ListenHost: "127.0.0.1",
-		ListenPort: s.nextAvailablePort(payload.PreferredPort), AutoStart: false,
+		ListenPort: s.nextAvailablePort(payload.PreferredPort), AutoStart: false, BypassPrivate: payload.BypassPrivate,
 	}
 	values := SecretValues{}
 	if payload.WebSocket != nil {
@@ -462,6 +462,7 @@ func (s *Service) Start(id string) error {
 		server = proxy.NewServer(profile.ListenAddress(), outbound, func(_ string, dialErr error) {
 			s.recordConnectionResult(id, revision, profile, dialErr)
 		})
+		server.SetBypassPrivate(profile.BypassPrivate)
 		err = server.Start(ctx)
 	}
 	canceled := ctx.Err() != nil

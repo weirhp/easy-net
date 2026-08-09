@@ -28,6 +28,7 @@ type Payload struct {
 	Name          string           `json:"name"`
 	Type          model.ProxyType  `json:"type"`
 	PreferredPort int              `json:"preferredPort"`
+	BypassPrivate bool             `json:"bypassPrivate,omitempty"`
 	WebSocket     *WebSocketConfig `json:"websocket,omitempty"`
 	SSH           *SSHConfig       `json:"ssh,omitempty"`
 }

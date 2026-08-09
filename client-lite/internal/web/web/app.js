@@ -158,6 +158,7 @@ function renderProfiles() {
             <span class="badge">${type}</span>
             <span class="status ${statusClass}">${statusText}</span>
             ${profile.autoStart ? `<span class="badge">自动启动</span>` : ""}
+            ${profile.bypassPrivate ? `<span class="badge">内网直连</span>` : ""}
           </div>
           <p class="endpoint">${localCapabilities} ${escapeHTML(profile.listenHost)}:${profile.listenPort} · ${escapeHTML(endpoint)}</p>
 		  <div class="connection-row">${connectionStatus}</div>
@@ -191,6 +192,7 @@ function openProfileDialog(kind, id = "") {
   $("#field-name").value = profile?.name || "";
   $("#field-local-port").value = profile?.listenPort || nextPort();
   $("#field-auto-start").checked = profile ? profile.autoStart : true;
+  $("#field-bypass-private").checked = Boolean(profile?.bypassPrivate);
   if (kind === "websocket") {
     $("#field-ws-url").value = profile?.websocket?.url || "";
 	$("#field-ws-secret").placeholder = id ? "已保存；如需更换请重新输入" : "请输入连接密钥";
@@ -259,6 +261,7 @@ async function saveProfile(event) {
       listenHost: "127.0.0.1",
       listenPort: Number($("#field-local-port").value),
       autoStart: $("#field-auto-start").checked,
+      bypassPrivate: $("#field-bypass-private").checked,
       websocket: null,
       ssh: null
     };

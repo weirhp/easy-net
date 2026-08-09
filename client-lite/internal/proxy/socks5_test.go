@@ -173,6 +173,74 @@ func TestSOCKS5UDPAssociateRejectsUnsupportedTransport(t *testing.T) {
 	}
 }
 
+func TestSOCKS5UDPAssociateBypassesUnsupportedTransportForPrivateTarget(t *testing.T) {
+	backend, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	go func() {
+		buffer := make([]byte, 1024)
+		size, client, readErr := backend.ReadFromUDP(buffer)
+		if readErr == nil {
+			_, _ = backend.WriteToUDP(buffer[:size], client)
+		}
+	}()
+
+	server := NewServer("127.0.0.1:0", &failingTransport{err: errors.New("remote UDP must not be used")})
+	server.SetBypassPrivate(true)
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	control, err := net.DialTimeout("tcp", server.Address(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	_, _ = control.Write([]byte{0x05, 0x01, 0x00})
+	method := make([]byte, 2)
+	if _, err := io.ReadFull(control, method); err != nil || method[1] != 0 {
+		t.Fatalf("UDP method negotiation failed: %v %v", method, err)
+	}
+	_, _ = control.Write([]byte{0x05, commandUDPAssociate, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+	relayAddress, code, err := readSOCKS5ReplyAddress(control)
+	if err != nil || code != 0 {
+		t.Fatalf("UDP associate failed: address=%q code=%d err=%v", relayAddress, code, err)
+	}
+
+	client, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	relay, err := net.ResolveUDPAddr("udp", relayAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := datagram.EncodeSOCKS5(backend.LocalAddr().String(), []byte("private-udp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.WriteToUDP(request, relay); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	response := make([]byte, 65535)
+	size, _, err := client.ReadFromUDP(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, payload, err := datagram.DecodeSOCKS5(response[:size])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source != backend.LocalAddr().String() || string(payload) != "private-udp" {
+		t.Fatalf("unexpected direct UDP response: source=%q payload=%q", source, payload)
+	}
+}
+
 func readSOCKS5ReplyAddress(reader io.Reader) (string, byte, error) {
 	head := make([]byte, 4)
 	if _, err := io.ReadFull(reader, head); err != nil {
@@ -252,6 +320,47 @@ func TestSOCKS5ConnectAndRelay(t *testing.T) {
 	}
 	if string(echo) != string(payload) {
 		t.Fatalf("unexpected echo %q", echo)
+	}
+}
+
+func TestSOCKS5ConnectBypassesTransportForPrivateTarget(t *testing.T) {
+	backend, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	go func() {
+		conn, acceptErr := backend.Accept()
+		if acceptErr == nil {
+			defer conn.Close()
+			_, _ = io.Copy(conn, conn)
+		}
+	}()
+
+	server := NewServer("127.0.0.1:0", &failingTransport{err: errors.New("remote transport must not be used")})
+	server.SetBypassPrivate(true)
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	conn, err := net.DialTimeout("tcp", server.Address(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := establishSOCKS5Tunnel(conn, backend.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write([]byte("private-tcp")); err != nil {
+		t.Fatal(err)
+	}
+	echo := make([]byte, len("private-tcp"))
+	if _, err := io.ReadFull(conn, echo); err != nil {
+		t.Fatal(err)
+	}
+	if string(echo) != "private-tcp" {
+		t.Fatalf("unexpected direct TCP response: %q", echo)
 	}
 }
 

@@ -52,14 +52,15 @@ type upsertRequest struct {
 }
 
 type profileInput struct {
-	ID         string          `json:"id"`
-	Name       string          `json:"name"`
-	Type       model.ProxyType `json:"type"`
-	ListenHost string          `json:"listenHost"`
-	ListenPort int             `json:"listenPort"`
-	AutoStart  bool            `json:"autoStart"`
-	WebSocket  *webSocketInput `json:"websocket"`
-	SSH        *sshInput       `json:"ssh"`
+	ID            string          `json:"id"`
+	Name          string          `json:"name"`
+	Type          model.ProxyType `json:"type"`
+	ListenHost    string          `json:"listenHost"`
+	ListenPort    int             `json:"listenPort"`
+	AutoStart     bool            `json:"autoStart"`
+	BypassPrivate bool            `json:"bypassPrivate"`
+	WebSocket     *webSocketInput `json:"websocket"`
+	SSH           *sshInput       `json:"ssh"`
 }
 
 type webSocketInput struct {
@@ -86,14 +87,15 @@ type profileView struct {
 }
 
 type publicProfile struct {
-	ID         string           `json:"id"`
-	Name       string           `json:"name"`
-	Type       model.ProxyType  `json:"type"`
-	ListenHost string           `json:"listenHost"`
-	ListenPort int              `json:"listenPort"`
-	AutoStart  bool             `json:"autoStart"`
-	WebSocket  *publicWebSocket `json:"websocket,omitempty"`
-	SSH        *publicSSH       `json:"ssh,omitempty"`
+	ID            string           `json:"id"`
+	Name          string           `json:"name"`
+	Type          model.ProxyType  `json:"type"`
+	ListenHost    string           `json:"listenHost"`
+	ListenPort    int              `json:"listenPort"`
+	AutoStart     bool             `json:"autoStart"`
+	BypassPrivate bool             `json:"bypassPrivate"`
+	WebSocket     *publicWebSocket `json:"websocket,omitempty"`
+	SSH           *publicSSH       `json:"ssh,omitempty"`
 }
 
 type publicWebSocket struct {
@@ -528,7 +530,7 @@ func probeServerAt(baseURL string) (string, bool) {
 }
 
 func (p profileInput) modelProfile() model.Profile {
-	profile := model.Profile{ID: p.ID, Name: p.Name, Type: p.Type, ListenHost: p.ListenHost, ListenPort: p.ListenPort, AutoStart: p.AutoStart}
+	profile := model.Profile{ID: p.ID, Name: p.Name, Type: p.Type, ListenHost: p.ListenHost, ListenPort: p.ListenPort, AutoStart: p.AutoStart, BypassPrivate: p.BypassPrivate}
 	if p.WebSocket != nil {
 		profile.WebSocket = &model.WebSocketConfig{URL: p.WebSocket.URL, AllowInsecure: p.WebSocket.AllowInsecure, LegacyQueryAuth: p.WebSocket.LegacyQueryAuth}
 	}
@@ -540,7 +542,7 @@ func (p profileInput) modelProfile() model.Profile {
 
 func toProfileView(state service.ProfileState) profileView {
 	profile := state.Profile
-	view := publicProfile{ID: profile.ID, Name: profile.Name, Type: profile.Type, ListenHost: profile.ListenHost, ListenPort: profile.ListenPort, AutoStart: profile.AutoStart}
+	view := publicProfile{ID: profile.ID, Name: profile.Name, Type: profile.Type, ListenHost: profile.ListenHost, ListenPort: profile.ListenPort, AutoStart: profile.AutoStart, BypassPrivate: profile.BypassPrivate}
 	if profile.WebSocket != nil {
 		view.WebSocket = &publicWebSocket{URL: profile.WebSocket.URL, HasSecret: profile.WebSocket.SecretRef != "", AllowInsecure: profile.WebSocket.AllowInsecure, LegacyQueryAuth: profile.WebSocket.LegacyQueryAuth}
 	}

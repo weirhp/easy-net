@@ -10,7 +10,7 @@ import (
 
 func TestEncodeDecodeRoundTrip(t *testing.T) {
 	payload := Payload{
-		Name: "测试 SSH", Type: model.ProxyTypeSSH, PreferredPort: 1080,
+		Name: "测试 SSH", Type: model.ProxyTypeSSH, PreferredPort: 1080, BypassPrivate: true,
 		SSH: &SSHConfig{Host: "ssh.example.com", Port: 22, Username: "user", AuthType: model.AuthTypePrivateKey, PrivateKey: "private-key", Passphrase: "phrase", HostKeyFingerprint: "SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDE"},
 	}
 	code, err := Encode(payload)
@@ -26,6 +26,9 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 	}
 	if decoded.SSH == nil || decoded.SSH.PrivateKey != payload.SSH.PrivateKey || decoded.SSH.Passphrase != payload.SSH.Passphrase {
 		t.Fatalf("unexpected decoded payload: %#v", decoded)
+	}
+	if !decoded.BypassPrivate {
+		t.Fatal("private-network bypass setting was not preserved")
 	}
 }
 

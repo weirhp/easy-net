@@ -13,7 +13,7 @@ func TestSaveAndLoad(t *testing.T) {
 	store := NewStoreAt(path)
 	cfg := &model.Config{Profiles: []model.Profile{{
 		ID: "ws-1", Name: "测试", Type: model.ProxyTypeWebSocket,
-		ListenHost: "127.0.0.1", ListenPort: 1080,
+		ListenHost: "127.0.0.1", ListenPort: 1080, BypassPrivate: true,
 		WebSocket: &model.WebSocketConfig{URL: "wss://example.com/tunnel", SecretRef: "ws-1/websocket"},
 	}}}
 	if err := store.Save(cfg); err != nil {
@@ -23,7 +23,7 @@ func TestSaveAndLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded.Profiles) != 1 || loaded.Profiles[0].Name != "测试" {
+	if len(loaded.Profiles) != 1 || loaded.Profiles[0].Name != "测试" || !loaded.Profiles[0].BypassPrivate {
 		t.Fatalf("unexpected config: %#v", loaded)
 	}
 	data, err := os.ReadFile(path)

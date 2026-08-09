@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"strconv"
 	"strings"
@@ -44,15 +45,16 @@ type proxyRequest struct {
 type DialResultHandler func(target string, err error)
 
 type Server struct {
-	address      string
-	transport    transport.Transport
-	onDialResult DialResultHandler
-	listener     net.Listener
-	cancel       context.CancelFunc
-	running      atomic.Bool
-	mu           sync.Mutex
-	clients      map[net.Conn]struct{}
-	wg           sync.WaitGroup
+	address       string
+	transport     transport.Transport
+	onDialResult  DialResultHandler
+	listener      net.Listener
+	cancel        context.CancelFunc
+	running       atomic.Bool
+	bypassPrivate atomic.Bool
+	mu            sync.Mutex
+	clients       map[net.Conn]struct{}
+	wg            sync.WaitGroup
 }
 
 func NewServer(address string, outbound transport.Transport, handlers ...DialResultHandler) *Server {
@@ -61,6 +63,12 @@ func NewServer(address string, outbound transport.Transport, handlers ...DialRes
 		server.onDialResult = handlers[0]
 	}
 	return server
+}
+
+// SetBypassPrivate controls whether private destinations use the machine's
+// normal route instead of the configured outbound transport.
+func (s *Server) SetBypassPrivate(enabled bool) {
+	s.bypassPrivate.Store(enabled)
 }
 
 func (s *Server) Start(ctx context.Context) error {
@@ -162,9 +170,19 @@ func (s *Server) handle(ctx context.Context, local net.Conn) {
 		return
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	remote, err := s.transport.DialContext(dialCtx, "tcp", request.target)
+	dialTarget, direct := request.target, false
+	if s.bypassPrivate.Load() {
+		dialTarget, direct = resolvePrivateTarget(dialCtx, request.target)
+	}
+	var remote net.Conn
+	if direct {
+		log.Printf("内网目标 %s 使用本机直连", request.target)
+		remote, err = (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext(dialCtx, "tcp", dialTarget)
+	} else {
+		remote, err = s.transport.DialContext(dialCtx, "tcp", request.target)
+	}
 	cancel()
-	if s.onDialResult != nil {
+	if !direct && s.onDialResult != nil {
 		s.onDialResult(request.target, err)
 	}
 	if err != nil {
@@ -287,15 +305,23 @@ func parseRequest(reader io.Reader) (byte, string, error) {
 func (s *Server) handleUDPAssociate(ctx context.Context, control net.Conn, reader *bufio.Reader) {
 	associationCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	remote, err := transport.OpenPacketContext(associationCtx, s.transport)
-	if s.onDialResult != nil {
-		s.onDialResult("UDP ASSOCIATE", err)
-	}
-	if err != nil {
+	bypassPrivate := s.bypassPrivate.Load()
+	remote, remoteErr := transport.OpenPacketContext(associationCtx, s.transport)
+	if remoteErr != nil && !bypassPrivate {
+		if s.onDialResult != nil {
+			s.onDialResult("UDP ASSOCIATE", remoteErr)
+		}
 		writeReply(control, 0x07)
 		return
 	}
-	defer remote.Close()
+	if remoteErr == nil {
+		if s.onDialResult != nil {
+			s.onDialResult("UDP ASSOCIATE", nil)
+		}
+		defer remote.Close()
+	} else {
+		log.Printf("远端传输不支持 UDP；当前关联仅允许内网目标本机直连：%v", remoteErr)
+	}
 
 	controlHost, _, err := net.SplitHostPort(control.RemoteAddr().String())
 	if err != nil {
@@ -322,21 +348,73 @@ func (s *Server) handleUDPAssociate(ctx context.Context, control net.Conn, reade
 	_ = control.SetDeadline(time.Time{})
 	writeReplyAddress(control, relay.LocalAddr())
 
-	done := make(chan struct{}, 3)
+	done := make(chan struct{}, 4)
+	signalDone := func() {
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+	}
 	var clientMu sync.RWMutex
 	var clientAddress *net.UDPAddr
+	writeResponse := func(source string, payload []byte) error {
+		packet, encodeErr := datagram.EncodeSOCKS5(source, payload)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		clientMu.RLock()
+		client := clientAddress
+		clientMu.RUnlock()
+		if client == nil {
+			return nil
+		}
+		_, writeErr := relay.WriteToUDP(packet, client)
+		return writeErr
+	}
+
+	var direct4, direct6 *net.UDPConn
+	if bypassPrivate {
+		direct4, _ = net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero})
+		direct6, _ = net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6unspecified})
+		if direct4 != nil {
+			defer direct4.Close()
+		}
+		if direct6 != nil {
+			defer direct6.Close()
+		}
+	}
+	startDirectReader := func(socket *net.UDPConn) {
+		if socket == nil {
+			return
+		}
+		go func() {
+			buffer := make([]byte, datagram.MaxPayloadSize)
+			for {
+				size, source, readErr := socket.ReadFromUDP(buffer)
+				if readErr != nil {
+					return
+				}
+				if writeErr := writeResponse(source.String(), buffer[:size]); writeErr != nil {
+					signalDone()
+					return
+				}
+			}
+		}()
+	}
+	startDirectReader(direct4)
+	startDirectReader(direct6)
 
 	go func() {
 		buffer := make([]byte, 1)
 		_, _ = reader.Read(buffer)
-		done <- struct{}{}
+		signalDone()
 	}()
 	go func() {
 		buffer := make([]byte, datagram.MaxPayloadSize+512)
 		for {
 			size, source, readErr := relay.ReadFromUDP(buffer)
 			if readErr != nil {
-				done <- struct{}{}
+				signalDone()
 				return
 			}
 			if controlIP == nil || !source.IP.Equal(controlIP) {
@@ -355,35 +433,49 @@ func (s *Server) handleUDPAssociate(ctx context.Context, control net.Conn, reade
 			if decodeErr != nil {
 				continue
 			}
+			if bypassPrivate {
+				if directTarget, direct := resolvePrivateTarget(associationCtx, destination); direct {
+					destinationAddress, resolveErr := net.ResolveUDPAddr("udp", directTarget)
+					if resolveErr != nil {
+						continue
+					}
+					directSocket := direct6
+					if destinationAddress.IP.To4() != nil {
+						directSocket = direct4
+					}
+					if directSocket != nil {
+						if _, writeErr := directSocket.WriteToUDP(payload, destinationAddress); writeErr == nil {
+							continue
+						}
+					}
+					continue
+				}
+			}
+			if remote == nil {
+				continue
+			}
 			if writeErr := remote.WritePacket(payload, destination); writeErr != nil {
-				done <- struct{}{}
+				signalDone()
 				return
 			}
 		}
 	}()
-	go func() {
-		buffer := make([]byte, datagram.MaxPayloadSize)
-		for {
-			size, source, readErr := remote.ReadPacket(buffer)
-			if readErr != nil {
-				done <- struct{}{}
-				return
-			}
-			packet, encodeErr := datagram.EncodeSOCKS5(source, buffer[:size])
-			if encodeErr != nil {
-				continue
-			}
-			clientMu.RLock()
-			client := clientAddress
-			clientMu.RUnlock()
-			if client != nil {
-				if _, writeErr := relay.WriteToUDP(packet, client); writeErr != nil {
-					done <- struct{}{}
+	if remote != nil {
+		go func() {
+			buffer := make([]byte, datagram.MaxPayloadSize)
+			for {
+				size, source, readErr := remote.ReadPacket(buffer)
+				if readErr != nil {
+					signalDone()
+					return
+				}
+				if writeErr := writeResponse(source, buffer[:size]); writeErr != nil {
+					signalDone()
 					return
 				}
 			}
-		}
-	}()
+		}()
+	}
 
 	select {
 	case <-done:

@@ -129,7 +129,7 @@ func TestShareExportImportRoundTripAvoidsPortConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile := model.Profile{ID: "source", Name: "shared ws", Type: model.ProxyTypeWebSocket, ListenHost: "127.0.0.1", ListenPort: 1080, AutoStart: true, WebSocket: &model.WebSocketConfig{URL: "wss://example.com"}}
+	profile := model.Profile{ID: "source", Name: "shared ws", Type: model.ProxyTypeWebSocket, ListenHost: "127.0.0.1", ListenPort: 1080, AutoStart: true, BypassPrivate: true, WebSocket: &model.WebSocketConfig{URL: "wss://example.com"}}
 	if err := svc.Upsert(profile, SecretValues{WebSocketSecret: "shared-secret"}); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestShareExportImportRoundTripAvoidsPortConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	imported, ok := svc.Profile(importedID)
-	if !ok || imported.ListenPort != 1081 || imported.AutoStart {
+	if !ok || imported.ListenPort != 1081 || imported.AutoStart || !imported.BypassPrivate {
 		t.Fatalf("unexpected imported profile: %#v", imported)
 	}
 	if secrets.values[importedID+"/websocket"] != "shared-secret" {

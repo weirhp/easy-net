@@ -8,6 +8,7 @@ Easy-Net Lite 是一个使用本地网页管理界面、常驻系统托盘的轻
 - SSH 密码、OpenSSH 私钥和加密私钥。
 - Windows Credential Manager 与 macOS Keychain 凭据存储。
 - 多代理配置、独立启停、自动启动和系统托盘。
+- 每个配置可选“内网目标本机直连”，让局域网和 VPN 地址绕过远端代理。
 - 独立“测试连接”、本地监听状态与最近远端连接结果。
 - 加密分享码，可复制分享并快速导入 WebSocket 或 SSH 配置。
 - 启动后自动打开 `http://127.0.0.1:18081` 管理页面。
@@ -20,7 +21,9 @@ Easy-Net Lite 是一个使用本地网页管理界面、常驻系统托盘的轻
 127.0.0.1:1080
 ```
 
-可以把浏览器或其它应用的 SOCKS5 或 HTTP 代理设置成该地址。SOCKS5 域名和 HTTP CONNECT 目标主机会原样交给远端解析。WebSocket 配置同时接受 SOCKS5 UDP；SSH 配置仍然只有 TCP，因为标准 SSH 动态转发没有 UDP 通道。
+可以把浏览器或其它应用的 SOCKS5 或 HTTP 代理设置成该地址。默认情况下，SOCKS5 域名和 HTTP CONNECT 目标主机会原样交给远端解析。WebSocket 配置同时接受 SOCKS5 UDP；SSH 配置的公网代理仍然只有 TCP，因为标准 SSH 动态转发没有 UDP 通道。
+
+编辑代理配置并勾选“内网目标使用本机网络直连”后，RFC 1918 私网（`10/8`、`172.16/12`、`192.168/16`）、回环、链路本地、CGNAT `100.64/10` 和 IPv6 ULA 会使用本机路由，不再发给 Easy-Net 服务端。例如 `192.168.0.252:8311` 会直接通过当前局域网或 VPN 连接。域名会先用本机 DNS 解析，只有全部解析结果都属于上述内网范围时才直连；因此开启此选项会产生本机 DNS 查询。该开关默认关闭，修改运行中的配置后需要停止再启动该配置才会生效。
 
 “本地监听中”只表示混合代理端口已经启动。可点击配置卡片上的“测试连接”主动校验 WebSocket 地址和密钥或 SSH 认证信息；浏览器实际使用代理时，卡片也会更新最近一次远端连接成功/失败状态和时间，并给出可操作的错误提示。
 
@@ -88,7 +91,7 @@ git push origin client-lite-v0.1.3
 
 - 本地入口为免认证 SOCKS5/HTTP CONNECT 混合代理，因此强制只监听 `127.0.0.1` 或 `::1`。
 - 支持 SOCKS5 `CONNECT`、SOCKS5 `UDP ASSOCIATE` 和 HTTP `CONNECT`；不支持普通明文 HTTP 转发。
-- UDP 只适用于 WebSocket 配置，并要求服务端支持 `X-Easy-Net-Protocol: 3`。旧服务端会返回明确的版本错误，SSH 配置对 UDP ASSOCIATE 返回 SOCKS5“不支持命令”。
+- 公网 UDP 代理只适用于 WebSocket 配置，并要求服务端支持 `X-Easy-Net-Protocol: 3`。启用内网直连后，SSH 配置也可通过 UDP ASSOCIATE 直连内网 UDP 目标，但公网 UDP 仍不会通过 SSH 转发。旧 WebSocket 服务端会返回明确的版本错误。
 - 一个 UDP ASSOCIATE 对应一条独立 WebSocket 和一个服务端 UDP 会话，生命周期跟随 SOCKS5 TCP 控制连接。客户端锁定首次合法 UDP 数据报的本地源 IP/端口，防止其他本机进程借用该 relay。
 - 保留域名、IPv4/IPv6 和 UDP 报文边界；不支持 SOCKS5 UDP 分片（`FRAG != 0`），此类数据报会被丢弃。单个 UDP 负载最大 65507 字节。
 - TCP WebSocket 默认通过 `Authorization`、`X-Target-Host` 和 `X-Target-Port` 请求头传递连接信息；UDP 会话使用 `X-Easy-Net-Network: udp` 和协议版本 3，目标地址包含在每条二进制数据报帧中。连接密钥不放在 URL；旧 TCP 服务端可在配置中显式启用查询参数兼容模式。

@@ -79,6 +79,10 @@ set_property(TARGET detours easy_net_hook_dll easy_net_hook_launcher PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 enable_testing()
+add_test(NAME launcher_help_test COMMAND easy_net_hook_launcher --help)
+set_tests_properties(launcher_help_test PROPERTIES
+    PASS_REGULAR_EXPRESSION "wechat-existing")
+
 add_executable(socks5_protocol_test tests/socks5_protocol_test.cpp src/socks5_protocol.h)
 target_compile_features(socks5_protocol_test PRIVATE cxx_std_20)
 target_compile_definitions(socks5_protocol_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)

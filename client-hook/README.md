@@ -92,6 +92,17 @@ THIRD-PARTY-LICENSES\Detours-LICENSE.md
   --detach
 ```
 
+如果微信已经运行，使用接管模式；该模式不启动第二个实例，也不会向微信注入 DLL：
+
+```powershell
+.\easy-net-hook.exe `
+  --proxy 127.0.0.1:1082 `
+  --wechat-existing `
+  --detach
+```
+
+接管后只有新建连接能够可靠地进入 TUN。建议在微信内切换页面、重新打开小程序或重新登录以触发重连。`--wechat-existing` 不接受 `--wechat-path` 和 `--` 后的启动参数；未找到正在运行的 `Weixin.exe`、`WeChat.exe` 或 `xwechat.exe` 时会直接报错。微信完全退出后，生命周期监视器同样会停止 TUN。
+
 TUN 需要管理员权限，启动器会触发一次 Windows UAC。TUN 运行期间，微信及 `WeChatAppEx.exe`、`WeChatBrowser.exe`、`WeChatOCR.exe`、`WeChatPlayer.exe` 等辅助进程匹配 SOCKS5 出站，其他程序通过同一 TUN 分类后直连。微信完全退出后，生命周期监视器会自动停止 TUN 引擎并删除路由。
 
 UDP 模式默认是 `auto`：
@@ -102,7 +113,26 @@ UDP 模式默认是 `auto`：
 - `--tun-udp block` 始终阻断 UDP。
 - `--tun-udp direct` 允许 UDP 直连，会产生代理泄漏，仅用于明确接受该风险的语音/视频场景。
 
-Easy-Net Lite 当前只支持 SOCKS5 `CONNECT`，不支持 `UDP ASSOCIATE`，所以连接它的 1082 等端口时，`auto` 会选择阻断 UDP。v2rayN、Clash 等本地 SOCKS5 端口只有在实际启用 UDP 转发时才会进入完整 UDP 代理模式；可以从 `%LOCALAPPDATA%\EasyNetHook\Tun\wechat-tun.log` 查看 TUN 日志。
+Easy-Net Lite `0.2.0` 与协议 v3 服务端已经支持 `UDP ASSOCIATE`，所以连接更新后的 1082 等端口时，`auto` 会选择代理 UDP。旧版 Lite、SSH 模式以及未启用 UDP 转发的 v2rayN/Clash 端口会让 `auto` 选择阻断 UDP。可以从 `%LOCALAPPDATA%\EasyNetHook\Tun\wechat-tun.log` 查看 TUN 日志。
+
+#### 验证微信确实进入 TUN
+
+启动或接管后，依次检查：
+
+```powershell
+# 1. TUN 引擎和网卡已经存在
+Get-Process sing-box -ErrorAction Stop
+Get-NetAdapter -Name "easy-net-wechat" -ErrorAction Stop
+
+# 2. 配置确实包含微信进程和 socks-out
+Get-Content "$env:LOCALAPPDATA\EasyNetHook\Tun\wechat.json" |
+  Select-String 'Weixin.exe|WeChat.exe|socks-out'
+
+# 3. 实时观察路由日志，然后在微信里打开小程序、图片或刷新页面
+Get-Content "$env:LOCALAPPDATA\EasyNetHook\Tun\wechat-tun.log" -Wait
+```
+
+日志中出现由 `Weixin.exe` 或微信辅助进程发起、并选择 `socks-out` 的新连接，是按进程规则生效的直接证据。进一步可在 Easy-Net 服务端用户流量统计中比较操作前后的字节数；只看到 TUN 网卡并不能单独证明微信流量已经经过 SOCKS5。
 
 可选 DNS 仍然可用：
 
@@ -311,6 +341,7 @@ Chromium 的 SOCKS5 模式不支持用户名密码，因此网页模式只能连
 --chatgpt-web       不注入，使用独立 Edge/Chrome SOCKS5 会话打开 ChatGPT
 --browser-path PATH 为网页模式指定 Edge/Chrome 可执行文件
 --wechat            使用可选 TUN 引擎启动微信
+--wechat-existing   为已经运行的微信启动按进程 TUN，不创建新实例
 --wechat-path PATH  指定 WeChat.exe/Weixin.exe；通常可以自动查找
 --tun-engine PATH   指定 sing-box.exe；默认查找 tun 子目录和 PATH
 --tun-udp MODE      微信 UDP 策略：auto/proxy/block/direct
@@ -351,7 +382,7 @@ DNS 查询是目标进程到指定 DNS 服务的普通 UDP/TCP 流量，会绕�
 ### 进程与兼容性
 
 - `--chatgpt-app` 使用原生代理参数及继承环境，不注入 DLL。`--antigravity` 默认复用正常登录配置，同样不向 Electron 进程注入，但会监视其后代并只 Hook `language_server_windows_x64.exe`，兜底处理忽略代理环境变量的外部 TCP。
-- `--wechat` 不注入 DLL，使用 TUN 捕获流量并按进程名分流；它要求 x64、管理员权限和独立的 sing-box 引擎。
+- `--wechat` 和 `--wechat-existing` 不注入 DLL，使用 TUN 捕获流量并按进程名分流；它们要求 x64、管理员权限和独立的 sing-box 引擎。接管模式只保证新建连接进入新路由。
 - `--pid` 采用标准远程 `LoadLibraryW` 注入，只影响注入后新建的连接；已经建立的连接仍保持原路径。
 - Chromium/Electron 子进程采用网络服务定向注入；其 renderer、GPU、crashpad 和非网络 utility 子进程不会加载 Hook。`--no-children` 会连网络服务也一并跳过，因此不适合需要代理 Chromium/Electron 流量的场景。
 - `--appx` 先通过 Windows 包激活 API 启动或唤醒应用，再采用与 `--pid` 相同的方式注入。激活到注入之间存在很短的时间窗口，极早建立的连接可能需要在应用内重新连接。
@@ -377,7 +408,7 @@ easy-net-hook.exe
   ├─ GUI + 本地历史记录（快捷启动常用配置）
   ├─ --chatgpt-app（原生 SOCKS5 参数 + 后端代理环境）
   ├─ --antigravity（默认配置/可选隔离配置 + IDE 原生代理 + LS 兜底 Hook）
-  ├─ --wechat（可选 sing-box TUN + 微信进程规则 + UDP 能力检测）
+  ├─ --wechat / --wechat-existing（可选 sing-box TUN + 微信进程规则 + UDP 能力检测）
   ├─ DetourCreateProcessWithDllExW（启动普通新进程）
   ├─ --appx + IApplicationActivationManager（激活打包应用）
   └─ --pid / --appx + LoadLibraryW（附加运行中进程）

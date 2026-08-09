@@ -62,6 +62,7 @@ struct Options {
     bool chatgpt_app = false;
     bool chatgpt_web = false;
     bool wechat = false;
+    bool wechat_existing = false;
     std::wstring antigravity_path;
     std::wstring browser_path;
     std::wstring wechat_path;
@@ -82,7 +83,8 @@ void PrintUsage() {
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --antigravity [options] [-- app-args...]\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --chatgpt-app [options]\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --chatgpt-web [options]\n\n"
-        << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --wechat [options] [-- app-args...]\n\n"
+        << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --wechat [options] [-- app-args...]\n"
+        << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --wechat-existing [options]\n\n"
         << L"Options:\n"
         << L"  --gui                  Open the graphical launcher (also the default with no arguments)\n"
         << L"  --username VALUE       SOCKS5 username (optional)\n"
@@ -99,8 +101,9 @@ void PrintUsage() {
         << L"  --chatgpt-web          Open ChatGPT in an isolated Edge/Chrome SOCKS5 session\n"
         << L"  --browser-path PATH    Browser executable for --chatgpt-web (optional)\n"
         << L"  --wechat               Open WeChat/Weixin through per-process TUN routing\n"
+        << L"  --wechat-existing      Attach per-process TUN routing to running WeChat/Weixin\n"
         << L"  --wechat-path PATH     WeChat.exe or Weixin.exe (optional, auto-detected)\n"
-        << L"  --tun-engine PATH      sing-box.exe used by --wechat (optional, auto-detected)\n"
+        << L"  --tun-engine PATH      sing-box.exe used by WeChat TUN modes (optional)\n"
         << L"  --tun-udp MODE         auto, proxy, block, or direct (default: auto)\n"
         << L"  --detach               Exit after the target process starts\n"
         << L"  --help                  Show this help\n\n"
@@ -174,6 +177,9 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
             options.chatgpt_web = true;
         } else if (argument == L"--wechat") {
             options.wechat = true;
+        } else if (argument == L"--wechat-existing") {
+            options.wechat = true;
+            options.wechat_existing = true;
         } else if (argument == L"--detach") {
             options.detach = true;
         } else if (argument == L"--help" || argument == L"-h" || argument == L"/?") {
@@ -198,7 +204,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
                               (options.wechat ? 1 : 0);
     if (target_count != 1) {
         std::wcerr << L"Specify exactly one target: a command after --, --pid PID, "
-                      L"--appx AUMID, --antigravity, --chatgpt-app, --chatgpt-web, or --wechat.\n";
+                      L"--appx AUMID, --antigravity, --chatgpt-app, --chatgpt-web, --wechat, "
+                      L"or --wechat-existing.\n";
         return false;
     }
     if (!options.browser_path.empty() && !options.chatgpt_web) {
@@ -217,9 +224,17 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
         std::wcerr << L"--wechat-path can only be used with --wechat.\n";
         return false;
     }
+    if (options.wechat_existing && !options.wechat_path.empty()) {
+        std::wcerr << L"--wechat-path is not used with --wechat-existing.\n";
+        return false;
+    }
+    if (options.wechat_existing && !options.command.empty()) {
+        std::wcerr << L"Application arguments cannot be used with --wechat-existing.\n";
+        return false;
+    }
     if ((!options.tun_engine_path.empty() || options.tun_udp_mode != easy_net::tun::UdpMode::automatic) &&
         !options.wechat) {
-        std::wcerr << L"--tun-engine and --tun-udp can only be used with --wechat.\n";
+        std::wcerr << L"--tun-engine and --tun-udp can only be used with a WeChat TUN mode.\n";
         return false;
     }
     return true;
@@ -533,6 +548,31 @@ bool AnyWeChatProcessRunning() {
         }
     } while (Process32NextW(snapshot.get(), &entry));
     return false;
+}
+
+struct RunningWeChatProcess {
+    DWORD process_id = 0;
+    std::wstring name;
+};
+
+std::optional<RunningWeChatProcess> FindRunningWeChatProcess() {
+    ScopedHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    if (snapshot.get() == INVALID_HANDLE_VALUE) {
+        return std::nullopt;
+    }
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (!Process32FirstW(snapshot.get(), &entry)) {
+        return std::nullopt;
+    }
+    do {
+        if (_wcsicmp(entry.szExeFile, L"Weixin.exe") == 0 ||
+            _wcsicmp(entry.szExeFile, L"WeChat.exe") == 0 ||
+            _wcsicmp(entry.szExeFile, L"xwechat.exe") == 0) {
+            return RunningWeChatProcess{entry.th32ProcessID, entry.szExeFile};
+        }
+    } while (Process32NextW(snapshot.get(), &entry));
+    return std::nullopt;
 }
 
 std::optional<std::wstring> RegistryString(HKEY root, const wchar_t* key,
@@ -868,20 +908,32 @@ int LaunchWeChat(const Options& options) {
             return 2;
         }
     }
-    const auto executable = FindWeChatExecutable(options);
-    if (!executable) {
-        std::wcerr << L"WeChat.exe or Weixin.exe was not found. Use --wechat-path PATH.\n";
-        return 3;
+    std::optional<std::filesystem::path> executable;
+    std::optional<RunningWeChatProcess> existing_process;
+    if (options.wechat_existing) {
+        existing_process = FindRunningWeChatProcess();
+        if (!existing_process) {
+            std::wcerr << L"No running Weixin.exe, WeChat.exe, or xwechat.exe was found. "
+                          L"Start WeChat first, then use --wechat-existing.\n";
+            return 6;
+        }
+    } else {
+        executable = FindWeChatExecutable(options);
+        if (!executable) {
+            std::wcerr << L"WeChat.exe or Weixin.exe was not found. Use --wechat-path PATH.\n";
+            return 3;
+        }
+        if (AnyWeChatProcessRunning()) {
+            std::wcerr << L"WeChat is already running. Use --wechat-existing to attach TUN "
+                          L"routing, or exit it completely before using --wechat.\n";
+            return 6;
+        }
     }
     const auto engine = FindTunEngine(options);
     if (!engine) {
         std::wcerr << L"The optional TUN engine was not found. Use the x64-TUN package, place "
                       L"sing-box.exe in the tun folder, or specify --tun-engine PATH.\n";
         return 3;
-    }
-    if (AnyWeChatProcessRunning()) {
-        std::wcerr << L"WeChat is already running. Exit it completely before starting TUN mode.\n";
-        return 6;
     }
     if (!IsProcessElevated()) {
         return RelaunchElevated();
@@ -984,27 +1036,52 @@ int LaunchWeChat(const Options& options) {
         return 5;
     }
 
-    std::vector<std::wstring> wechat_command{executable->wstring()};
-    wechat_command.insert(wechat_command.end(), options.command.begin(), options.command.end());
-    std::wstring command_line = BuildCommandLine(wechat_command);
-    std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
-    mutable_command.push_back(L'\0');
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
     PROCESS_INFORMATION wechat_process{};
-    if (!CreateProcessW(executable->c_str(), mutable_command.data(), nullptr, nullptr, FALSE,
-                        CREATE_DEFAULT_ERROR_MODE, nullptr, executable->parent_path().c_str(),
-                        &startup, &wechat_process)) {
-        const DWORD error = GetLastError();
-        TerminateProcess(tun_process.hProcess, 5);
-        WaitForSingleObject(tun_process.hProcess, 5000);
-        CloseHandle(tun_process.hProcess);
-        std::wcerr << L"Cannot start WeChat (error " << error << L").\n";
-        return 5;
+    if (options.wechat_existing) {
+        wechat_process.dwProcessId = existing_process->process_id;
+        wechat_process.hProcess = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                                              FALSE, wechat_process.dwProcessId);
+        if (wechat_process.hProcess == nullptr ||
+            WaitForSingleObject(wechat_process.hProcess, 0) != WAIT_TIMEOUT) {
+            const DWORD error = GetLastError();
+            if (wechat_process.hProcess != nullptr) {
+                CloseHandle(wechat_process.hProcess);
+            }
+            TerminateProcess(tun_process.hProcess, 5);
+            WaitForSingleObject(tun_process.hProcess, 5000);
+            CloseHandle(tun_process.hProcess);
+            std::wcerr << L"The running WeChat process exited before TUN could attach (error "
+                       << error << L").\n";
+            return 6;
+        }
+        std::wcout << L"Attached TUN and SOCKS5 " << options.proxy << L" to running "
+                   << existing_process->name << L" (PID " << wechat_process.dwProcessId
+                   << L"). New connections will use the TUN route.\n";
+    } else {
+        std::vector<std::wstring> wechat_command{executable->wstring()};
+        wechat_command.insert(wechat_command.end(), options.command.begin(), options.command.end());
+        std::wstring command_line = BuildCommandLine(wechat_command);
+        std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
+        mutable_command.push_back(L'\0');
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        if (!CreateProcessW(executable->c_str(), mutable_command.data(), nullptr, nullptr, FALSE,
+                            CREATE_DEFAULT_ERROR_MODE, nullptr, executable->parent_path().c_str(),
+                            &startup, &wechat_process)) {
+            const DWORD error = GetLastError();
+            TerminateProcess(tun_process.hProcess, 5);
+            WaitForSingleObject(tun_process.hProcess, 5000);
+            CloseHandle(tun_process.hProcess);
+            std::wcerr << L"Cannot start WeChat (error " << error << L").\n";
+            return 5;
+        }
+        CloseHandle(wechat_process.hThread);
+        wechat_process.hThread = nullptr;
+        std::wcout << L"Opened " << executable->filename().wstring()
+                   << L" through TUN and SOCKS5 " << options.proxy << L" (PID "
+                   << wechat_process.dwProcessId << L").\n";
     }
-    CloseHandle(wechat_process.hThread);
-    std::wcout << L"Opened " << executable->filename().wstring() << L" through TUN and SOCKS5 "
-               << options.proxy << L" (PID " << wechat_process.dwProcessId << L").\n";
+    std::wcout << L"TUN log: " << log_path.wstring() << L"\n";
 
     if (options.detach) {
         const auto launcher_directory = CurrentModuleDirectory();
@@ -1018,7 +1095,9 @@ int LaunchWeChat(const Options& options) {
                                 std::to_wstring(tun_process.dwProcessId)},
                                nullptr, watcher);
         if (!watcher_started) {
-            TerminateProcess(wechat_process.hProcess, 5);
+            if (!options.wechat_existing) {
+                TerminateProcess(wechat_process.hProcess, 5);
+            }
             TerminateProcess(tun_process.hProcess, 5);
             WaitForSingleObject(tun_process.hProcess, 5000);
             CloseHandle(wechat_process.hProcess);

@@ -33,13 +33,16 @@ int main() {
     config.log_path = "C:\\Easy Net\\tun.log";
     config.udp_mode = UdpMode::block;
     const std::string json = easy_net::tun::BuildConfig(config);
+    assert(json.find("\"level\": \"warn\"") != std::string::npos);
     assert(json.find("\"username\": \"user\\\"name\"") != std::string::npos);
     assert(json.find("\"action\": \"hijack-dns\"") != std::string::npos);
     assert(json.find("\"network\": \"udp\"") != std::string::npos);
     assert(json.find("Weixin.exe") != std::string::npos);
 
     config.udp_mode = UdpMode::proxy;
+    config.log_level = "info";
     const std::string proxy_udp = easy_net::tun::BuildConfig(config);
+    assert(proxy_udp.find("\"level\": \"info\"") != std::string::npos);
     assert(proxy_udp.find("\"network\": \"udp\"") == std::string::npos);
     return 0;
 }

@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -63,6 +64,7 @@ struct Options {
     bool chatgpt_web = false;
     bool wechat = false;
     bool wechat_existing = false;
+    bool tun_debug_log = false;
     std::wstring antigravity_path;
     std::wstring browser_path;
     std::wstring wechat_path;
@@ -105,6 +107,7 @@ void PrintUsage() {
         << L"  --wechat-path PATH     WeChat.exe or Weixin.exe (optional, auto-detected)\n"
         << L"  --tun-engine PATH      sing-box.exe used by WeChat TUN modes (optional)\n"
         << L"  --tun-udp MODE         auto, proxy, block, or direct (default: auto)\n"
+        << L"  --tun-debug-log        Log each TUN connection for temporary diagnostics\n"
         << L"  --detach               Exit after the target process starts\n"
         << L"  --help                  Show this help\n\n"
         << L"The proxy host must be a literal IPv4 address or a bracketed IPv6 address.\n";
@@ -180,6 +183,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
         } else if (argument == L"--wechat-existing") {
             options.wechat = true;
             options.wechat_existing = true;
+        } else if (argument == L"--tun-debug-log") {
+            options.tun_debug_log = true;
         } else if (argument == L"--detach") {
             options.detach = true;
         } else if (argument == L"--help" || argument == L"-h" || argument == L"/?") {
@@ -232,9 +237,11 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
         std::wcerr << L"Application arguments cannot be used with --wechat-existing.\n";
         return false;
     }
-    if ((!options.tun_engine_path.empty() || options.tun_udp_mode != easy_net::tun::UdpMode::automatic) &&
+    if ((!options.tun_engine_path.empty() || options.tun_udp_mode != easy_net::tun::UdpMode::automatic ||
+         options.tun_debug_log) &&
         !options.wechat) {
-        std::wcerr << L"--tun-engine and --tun-udp can only be used with a WeChat TUN mode.\n";
+        std::wcerr << L"--tun-engine, --tun-udp, and --tun-debug-log can only be used with a "
+                      L"WeChat TUN mode.\n";
         return false;
     }
     return true;
@@ -847,7 +854,7 @@ bool WriteUtf8File(const std::filesystem::path& path, const std::string& content
 
 bool StartHiddenProcess(const std::filesystem::path& executable,
                         const std::vector<std::wstring>& arguments, HANDLE output,
-                        PROCESS_INFORMATION& process) {
+                        PROCESS_INFORMATION& process, bool inherit_additional_handles = false) {
     std::vector<std::wstring> command{executable.wstring()};
     command.insert(command.end(), arguments.begin(), arguments.end());
     std::wstring command_line = BuildCommandLine(command);
@@ -855,7 +862,7 @@ bool StartHiddenProcess(const std::filesystem::path& executable,
     mutable_command.push_back(L'\0');
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
-    BOOL inherit_handles = FALSE;
+    BOOL inherit_handles = inherit_additional_handles ? TRUE : FALSE;
     if (output != nullptr && output != INVALID_HANDLE_VALUE) {
         startup.dwFlags = STARTF_USESTDHANDLES;
         startup.hStdOutput = output;
@@ -868,11 +875,70 @@ bool StartHiddenProcess(const std::filesystem::path& executable,
                           executable.parent_path().c_str(), &startup, &process) != FALSE;
 }
 
-int WatchWeChat(DWORD root_process_id, DWORD engine_process_id) {
+constexpr LONGLONG kTunLogMaxBytes = 8LL * 1024 * 1024;
+
+void RelayBoundedTunLog(HANDLE pipe, const std::filesystem::path& log_path) {
+    ScopedHandle input(pipe);
+    ScopedHandle output(CreateFileW(log_path.c_str(), GENERIC_WRITE,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                    nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+    LARGE_INTEGER log_size{};
+    if (output.get() != INVALID_HANDLE_VALUE) {
+        GetFileSizeEx(output.get(), &log_size);
+        LARGE_INTEGER end{};
+        SetFilePointerEx(output.get(), end, nullptr, FILE_END);
+    }
+
+    std::vector<char> buffer(64 * 1024);
+    for (;;) {
+        DWORD received = 0;
+        if (!ReadFile(input.get(), buffer.data(), static_cast<DWORD>(buffer.size()), &received,
+                      nullptr) || received == 0) {
+            break;
+        }
+        if (output.get() == INVALID_HANDLE_VALUE) {
+            continue;
+        }
+        if (log_size.QuadPart + received > kTunLogMaxBytes) {
+            LARGE_INTEGER start{};
+            if (SetFilePointerEx(output.get(), start, nullptr, FILE_BEGIN) &&
+                SetEndOfFile(output.get())) {
+                log_size.QuadPart = 0;
+                constexpr char marker[] =
+                    "--- Easy-Net Hook truncated the TUN log at 8 MiB ---\r\n";
+                DWORD marker_written = 0;
+                if (WriteFile(output.get(), marker, sizeof(marker) - 1, &marker_written,
+                              nullptr)) {
+                    log_size.QuadPart += marker_written;
+                }
+            }
+        }
+        DWORD offset = 0;
+        while (offset < received) {
+            DWORD written = 0;
+            if (!WriteFile(output.get(), buffer.data() + offset, received - offset, &written,
+                           nullptr) || written == 0) {
+                break;
+            }
+            offset += written;
+            log_size.QuadPart += written;
+        }
+    }
+}
+
+int WatchWeChat(DWORD root_process_id, DWORD engine_process_id, HANDLE log_pipe = nullptr,
+                const std::filesystem::path& log_path = {}) {
     ScopedHandle root(OpenProcess(SYNCHRONIZE, FALSE, root_process_id));
     ScopedHandle engine(OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, engine_process_id));
     if (engine.get() == nullptr) {
+        if (log_pipe != nullptr && log_pipe != INVALID_HANDLE_VALUE) {
+            CloseHandle(log_pipe);
+        }
         return 2;
+    }
+    std::thread log_relay;
+    if (log_pipe != nullptr && log_pipe != INVALID_HANDLE_VALUE && !log_path.empty()) {
+        log_relay = std::thread(RelayBoundedTunLog, log_pipe, log_path);
     }
     if (root.get() != nullptr) {
         WaitForSingleObject(root.get(), INFINITE);
@@ -887,6 +953,10 @@ int WatchWeChat(DWORD root_process_id, DWORD engine_process_id) {
             break;
         }
         Sleep(1000);
+    }
+    if (log_relay.joinable()) {
+        CancelSynchronousIo(log_relay.native_handle());
+        log_relay.join();
     }
     return 0;
 }
@@ -979,6 +1049,7 @@ int LaunchWeChat(const Options& options) {
     config.username = *username;
     config.password = *password;
     config.udp_mode = udp_mode;
+    config.log_level = options.tun_debug_log ? "info" : "warn";
     if (!options.dns.empty()) {
         const auto dns_text = ToUtf8(options.dns);
         easy_net::tun::Endpoint dns_endpoint;
@@ -994,43 +1065,64 @@ int LaunchWeChat(const Options& options) {
     }
 
     SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
-    ScopedHandle log(CreateFileW(log_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                 &security, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
-    if (log.get() == INVALID_HANDLE_VALUE) {
-        std::wcerr << L"Cannot open TUN log: " << log_path.wstring() << L".\n";
-        return 4;
-    }
-    PROCESS_INFORMATION checker{};
-    if (!StartHiddenProcess(*engine, {L"check", L"-c", config_path.wstring()}, log.get(), checker)) {
-        std::wcerr << L"Cannot validate the TUN configuration (error " << GetLastError() << L").\n";
-        return 5;
-    }
-    CloseHandle(checker.hThread);
-    const DWORD check_wait = WaitForSingleObject(checker.hProcess, 10000);
-    DWORD check_exit = 1;
-    if (check_wait != WAIT_OBJECT_0) {
-        TerminateProcess(checker.hProcess, 5);
-        WaitForSingleObject(checker.hProcess, 5000);
-    } else {
-        GetExitCodeProcess(checker.hProcess, &check_exit);
-    }
-    CloseHandle(checker.hProcess);
-    if (check_wait != WAIT_OBJECT_0 || check_exit != 0) {
-        std::wcerr << L"TUN configuration validation failed. See " << log_path.wstring() << L".\n";
-        return 5;
+    {
+        ScopedHandle validation_log(CreateFileW(
+            log_path.c_str(), GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &security, CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL, nullptr));
+        if (validation_log.get() == INVALID_HANDLE_VALUE) {
+            std::wcerr << L"Cannot open TUN log: " << log_path.wstring() << L".\n";
+            return 4;
+        }
+        PROCESS_INFORMATION checker{};
+        if (!StartHiddenProcess(*engine, {L"check", L"-c", config_path.wstring()},
+                                validation_log.get(), checker)) {
+            std::wcerr << L"Cannot validate the TUN configuration (error " << GetLastError()
+                       << L").\n";
+            return 5;
+        }
+        CloseHandle(checker.hThread);
+        const DWORD check_wait = WaitForSingleObject(checker.hProcess, 10000);
+        DWORD check_exit = 1;
+        if (check_wait != WAIT_OBJECT_0) {
+            TerminateProcess(checker.hProcess, 5);
+            WaitForSingleObject(checker.hProcess, 5000);
+        } else {
+            GetExitCodeProcess(checker.hProcess, &check_exit);
+        }
+        CloseHandle(checker.hProcess);
+        if (check_wait != WAIT_OBJECT_0 || check_exit != 0) {
+            std::wcerr << L"TUN configuration validation failed. See " << log_path.wstring()
+                       << L".\n";
+            return 5;
+        }
     }
 
+    HANDLE raw_log_read = nullptr;
+    HANDLE raw_log_write = nullptr;
+    if (!CreatePipe(&raw_log_read, &raw_log_write, &security, 64 * 1024)) {
+        std::wcerr << L"Cannot create the bounded TUN log pipe (error " << GetLastError()
+                   << L").\n";
+        return 4;
+    }
+    ScopedHandle log_read(raw_log_read);
+    ScopedHandle log_write(raw_log_write);
+    SetHandleInformation(log_read.get(), HANDLE_FLAG_INHERIT, 0);
+
     PROCESS_INFORMATION tun_process{};
-    if (!StartHiddenProcess(*engine, {L"run", L"-c", config_path.wstring()}, log.get(),
+    if (!StartHiddenProcess(*engine, {L"run", L"-c", config_path.wstring()}, log_write.get(),
                             tun_process)) {
         std::wcerr << L"Cannot start the TUN engine (error " << GetLastError() << L").\n";
         return 5;
     }
     CloseHandle(tun_process.hThread);
+    SetHandleInformation(log_write.get(), HANDLE_FLAG_INHERIT, 0);
     if (WaitForSingleObject(tun_process.hProcess, 1500) == WAIT_OBJECT_0) {
         DWORD engine_exit = 1;
         GetExitCodeProcess(tun_process.hProcess, &engine_exit);
         CloseHandle(tun_process.hProcess);
+        CloseHandle(log_write.release());
+        RelayBoundedTunLog(log_read.release(), log_path);
         std::wcerr << L"The TUN engine exited with code " << engine_exit << L". See "
                    << log_path.wstring() << L".\n";
         return 5;
@@ -1083,40 +1175,47 @@ int LaunchWeChat(const Options& options) {
     }
     std::wcout << L"TUN log: " << log_path.wstring() << L"\n";
 
-    if (options.detach) {
-        const auto launcher_directory = CurrentModuleDirectory();
-        const std::filesystem::path launcher =
-            launcher_directory ? std::filesystem::path(*launcher_directory) / L"easy-net-hook.exe"
-                               : std::filesystem::path{};
-        PROCESS_INFORMATION watcher{};
-        const bool watcher_started = !launcher.empty() &&
-            StartHiddenProcess(launcher,
-                               {L"--wechat-watch", std::to_wstring(wechat_process.dwProcessId),
-                                std::to_wstring(tun_process.dwProcessId)},
-                               nullptr, watcher);
-        if (!watcher_started) {
-            if (!options.wechat_existing) {
-                TerminateProcess(wechat_process.hProcess, 5);
-            }
-            TerminateProcess(tun_process.hProcess, 5);
-            WaitForSingleObject(tun_process.hProcess, 5000);
-            CloseHandle(wechat_process.hProcess);
-            CloseHandle(tun_process.hProcess);
-            std::wcerr << L"Cannot start the WeChat TUN lifecycle watcher.\n";
-            return 5;
+    const auto launcher_directory = CurrentModuleDirectory();
+    const std::filesystem::path launcher =
+        launcher_directory ? std::filesystem::path(*launcher_directory) / L"easy-net-hook.exe"
+                           : std::filesystem::path{};
+    PROCESS_INFORMATION watcher{};
+    const bool can_inherit_log =
+        SetHandleInformation(log_read.get(), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) != FALSE;
+    const std::wstring log_handle =
+        std::to_wstring(reinterpret_cast<std::uintptr_t>(log_read.get()));
+    const bool watcher_started = can_inherit_log && !launcher.empty() &&
+        StartHiddenProcess(launcher,
+                           {L"--wechat-watch", std::to_wstring(wechat_process.dwProcessId),
+                            std::to_wstring(tun_process.dwProcessId), log_handle,
+                            log_path.wstring()},
+                           nullptr, watcher, true);
+    SetHandleInformation(log_read.get(), HANDLE_FLAG_INHERIT, 0);
+    CloseHandle(log_write.release());
+    CloseHandle(log_read.release());
+    if (!watcher_started) {
+        if (!options.wechat_existing) {
+            TerminateProcess(wechat_process.hProcess, 5);
         }
-        CloseHandle(watcher.hThread);
-        CloseHandle(watcher.hProcess);
+        TerminateProcess(tun_process.hProcess, 5);
+        WaitForSingleObject(tun_process.hProcess, 5000);
         CloseHandle(wechat_process.hProcess);
         CloseHandle(tun_process.hProcess);
-        return 0;
+        std::wcerr << L"Cannot start the WeChat TUN lifecycle and log watcher.\n";
+        return 5;
     }
-
-    const DWORD wechat_id = wechat_process.dwProcessId;
-    const DWORD tun_id = tun_process.dwProcessId;
+    CloseHandle(watcher.hThread);
     CloseHandle(wechat_process.hProcess);
     CloseHandle(tun_process.hProcess);
-    return WatchWeChat(wechat_id, tun_id);
+    if (options.detach) {
+        CloseHandle(watcher.hProcess);
+        return 0;
+    }
+    WaitForSingleObject(watcher.hProcess, INFINITE);
+    DWORD watcher_exit = 1;
+    GetExitCodeProcess(watcher.hProcess, &watcher_exit);
+    CloseHandle(watcher.hProcess);
+    return static_cast<int>(watcher_exit);
 #endif
 }
 
@@ -1860,7 +1959,7 @@ int ActivatePackagedApplication(const Options& options,
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc == 4 && std::wstring_view(argv[1]) == L"--wechat-watch") {
+    if ((argc == 4 || argc == 6) && std::wstring_view(argv[1]) == L"--wechat-watch") {
         wchar_t* root_end = nullptr;
         wchar_t* engine_end = nullptr;
         const unsigned long root_id = std::wcstoul(argv[2], &root_end, 10);
@@ -1869,7 +1968,17 @@ int wmain(int argc, wchar_t** argv) {
             *root_end != L'\0' || *engine_end != L'\0') {
             return 2;
         }
-        return WatchWeChat(static_cast<DWORD>(root_id), static_cast<DWORD>(engine_id));
+        if (argc == 4) {
+            return WatchWeChat(static_cast<DWORD>(root_id), static_cast<DWORD>(engine_id));
+        }
+        wchar_t* handle_end = nullptr;
+        const unsigned long long handle_value = std::wcstoull(argv[4], &handle_end, 10);
+        if (handle_value == 0 || handle_end == nullptr || *handle_end != L'\0') {
+            return 2;
+        }
+        return WatchWeChat(static_cast<DWORD>(root_id), static_cast<DWORD>(engine_id),
+                           reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(handle_value)),
+                           std::filesystem::path(argv[5]));
     }
     if (argc >= 5 && std::wstring_view(argv[1]) == L"--antigravity-watch") {
         wchar_t* end = nullptr;

@@ -29,6 +29,7 @@ struct Config {
     std::string dns_host;
     std::uint16_t dns_port = 53;
     std::string log_path;
+    std::string log_level = "warn";
     UdpMode udp_mode = UdpMode::block;
 };
 
@@ -167,7 +168,8 @@ inline std::string BuildConfig(const Config& config) {
     const std::string processes = ProcessNameArray();
     std::ostringstream json;
     json << "{\n"
-         << "  \"log\": {\"level\": \"info\", \"timestamp\": true";
+         << "  \"log\": {\"level\": " << JsonString(config.log_level)
+         << ", \"timestamp\": true";
     if (!config.log_path.empty()) {
         json << ", \"output\": " << JsonString(config.log_path);
     }

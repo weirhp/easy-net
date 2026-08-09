@@ -113,7 +113,9 @@ UDP 模式默认是 `auto`：
 - `--tun-udp block` 始终阻断 UDP。
 - `--tun-udp direct` 允许 UDP 直连，会产生代理泄漏，仅用于明确接受该风险的语音/视频场景。
 
-Easy-Net Lite `0.2.0` 与协议 v3 服务端已经支持 `UDP ASSOCIATE`，所以连接更新后的 1082 等端口时，`auto` 会选择代理 UDP。旧版 Lite、SSH 模式以及未启用 UDP 转发的 v2rayN/Clash 端口会让 `auto` 选择阻断 UDP。可以从 `%LOCALAPPDATA%\EasyNetHook\Tun\wechat-tun.log` 查看 TUN 日志。
+Easy-Net Lite `0.2.0` 与协议 v3 服务端已经支持 `UDP ASSOCIATE`，所以连接更新后的 1082 等端口时，`auto` 会选择代理 UDP。旧版 Lite、SSH 模式以及未启用 UDP 转发的 v2rayN/Clash 端口会让 `auto` 选择阻断 UDP。可以从 `%LOCALAPPDATA%\EasyNetHook\Tun\wechat-tun.log` 查看 TUN 警告和错误。
+
+TUN 日志默认使用 `warn`，并由生命周期监视器限制在 8 MiB；达到上限后会原地清空并继续记录，不会无限占用磁盘。需要临时观察每条连接时可以添加 `--tun-debug-log` 将级别切换为 `info`，文件大小上限仍然有效。升级后必须停止旧的 sing-box/TUN 并重新启动微信模式，旧进程不会自动加载新的日志策略。
 
 #### 验证微信确实进入 TUN
 
@@ -128,11 +130,11 @@ Get-NetAdapter -Name "easy-net-wechat" -ErrorAction Stop
 Get-Content "$env:LOCALAPPDATA\EasyNetHook\Tun\wechat.json" |
   Select-String 'Weixin.exe|WeChat.exe|socks-out'
 
-# 3. 实时观察路由日志，然后在微信里打开小程序、图片或刷新页面
+# 3. 启动时临时添加 --tun-debug-log，再观察路由日志
 Get-Content "$env:LOCALAPPDATA\EasyNetHook\Tun\wechat-tun.log" -Wait
 ```
 
-日志中出现由 `Weixin.exe` 或微信辅助进程发起、并选择 `socks-out` 的新连接，是按进程规则生效的直接证据。进一步可在 Easy-Net 服务端用户流量统计中比较操作前后的字节数；只看到 TUN 网卡并不能单独证明微信流量已经经过 SOCKS5。
+诊断日志中出现由 `Weixin.exe` 或微信辅助进程发起、并选择 `socks-out` 的新连接，是按进程规则生效的直接证据。进一步可在 Easy-Net 服务端用户流量统计中比较操作前后的字节数；只看到 TUN 网卡并不能单独证明微信流量已经经过 SOCKS5。排查完成后去掉 `--tun-debug-log` 并重新启动，避免不必要的磁盘写入。
 
 可选 DNS 仍然可用：
 
@@ -345,6 +347,7 @@ Chromium 的 SOCKS5 模式不支持用户名密码，因此网页模式只能连
 --wechat-path PATH  指定 WeChat.exe/Weixin.exe；通常可以自动查找
 --tun-engine PATH   指定 sing-box.exe；默认查找 tun 子目录和 PATH
 --tun-udp MODE      微信 UDP 策略：auto/proxy/block/direct
+--tun-debug-log     临时记录每条 TUN 连接；日志仍限制为 8 MiB
 --dns IP[:PORT]     指定普通 DNS 服务；端口默认 53
 --allow-udp-direct  允许 UDP 直连；这会产生代理泄漏风险
 --detach            启动成功后立即退出启动器

@@ -19,13 +19,24 @@ if ! docker inspect "$container_name" >/dev/null 2>&1; then
 fi
 
 log_path="$(docker inspect "$container_name" --format '{{.LogPath}}')"
-case "$log_path" in
-  /var/lib/docker/containers/*/*-json.log) ;;
+container_id="$(docker inspect "$container_name" --format '{{.Id}}')"
+docker_root="$(docker info --format '{{.DockerRootDir}}')"
+docker_root="${docker_root%/}"
+
+case "$docker_root" in
+  /*) ;;
   *)
-    echo "拒绝处理非标准 Docker json-file 路径: $log_path" >&2
+    echo "拒绝处理非绝对 Docker RootDir: $docker_root" >&2
     exit 4
     ;;
 esac
+
+expected_log_path="$docker_root/containers/$container_id/$container_id-json.log"
+if [[ "$log_path" != "$expected_log_path" ]]; then
+  echo "拒绝处理非预期 Docker json-file 路径: $log_path" >&2
+  echo "预期路径: $expected_log_path" >&2
+  exit 4
+fi
 
 safe_name="$(printf '%s' "$container_name" | tr -cd 'A-Za-z0-9_-')"
 if [[ -z "$safe_name" ]]; then
@@ -56,7 +67,12 @@ tee "$hourly_path" >/dev/null <<EOF
 EOF
 chmod 0755 "$hourly_path"
 
-/usr/sbin/logrotate -d -s /dev/null "$rule_path" >/dev/null 2>&1
+validation_rule="$(mktemp)"
+trap 'rm -f "$validation_rule"' EXIT
+sed 's/size 10M/size 100G/' "$rule_path" >"$validation_rule"
+/usr/sbin/logrotate -d -s /dev/null "$validation_rule" >/dev/null 2>&1
+rm -f "$validation_rule"
+trap - EXIT
 
 if [[ "$clear_existing" == "--clear" ]]; then
   truncate -s 0 "$log_path"

@@ -78,7 +78,7 @@ sudo ./scripts/configure-legacy-docker-logrotate.sh ewomail
 sudo ./scripts/configure-legacy-docker-logrotate.sh ewomail --clear
 ```
 
-脚本会先通过 `docker inspect` 解析并校验精确日志路径，只接受 `/var/lib/docker/containers/.../*-json.log`，不会删除容器或挂载数据。`--clear` 会不可恢复地清空当前 Docker 控制台日志；邮件数据和容器内部日志不受影响。
+脚本会通过 `docker info` 获取实际 `DockerRootDir`，再用容器完整 ID 计算并校验唯一的 `json-file` 路径，因此同时支持默认 `/var/lib/docker` 和自定义 Docker 数据目录。脚本不会删除容器或挂载数据；`--clear` 会不可恢复地清空当前 Docker 控制台日志，邮件数据和容器内部日志不受影响。
 
 EwoMail 容器内部的 Dovecot、邮件和系统日志需要单独轮转。下面的脚本会在宿主机安装每小时任务，并在每次执行时把规则重新注入容器，因此容器重启后仍然生效：
 

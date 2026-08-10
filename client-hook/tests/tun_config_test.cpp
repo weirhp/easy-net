@@ -41,6 +41,7 @@ int main() {
 
     Config config;
     config.proxy = {"127.0.0.1", 1082};
+    config.interface_name = "easy-net-wechat-1234";
     config.username = "user\"name";
     config.password = "secret";
     config.dns_host = "223.5.5.5";
@@ -50,6 +51,7 @@ int main() {
     config.route_exclude_addresses.push_back("1.116.229.59/32");
     const std::string json = easy_net::tun::BuildConfig(config);
     assert(json.find("\"level\": \"warn\"") != std::string::npos);
+    assert(json.find("\"interface_name\": \"easy-net-wechat-1234\"") != std::string::npos);
     assert(json.find("\"username\": \"user\\\"name\"") != std::string::npos);
     assert(json.find("\"action\": \"hijack-dns\"") != std::string::npos);
     assert(json.find("\"network\": \"udp\"") != std::string::npos);
@@ -58,6 +60,7 @@ int main() {
     assert(json.find("\"stack\": \"system\"") != std::string::npos);
     assert(json.find("1.116.229.59/32") != std::string::npos);
     assert(json.find("10.0.0.0/8") != std::string::npos);
+    assert(json.find("fc00::/7") != std::string::npos);
 
     config.udp_mode = UdpMode::proxy;
     config.log_level = "info";

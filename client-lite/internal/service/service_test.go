@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -367,5 +368,17 @@ func TestDialResultsUpdateConnectionHealth(t *testing.T) {
 	state = svc.States()[0]
 	if state.ConnectionStatus != "success" || state.ConnectionError != "" {
 		t.Fatalf("unexpected successful connection health: %#v", state)
+	}
+}
+
+func TestFriendlyConnectionErrorDistinguishesRemoteTargetTimeout(t *testing.T) {
+	profile := model.Profile{Type: model.ProxyTypeWebSocket}
+	got := friendlyConnectionError(profile, errors.New("等待远端目标连接就绪: context deadline exceeded"))
+	if !strings.Contains(got, "服务端连接目标超时") {
+		t.Fatalf("unexpected error classification: %q", got)
+	}
+	got = friendlyConnectionError(profile, context.DeadlineExceeded)
+	if !strings.Contains(got, "连接 WebSocket 服务端超时") {
+		t.Fatalf("unexpected websocket timeout classification: %q", got)
 	}
 }

@@ -538,7 +538,7 @@ func (s *Service) TestConnection(id string) error {
 	if err == nil {
 		return nil
 	}
-	log.Printf("[Easy-Net Lite] 配置 %q 测试连接失败：%s", profile.Name, result.Error)
+	log.Printf("[Easy-Net Lite] 配置 %q 测试连接失败：%s（原始错误：%v）", profile.Name, result.Error, err)
 	if profile.Type == model.ProxyTypeWebSocket {
 		return errors.New(result.Error)
 	}
@@ -557,7 +557,7 @@ func (s *Service) recordConnectionResult(id string, revision uint64, profile mod
 	shouldLog := err != nil && (previous.Error != result.Error || result.CheckedAt.Sub(previous.CheckedAt) >= 30*time.Second)
 	s.mu.Unlock()
 	if shouldLog {
-		log.Printf("[Easy-Net Lite] 配置 %q 远端连接失败：%s", profile.Name, result.Error)
+		log.Printf("[Easy-Net Lite] 配置 %q 远端连接失败：%s（原始错误：%v）", profile.Name, result.Error, err)
 	}
 }
 
@@ -577,6 +577,10 @@ func friendlyConnectionError(profile model.Profile, err error) string {
 	}
 	lower := strings.ToLower(message)
 	switch {
+	case strings.Contains(message, "等待远端目标连接就绪"):
+		return "Easy-Net 服务端连接目标超时，请检查服务端到目标地址的网络"
+	case strings.Contains(message, "远端目标连接失败"):
+		return "Easy-Net 服务端连接目标失败：" + message
 	case strings.Contains(lower, "http 401"), strings.Contains(lower, "http 403"):
 		return "WebSocket 认证失败，请检查连接密钥"
 	case strings.Contains(lower, "http 404"):

@@ -30,6 +30,7 @@ struct Endpoint {
 
 struct Config {
     Endpoint proxy;
+    std::string interface_name = "easy-net-wechat";
     std::string username;
     std::string password;
     std::string dns_host;
@@ -44,6 +45,8 @@ struct Config {
         "169.254.0.0/16",
         "172.16.0.0/12",
         "192.168.0.0/16",
+        "fc00::/7",
+        "fe80::/10",
     };
 };
 
@@ -322,7 +325,8 @@ inline std::string BuildConfig(const Config& config) {
     }
 
     json << "  \"inbounds\": [{\"type\": \"tun\", \"tag\": \"tun-in\", "
-         << "\"interface_name\": \"easy-net-wechat\", \"address\": [\"172.19.0.1/30\"], "
+         << "\"interface_name\": " << JsonString(config.interface_name)
+         << ", \"address\": [\"172.19.0.1/30\"], "
          << "\"mtu\": 1500, \"auto_route\": true, \"strict_route\": false, "
          << "\"stack\": " << JsonString(StackName(config.stack));
     if (!config.route_exclude_addresses.empty()) {

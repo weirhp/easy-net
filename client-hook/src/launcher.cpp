@@ -28,6 +28,7 @@
 #include "dns_resolver.h"
 #include "launcher_gui.h"
 #include "tun_config.h"
+#include "windivert_profile.h"
 
 namespace {
 
@@ -69,6 +70,8 @@ struct Options {
     std::wstring browser_path;
     std::wstring wechat_path;
     std::wstring tun_engine_path;
+    std::wstring windivert_engine_path;
+    easy_net::windivert::Backend wechat_backend = easy_net::windivert::Backend::tun;
     easy_net::tun::UdpMode tun_udp_mode = easy_net::tun::UdpMode::automatic;
     easy_net::tun::Stack tun_stack = easy_net::tun::Stack::system;
     bool tun_stack_explicit = false;
@@ -108,7 +111,9 @@ void PrintUsage() {
         << L"  --wechat               Open WeChat/Weixin through per-process TUN routing\n"
         << L"  --wechat-existing      Attach per-process TUN routing to running WeChat/Weixin\n"
         << L"  --wechat-path PATH     WeChat.exe or Weixin.exe (optional, auto-detected)\n"
+        << L"  --wechat-backend MODE  tun or windivert (default: tun)\n"
         << L"  --tun-engine PATH      sing-box.exe used by WeChat TUN modes (optional)\n"
+        << L"  --windivert-engine P   easy-net-windivert.exe path (optional)\n"
         << L"  --tun-udp MODE         auto, proxy, block, or direct (default: auto)\n"
         << L"  --tun-stack MODE       system, mixed, or gvisor (default: system)\n"
         << L"  --tun-bypass CIDR      Bypass TUN for a CIDR; repeat or comma-separate values\n"
@@ -132,7 +137,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
                    argument == L"--password" || argument == L"--dns" ||
                    argument == L"--pid" || argument == L"--browser-path" ||
                    argument == L"--antigravity-path" || argument == L"--wechat-path" ||
-                   argument == L"--tun-engine" || argument == L"--tun-udp" ||
+                   argument == L"--tun-engine" || argument == L"--windivert-engine" ||
+                   argument == L"--wechat-backend" || argument == L"--tun-udp" ||
                    argument == L"--tun-stack" || argument == L"--tun-bypass" ||
                    argument == L"--appx") {
             if (++index >= argc) {
@@ -155,6 +161,14 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
                 options.wechat_path = argv[index];
             } else if (argument == L"--tun-engine") {
                 options.tun_engine_path = argv[index];
+            } else if (argument == L"--windivert-engine") {
+                options.windivert_engine_path = argv[index];
+            } else if (argument == L"--wechat-backend") {
+                const auto value = ToUtf8(argv[index]);
+                if (!value || !easy_net::windivert::ParseBackend(*value, options.wechat_backend)) {
+                    std::wcerr << L"Invalid --wechat-backend value. Use tun or windivert.\n";
+                    return false;
+                }
             } else if (argument == L"--tun-udp") {
                 const auto value = ToUtf8(argv[index]);
                 if (!value || !easy_net::tun::ParseUdpMode(*value, options.tun_udp_mode)) {
@@ -257,11 +271,18 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
         std::wcerr << L"Application arguments cannot be used with --wechat-existing.\n";
         return false;
     }
-    if ((!options.tun_engine_path.empty() || options.tun_udp_mode != easy_net::tun::UdpMode::automatic ||
+    if ((!options.tun_engine_path.empty() || !options.windivert_engine_path.empty() ||
+         options.wechat_backend != easy_net::windivert::Backend::tun ||
+         options.tun_udp_mode != easy_net::tun::UdpMode::automatic ||
          options.tun_stack_explicit || !options.tun_bypass.empty() || options.tun_debug_log) &&
         !options.wechat) {
-        std::wcerr << L"--tun-engine, --tun-udp, --tun-stack, --tun-bypass, and "
-                      L"--tun-debug-log can only be used with a WeChat TUN mode.\n";
+        std::wcerr << L"WeChat network backend options can only be used with --wechat or "
+                      L"--wechat-existing.\n";
+        return false;
+    }
+    if (options.wechat_backend == easy_net::windivert::Backend::windivert &&
+        options.tun_stack_explicit) {
+        std::wcerr << L"--tun-stack applies only to --wechat-backend tun.\n";
         return false;
     }
     return true;
@@ -697,6 +718,27 @@ std::optional<std::filesystem::path> FindTunEngine(const Options& options) {
     return std::nullopt;
 }
 
+std::optional<std::filesystem::path> FindWinDivertEngine(const Options& options) {
+    if (!options.windivert_engine_path.empty()) {
+        const std::filesystem::path configured(options.windivert_engine_path);
+        if (std::filesystem::is_regular_file(configured)) {
+            return configured;
+        }
+        return std::nullopt;
+    }
+    if (const auto directory = CurrentModuleDirectory()) {
+        for (const auto& candidate : {
+                 std::filesystem::path(*directory) / L"windivert/easy-net-windivert.exe",
+                 std::filesystem::path(*directory) / L"easy-net-windivert.exe",
+             }) {
+            if (std::filesystem::is_regular_file(candidate)) {
+                return candidate;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
 bool IsProcessElevated() {
     ScopedHandle token;
     HANDLE raw_token = nullptr;
@@ -925,7 +967,7 @@ void RelayBoundedTunLog(HANDLE pipe, const std::filesystem::path& log_path) {
                 SetEndOfFile(output.get())) {
                 log_size.QuadPart = 0;
                 constexpr char marker[] =
-                    "--- Easy-Net Hook truncated the TUN log at 8 MiB ---\r\n";
+                    "--- Easy-Net Hook truncated the network log at 8 MiB ---\r\n";
                 DWORD marker_written = 0;
                 if (WriteFile(output.get(), marker, sizeof(marker) - 1, &marker_written,
                               nullptr)) {
@@ -983,7 +1025,7 @@ int WatchWeChat(DWORD root_process_id, DWORD engine_process_id, HANDLE log_pipe 
 
 int LaunchWeChat(const Options& options) {
 #if !defined(_WIN64)
-    std::wcerr << L"--wechat TUN mode is available only in the x64 package.\n";
+    std::wcerr << L"--wechat TUN/WinDivert modes are available only in the x64 package.\n";
     return 3;
 #else
     std::wstring proxy_host;
@@ -1019,10 +1061,21 @@ int LaunchWeChat(const Options& options) {
             return 6;
         }
     }
-    const auto engine = FindTunEngine(options);
+    const bool use_windivert =
+        options.wechat_backend == easy_net::windivert::Backend::windivert;
+    if (use_windivert && !options.dns.empty()) {
+        std::wcerr << L"Warning: --dns is not applied by the WinDivert backend; Windows DNS "
+                      L"remains in use.\n";
+    }
+    const auto engine = use_windivert ? FindWinDivertEngine(options) : FindTunEngine(options);
     if (!engine) {
-        std::wcerr << L"The optional TUN engine was not found. Use the x64-TUN package, place "
-                      L"sing-box.exe in the tun folder, or specify --tun-engine PATH.\n";
+        if (use_windivert) {
+            std::wcerr << L"The WinDivert engine was not found. Use the x64-TUN package or "
+                          L"specify --windivert-engine PATH.\n";
+        } else {
+            std::wcerr << L"The optional TUN engine was not found. Use the x64-TUN package, "
+                          L"place sing-box.exe in the tun folder, or specify --tun-engine PATH.\n";
+        }
         return 3;
     }
     if (!IsProcessElevated()) {
@@ -1045,21 +1098,25 @@ int LaunchWeChat(const Options& options) {
 
     const auto local_app_data = EnvironmentValue(L"LOCALAPPDATA");
     if (!local_app_data) {
-        std::wcerr << L"LOCALAPPDATA is unavailable; cannot prepare TUN configuration.\n";
+        std::wcerr << L"LOCALAPPDATA is unavailable; cannot prepare WeChat routing configuration.\n";
         return 3;
     }
     const std::filesystem::path config_directory =
-        std::filesystem::path(*local_app_data) / L"EasyNetHook/Tun";
+        std::filesystem::path(*local_app_data) /
+        (use_windivert ? L"EasyNetHook/WinDivert" : L"EasyNetHook/Tun");
     std::error_code directory_error;
     std::filesystem::create_directories(config_directory, directory_error);
     if (directory_error) {
-        std::wcerr << L"Cannot create TUN configuration directory.\n";
+        std::wcerr << L"Cannot create the WeChat routing configuration directory.\n";
         return 3;
     }
-    const std::filesystem::path config_path = config_directory / L"wechat.json";
-    const std::filesystem::path log_path = config_directory / L"wechat-tun.log";
+    const std::filesystem::path config_path =
+        config_directory / (use_windivert ? L"wechat.pbprofile" : L"wechat.json");
+    const std::filesystem::path log_path =
+        config_directory / (use_windivert ? L"wechat-windivert.log" : L"wechat-tun.log");
     easy_net::tun::Config config;
     config.proxy = proxy_endpoint;
+    config.interface_name = "easy-net-wechat-" + std::to_string(GetCurrentProcessId());
     const auto username = ToUtf8(options.username);
     const auto password = ToUtf8(options.password);
     if (!username || !password) {
@@ -1087,13 +1144,27 @@ int LaunchWeChat(const Options& options) {
         config.dns_host = dns_endpoint.host;
         config.dns_port = dns_endpoint.port;
     }
-    if (!WriteUtf8File(config_path, easy_net::tun::BuildConfig(config))) {
-        std::wcerr << L"Cannot write TUN configuration: " << config_path.wstring() << L".\n";
+    std::string generated_config;
+    if (use_windivert) {
+        easy_net::windivert::Profile profile;
+        profile.proxy = proxy_endpoint;
+        profile.username = *username;
+        profile.password = *password;
+        profile.udp_mode = udp_mode;
+        profile.traffic_logging = options.tun_debug_log;
+        profile.bypass_prefixes = config.route_exclude_addresses;
+        generated_config = easy_net::windivert::BuildProfile(profile);
+    } else {
+        generated_config = easy_net::tun::BuildConfig(config);
+    }
+    if (!WriteUtf8File(config_path, generated_config)) {
+        std::wcerr << L"Cannot write WeChat routing configuration: "
+                   << config_path.wstring() << L".\n";
         return 4;
     }
 
     SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
-    {
+    if (!use_windivert) {
         ScopedHandle validation_log(CreateFileW(
             log_path.c_str(), GENERIC_WRITE,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &security, CREATE_ALWAYS,
@@ -1138,9 +1209,13 @@ int LaunchWeChat(const Options& options) {
     SetHandleInformation(log_read.get(), HANDLE_FLAG_INHERIT, 0);
 
     PROCESS_INFORMATION tun_process{};
-    if (!StartHiddenProcess(*engine, {L"run", L"-c", config_path.wstring()}, log_write.get(),
-                            tun_process)) {
-        std::wcerr << L"Cannot start the TUN engine (error " << GetLastError() << L").\n";
+    const std::vector<std::wstring> engine_arguments = use_windivert
+        ? std::vector<std::wstring>{L"--profile", config_path.wstring(), L"--verbose",
+                                    options.tun_debug_log ? L"3" : L"1"}
+        : std::vector<std::wstring>{L"run", L"-c", config_path.wstring()};
+    if (!StartHiddenProcess(*engine, engine_arguments, log_write.get(), tun_process)) {
+        std::wcerr << L"Cannot start the WeChat network engine (error " << GetLastError()
+                   << L").\n";
         return 5;
     }
     CloseHandle(tun_process.hThread);
@@ -1151,7 +1226,9 @@ int LaunchWeChat(const Options& options) {
         CloseHandle(tun_process.hProcess);
         CloseHandle(log_write.release());
         RelayBoundedTunLog(log_read.release(), log_path);
-        std::wcerr << L"The TUN engine exited with code " << engine_exit << L". See "
+        std::wcerr << (use_windivert ? L"The WinDivert engine exited with code "
+                                     : L"The TUN engine exited with code ")
+                   << engine_exit << L". See "
                    << log_path.wstring() << L".\n";
         return 5;
     }
@@ -1174,9 +1251,10 @@ int LaunchWeChat(const Options& options) {
                        << error << L").\n";
             return 6;
         }
-        std::wcout << L"Attached TUN and SOCKS5 " << options.proxy << L" to running "
+        std::wcout << L"Attached " << (use_windivert ? L"WinDivert" : L"TUN")
+                   << L" TCP/UDP routing and SOCKS5 " << options.proxy << L" to running "
                    << existing_process->name << L" (PID " << wechat_process.dwProcessId
-                   << L"). New connections will use the TUN route.\n";
+                   << L"). New connections will use the selected route.\n";
     } else {
         std::vector<std::wstring> wechat_command{executable->wstring()};
         wechat_command.insert(wechat_command.end(), options.command.begin(), options.command.end());
@@ -1198,10 +1276,12 @@ int LaunchWeChat(const Options& options) {
         CloseHandle(wechat_process.hThread);
         wechat_process.hThread = nullptr;
         std::wcout << L"Opened " << executable->filename().wstring()
-                   << L" through TUN and SOCKS5 " << options.proxy << L" (PID "
+                   << L" through " << (use_windivert ? L"WinDivert" : L"TUN")
+                   << L" and SOCKS5 " << options.proxy << L" (PID "
                    << wechat_process.dwProcessId << L").\n";
     }
-    std::wcout << L"TUN log: " << log_path.wstring() << L"\n";
+    std::wcout << (use_windivert ? L"WinDivert log: " : L"TUN log: ")
+               << log_path.wstring() << L"\n";
 
     const auto launcher_directory = CurrentModuleDirectory();
     const std::filesystem::path launcher =
@@ -1229,7 +1309,7 @@ int LaunchWeChat(const Options& options) {
         WaitForSingleObject(tun_process.hProcess, 5000);
         CloseHandle(wechat_process.hProcess);
         CloseHandle(tun_process.hProcess);
-        std::wcerr << L"Cannot start the WeChat TUN lifecycle and log watcher.\n";
+        std::wcerr << L"Cannot start the WeChat network lifecycle and log watcher.\n";
         return 5;
     }
     CloseHandle(watcher.hThread);

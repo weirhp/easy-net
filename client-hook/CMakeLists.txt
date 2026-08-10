@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(easy_net_hook LANGUAGES CXX RC)
+project(easy_net_hook LANGUAGES C CXX RC)
 
 if(NOT WIN32 OR NOT MSVC)
     message(FATAL_ERROR "Easy-Net Hook currently requires Windows and MSVC.")
@@ -17,6 +17,64 @@ FetchContent_Declare(
 FetchContent_GetProperties(detours)
 if(NOT detours_POPULATED)
     FetchContent_Populate(detours)
+endif()
+
+# The WinDivert backend is deliberately x64-only. Dependencies are pinned so a
+# future upstream change cannot silently alter release binaries.
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    FetchContent_Declare(
+        proxybridge
+        GIT_REPOSITORY https://github.com/InterceptSuite/ProxyBridge.git
+        GIT_TAG 2929120c66f5f37c2f2abe48770a5e1a8a494b83
+        GIT_SHALLOW FALSE
+    )
+    FetchContent_Declare(
+        windivert
+        URL https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip
+        URL_HASH SHA256=63CB41763BB4B20F600B6DE04E991A9C2BE73279E317D4D82F237B150C5F3F15
+    )
+    FetchContent_GetProperties(proxybridge)
+    if(NOT proxybridge_POPULATED)
+        FetchContent_Populate(proxybridge)
+    endif()
+    FetchContent_GetProperties(windivert)
+    if(NOT windivert_POPULATED)
+        FetchContent_Populate(windivert)
+    endif()
+    set(WINDIVERT_ROOT "${windivert_SOURCE_DIR}")
+    if(EXISTS "${WINDIVERT_ROOT}/WinDivert-2.2.2-A/include/windivert.h")
+        set(WINDIVERT_ROOT "${WINDIVERT_ROOT}/WinDivert-2.2.2-A")
+    endif()
+    if(NOT EXISTS "${WINDIVERT_ROOT}/include/windivert.h")
+        message(FATAL_ERROR "The pinned WinDivert archive has an unexpected layout.")
+    endif()
+
+    add_library(proxybridge_core SHARED
+        ${proxybridge_SOURCE_DIR}/Windows/src/ProxyBridge.c
+        ${proxybridge_SOURCE_DIR}/Windows/src/ProxyBridge.h
+    )
+    target_include_directories(proxybridge_core PRIVATE
+        ${proxybridge_SOURCE_DIR}/Windows/src
+        ${WINDIVERT_ROOT}/include
+    )
+    target_compile_definitions(proxybridge_core PRIVATE
+        PROXYBRIDGE_EXPORTS _CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS
+        _WIN32_WINNT=0x0601 WIN32_LEAN_AND_MEAN NDEBUG
+    )
+    target_compile_options(proxybridge_core PRIVATE /O2 /W4 /utf-8 /wd4100 /wd4189 /wd4244 /wd4267 /wd4996)
+    target_link_libraries(proxybridge_core PRIVATE
+        "${WINDIVERT_ROOT}/x64/WinDivert.lib" ws2_32 iphlpapi
+    )
+    set_target_properties(proxybridge_core PROPERTIES OUTPUT_NAME "ProxyBridgeCore")
+
+    add_executable(easy_net_windivert ${proxybridge_SOURCE_DIR}/Windows/cli/main.c)
+    target_compile_definitions(easy_net_windivert PRIVATE
+        _CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS
+        _WIN32_WINNT=0x0601 WIN32_LEAN_AND_MEAN NDEBUG
+    )
+    target_compile_options(easy_net_windivert PRIVATE /O2 /W4 /utf-8 /wd4100 /wd4189 /wd4244 /wd4267 /wd4996)
+    target_link_libraries(easy_net_windivert PRIVATE winhttp shell32 advapi32)
+    set_target_properties(easy_net_windivert PROPERTIES OUTPUT_NAME "easy-net-windivert")
 endif()
 
 set(DETOURS_SOURCES
@@ -63,6 +121,7 @@ add_executable(easy_net_hook_launcher
     src/launcher_gui.h
     src/resource.h
     src/tun_config.h
+    src/windivert_profile.h
     src/dns_resolver.cpp
     src/dns_resolver.h
 )
@@ -77,6 +136,10 @@ add_dependencies(easy_net_hook_launcher easy_net_hook_dll)
 
 set_property(TARGET detours easy_net_hook_dll easy_net_hook_launcher PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+if(TARGET proxybridge_core)
+    set_property(TARGET proxybridge_core easy_net_windivert PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 enable_testing()
 add_test(NAME launcher_help_test COMMAND easy_net_hook_launcher --help)
@@ -145,6 +208,17 @@ set_property(TARGET tun_config_test PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_test(NAME tun_config_test COMMAND tun_config_test)
 
+add_executable(windivert_profile_test
+    tests/windivert_profile_test.cpp
+    src/windivert_profile.h
+    src/tun_config.h
+)
+target_compile_features(windivert_profile_test PRIVATE cxx_std_20)
+target_compile_options(windivert_profile_test PRIVATE /W4 /permissive- /EHsc /UNDEBUG)
+set_property(TARGET windivert_profile_test PROPERTY
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_test(NAME windivert_profile_test COMMAND windivert_profile_test)
+
 add_custom_command(TARGET easy_net_hook_launcher POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         $<TARGET_FILE:easy_net_hook_dll>
@@ -155,3 +229,26 @@ add_custom_command(TARGET easy_net_hook_launcher POST_BUILD
         ${detours_SOURCE_DIR}/LICENSE.md
         $<TARGET_FILE_DIR:easy_net_hook_launcher>/THIRD-PARTY-LICENSES/Detours-LICENSE.md
 )
+
+if(TARGET proxybridge_core)
+    add_dependencies(easy_net_hook_launcher proxybridge_core easy_net_windivert)
+    add_custom_command(TARGET easy_net_hook_launcher POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            $<TARGET_FILE_DIR:easy_net_hook_launcher>/windivert
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:proxybridge_core>
+            $<TARGET_FILE:easy_net_windivert>
+            ${WINDIVERT_ROOT}/x64/WinDivert.dll
+            ${WINDIVERT_ROOT}/x64/WinDivert64.sys
+            $<TARGET_FILE_DIR:easy_net_hook_launcher>/windivert
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${proxybridge_SOURCE_DIR}/LICENSE
+            $<TARGET_FILE_DIR:easy_net_hook_launcher>/THIRD-PARTY-LICENSES/ProxyBridge-LICENSE.txt
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${WINDIVERT_ROOT}/LICENSE
+            $<TARGET_FILE_DIR:easy_net_hook_launcher>/THIRD-PARTY-LICENSES/WinDivert-LICENSE.txt
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${WINDIVERT_ROOT}/VERSION
+            $<TARGET_FILE_DIR:easy_net_hook_launcher>/windivert/WinDivert-VERSION.txt
+    )
+endif()

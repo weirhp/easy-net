@@ -1,8 +1,8 @@
 # Easy-Net Hook
 
-Easy-Net Hook 是一个轻量 Windows 应用代理器。普通 Win32 程序通过 Microsoft Detours Hook Winsock API，把 TCP `connect`、`WSAConnect` 和 `ConnectEx` 改写为 SOCKS5 `CONNECT`；ChatGPT 和 Antigravity IDE 使用更稳定的原生代理模式；微信可使用可选的按进程 TUN 模式覆盖 TCP、UDP/QUIC 和辅助进程。
+Easy-Net Hook 是一个轻量 Windows 应用代理器。普通 Win32 程序通过 Microsoft Detours Hook Winsock API，把 TCP `connect`、`WSAConnect` 和 `ConnectEx` 改写为 SOCKS5 `CONNECT`；ChatGPT 和 Antigravity IDE 使用更稳定的原生代理模式；微信可选择按进程 TUN 或 WinDivert 模式覆盖 TCP、UDP/QUIC 和辅助进程。
 
-它直接复用 Easy-Net Lite、SSH `-D` 或其他客户端提供的 SOCKS5 端口，例如 `127.0.0.1:1080`。它既能通过图形界面保存常用程序并快捷启动，也能通过命令行启动普通新进程、激活打包桌面应用或附加到已运行进程；不安装驱动，也不修改目标程序文件。
+它直接复用 Easy-Net Lite、SSH `-D` 或其他客户端提供的 SOCKS5 端口，例如 `127.0.0.1:1080`。它既能通过图形界面保存常用程序并快捷启动，也能通过命令行启动普通新进程、激活打包桌面应用或附加到已运行进程；不会修改目标程序文件。仅 WinDivert 模式会在运行期间加载随包提供的签名驱动，其他模式不加载该驱动。
 
 > 这仍不是 Proxifier 的完整替代品。请先阅读“当前边界”，尤其是运行中进程、UDP 和 DNS 部分。
 
@@ -45,12 +45,16 @@ x64 Release 输出目录：
 D:\work\me-pro\easy-net\client-hook\build-x64\Release
 ```
 
-首次配置会从 Microsoft 官方仓库下载 Detours v4.0.1。输出目录包含：
+首次配置会下载固定版本的 Detours；x64 还会下载固定提交的 ProxyBridge 源码和经过 SHA-256 校验的 WinDivert 2.2.2 SDK。输出目录包含：
 
 ```text
 easy-net-hook.exe
 easy-net-hook.dll
 THIRD-PARTY-LICENSES\Detours-LICENSE.md
+windivert\easy-net-windivert.exe  （仅 x64）
+windivert\ProxyBridgeCore.dll     （仅 x64）
+windivert\WinDivert.dll           （仅 x64）
+windivert\WinDivert64.sys         （仅 x64）
 ```
 
 启动器、DLL 和目标程序的架构必须相同。64 位程序使用 x64 包，32 位程序使用 Win32 包。
@@ -65,7 +69,7 @@ THIRD-PARTY-LICENSES\Detours-LICENSE.md
 .\easy-net-hook.exe --gui
 ```
 
-界面可以选择 ChatGPT、Antigravity IDE、微信 TUN 或通用 Hook 模式，填写 SOCKS5 地址、程序路径、启动参数和可选 DNS。每次成功启动后会自动记录配置，之后可在左侧列表双击快捷启动，也可以删除单条记录或清空全部记录。
+界面可以选择 ChatGPT、Antigravity IDE、微信 TUN、微信 WinDivert 或通用 Hook 模式，填写 SOCKS5 地址、程序路径、启动参数和可选 DNS。每次成功启动后会自动记录配置，之后可在左侧列表双击快捷启动，也可以删除单条记录或清空全部记录。
 
 记录最多保留 30 条，保存在 `%LOCALAPPDATA%\EasyNetHook\launcher-history.tsv`。其中不保存代理用户名或密码。ChatGPT 使用隔离且可复用的用户目录；Antigravity 默认复用桌面版的用户目录和登录状态，也可以在界面中勾选“使用独立配置”。
 
@@ -129,6 +133,32 @@ UDP 模式默认是 `auto`：
 Easy-Net Lite `0.2.0` 与协议 v3 服务端已经支持 `UDP ASSOCIATE`，所以连接更新后的 1082 等端口时，`auto` 会选择代理 UDP。旧版 Lite、SSH 模式以及未启用 UDP 转发的 v2rayN/Clash 端口会让 `auto` 选择阻断 UDP。可以从 `%LOCALAPPDATA%\EasyNetHook\Tun\wechat-tun.log` 查看 TUN 警告和错误。
 
 TUN 日志默认使用 `warn`，并由生命周期监视器限制在 8 MiB；达到上限后会原地清空并继续记录，不会无限占用磁盘。需要临时观察每条连接时可以添加 `--tun-debug-log` 将级别切换为 `info`，文件大小上限仍然有效。升级后必须停止旧的 sing-box/TUN 并重新启动微信模式，旧进程不会自动加载新的日志策略。
+
+#### 微信 WinDivert（低开销可选后端）
+
+当 TUN 因捕获整机公网流量导致 sing-box CPU 偏高，x64-TUN 包还可以使用 WinDivert 后端：
+
+```powershell
+.\easy-net-hook.exe `
+  --proxy 127.0.0.1:1082 `
+  --wechat `
+  --wechat-backend windivert `
+  --tun-udp auto `
+  --detach
+```
+
+接管已运行微信：
+
+```powershell
+.\easy-net-hook.exe --proxy 127.0.0.1:1082 --wechat-existing `
+  --wechat-backend windivert --tun-udp auto --detach
+```
+
+该模式不创建虚拟网卡。WinDivert 在网络层捕获 TCP/UDP 包，配套组件维护 PID/五元组映射，只把微信及其辅助进程重定向到本地 TCP/UDP 中继，再转换为 SOCKS5 `CONNECT` 或 `UDP ASSOCIATE`；不匹配的 Easy-Net Lite WSS 连接会原样放行，不会再次进入 SOCKS5。它仍需要管理员权限，接管已运行进程时也只保证新连接生效。
+
+`--tun-bypass` 和 `--tun-udp` 同时适用于两个微信后端。WinDivert 配置与有界日志位于 `%LOCALAPPDATA%\EasyNetHook\WinDivert`；默认不记录逐连接事件，添加 `--tun-debug-log` 才会启用，日志仍限制为 8 MiB。WinDivert 后端基于固定提交的 MIT 许可 ProxyBridge 和 WinDivert 2.2.2，许可证随包分发。
+
+WinDivert 后端保留 Windows 系统 DNS，目前不应用 `--dns`；需要指定 DNS 时继续使用 TUN 后端。
 
 #### 验证微信确实进入 TUN
 
@@ -355,10 +385,12 @@ Chromium 的 SOCKS5 模式不支持用户名密码，因此网页模式只能连
 --chatgpt-app       不注入，使用独立配置启动 ChatGPT 客户端的原生 SOCKS5 模式
 --chatgpt-web       不注入，使用独立 Edge/Chrome SOCKS5 会话打开 ChatGPT
 --browser-path PATH 为网页模式指定 Edge/Chrome 可执行文件
---wechat            使用可选 TUN 引擎启动微信
---wechat-existing   为已经运行的微信启动按进程 TUN，不创建新实例
+--wechat            使用可选 TUN/WinDivert 后端启动微信
+--wechat-existing   为已经运行的微信启动按进程路由，不创建新实例
 --wechat-path PATH  指定 WeChat.exe/Weixin.exe；通常可以自动查找
+--wechat-backend M  微信后端：tun/windivert；默认 tun
 --tun-engine PATH   指定 sing-box.exe；默认查找 tun 子目录和 PATH
+--windivert-engine  指定 easy-net-windivert.exe
 --tun-udp MODE      微信 UDP 策略：auto/proxy/block/direct
 --tun-stack MODE    TUN 栈：system/mixed/gvisor；默认 system
 --tun-bypass CIDR   让目标 CIDR 绕过 TUN；可重复或使用逗号分隔
@@ -385,7 +417,7 @@ SOCKS5 地址目前必须使用字面 IP：
 
 ### Hook 模式的 UDP 默认阻断
 
-Hook DLL 本身尚未实现 SOCKS5 UDP ASSOCIATE。已覆盖的 `connect`、`sendto`、`WSASendTo` 和 `WSASendMsg` 路径默认阻断外部 UDP。微信专用 TUN 模式不受此限制；它在上游 SOCKS5 支持 UDP ASSOCIATE 时可以代理 UDP。其他专用传输 API 仍可能超出 Hook 覆盖范围，所以不能把通用 Hook 当成严格的数据防泄漏产品。
+Hook DLL 本身尚未实现 SOCKS5 UDP ASSOCIATE。已覆盖的 `connect`、`sendto`、`WSASendTo` 和 `WSASendMsg` 路径默认阻断外部 UDP。微信专用 TUN 和 WinDivert 模式不受此限制；它们在上游 SOCKS5 支持 UDP ASSOCIATE 时可以代理 UDP。其他专用传输 API 仍可能超出 Hook 覆盖范围，所以不能把通用 Hook 当成严格的数据防泄漏产品。
 
 只有明确接受 UDP 绕过时才使用 `--allow-udp-direct`。
 
@@ -400,7 +432,7 @@ DNS 查询是目标进程到指定 DNS 服务的普通 UDP/TCP 流量，会绕�
 ### 进程与兼容性
 
 - `--chatgpt-app` 使用原生代理参数及继承环境，不注入 DLL。`--antigravity` 默认复用正常登录配置，同样不向 Electron 进程注入，但会监视其后代并只 Hook `language_server_windows_x64.exe`，兜底处理忽略代理环境变量的外部 TCP。
-- `--wechat` 和 `--wechat-existing` 不注入 DLL，使用 TUN 捕获流量并按进程名分流；它们要求 x64、管理员权限和独立的 sing-box 引擎。接管模式只保证新建连接进入新路由。
+- `--wechat` 和 `--wechat-existing` 不注入 DLL，可使用 TUN 或 WinDivert 捕获流量并按进程名分流；它们要求 x64 和管理员权限。接管模式只保证新建连接进入新路由。
 - `--pid` 采用标准远程 `LoadLibraryW` 注入，只影响注入后新建的连接；已经建立的连接仍保持原路径。
 - Chromium/Electron 子进程采用网络服务定向注入；其 renderer、GPU、crashpad 和非网络 utility 子进程不会加载 Hook。`--no-children` 会连网络服务也一并跳过，因此不适合需要代理 Chromium/Electron 流量的场景。
 - `--appx` 先通过 Windows 包激活 API 启动或唤醒应用，再采用与 `--pid` 相同的方式注入。激活到注入之间存在很短的时间窗口，极早建立的连接可能需要在应用内重新连接。

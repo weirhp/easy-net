@@ -56,7 +56,7 @@ tee "$hourly_path" >/dev/null <<EOF
 EOF
 chmod 0755 "$hourly_path"
 
-/usr/sbin/logrotate -d -s /dev/null "$rule_path" >/dev/null
+/usr/sbin/logrotate -d -s /dev/null "$rule_path" >/dev/null 2>&1
 
 if [[ "$clear_existing" == "--clear" ]]; then
   truncate -s 0 "$log_path"

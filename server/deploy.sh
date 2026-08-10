@@ -21,8 +21,7 @@ if [ -z "$BASE_CMD" ]; then
     exit 1
 fi
 
-# 本项目在低配 VPS 上构建 Node 镜像时依赖 build.ulimits 提高线程/进程限制。
-# 默认关闭 Compose Bake 委托，避免不同 Buildx 版本对该字段支持不一致。
+# 默认关闭 Compose Bake 委托，兼容服务器上较早的 Docker Compose 版本。
 export COMPOSE_BAKE="${COMPOSE_BAKE:-false}"
 
 # 打印帮助信息

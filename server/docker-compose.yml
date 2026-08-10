@@ -2,11 +2,6 @@ services:
   easy-netserver:
     build:
       context: .
-      ulimits:
-        nproc: 65535
-        nofile:
-          soft: 65536
-          hard: 65536
     container_name: easy-net-server
     restart: always
     ulimits:
@@ -39,6 +34,8 @@ services:
       - LOGIN_LOCK_MINUTES=${LOGIN_LOCK_MINUTES:-15}
       # 定时监控日志间隔秒数，0 表示关闭
       - MONITOR_INTERVAL_SECONDS=${MONITOR_INTERVAL_SECONDS:-0}
+      # 是否记录每条 TCP/UDP 连接及关闭事件；生产环境默认关闭
+      - CONNECTION_LOG_ENABLED=${CONNECTION_LOG_ENABLED:-false}
       # WebSocket 单条消息大小限制，默认 1 MiB
       - MAX_WS_PAYLOAD_BYTES=${MAX_WS_PAYLOAD_BYTES:-1048576}
       # 单连接 WebSocket 待发送缓冲超过该值时暂停读取目标 TCP，默认 4 MiB
@@ -47,3 +44,8 @@ services:
       - WS_BACKPRESSURE_RESUME_BYTES=${WS_BACKPRESSURE_RESUME_BYTES:-2097152}
     volumes:
       - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DOCKER_LOG_MAX_SIZE:-10m}"
+        max-file: "${DOCKER_LOG_MAX_FILES:-3}"

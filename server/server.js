@@ -29,6 +29,9 @@ const LOGIN_LOCK_MINUTES = positiveNumber(process.env.LOGIN_LOCK_MINUTES, 15);
 const LOGIN_FAILURE_WINDOW_MINUTES = positiveNumber(process.env.LOGIN_FAILURE_WINDOW_MINUTES, 15);
 const SESSION_TTL_HOURS = positiveNumber(process.env.SESSION_TTL_HOURS, 12);
 const TRAFFIC_FLUSH_SECONDS = positiveNumber(process.env.TRAFFIC_FLUSH_SECONDS, 5);
+const CONNECTION_LOG_ENABLED = /^(1|true|yes|on)$/i.test(
+  String(process.env.CONNECTION_LOG_ENABLED || 'false').trim()
+);
 const TUNNEL_PROTOCOL_HEADER = 'x-easy-net-protocol';
 const TUNNEL_PROTOCOL_V2 = '2';
 const TUNNEL_PROTOCOL_V3 = '3';
@@ -48,6 +51,10 @@ let dbDirty = false;
 const sessions = new Map();
 const usageCache = new Map();
 const trafficBuffer = new Map();
+
+const logConnection = message => {
+  if (CONNECTION_LOG_ENABLED) console.log(message);
+};
 
 const runtimeStats = {
   startedAt: new Date().toISOString(),
@@ -1298,7 +1305,7 @@ function encodeUdpFrame(host, port, payload) {
 }
 
 function handleUdpTunnel(ws, user) {
-  console.log(`[Easy-Net] [UDP] 用户 [${user.username}] 建立 UDP 关联`);
+  logConnection(`[Easy-Net] [UDP] 用户 [${user.username}] 建立 UDP 关联`);
   const sockets = new Map();
   let hasCleaned = false;
 
@@ -1397,7 +1404,7 @@ wss.on('connection', (ws, req) => {
   const protocolV2 = req.headers[TUNNEL_PROTOCOL_HEADER] === TUNNEL_PROTOCOL_V2;
 
   try {
-    console.log(`[Easy-Net] [连接] 用户 [${user.username}] 请求网络连接 -> ${host}:${port}`);
+    logConnection(`[Easy-Net] [连接] 用户 [${user.username}] 请求网络连接 -> ${host}:${port}`);
     let targetPausedForBackpressure = false;
     let targetReady = false;
     let v2TargetErrorPending = false;
@@ -1438,7 +1445,7 @@ wss.on('connection', (ws, req) => {
     };
 
     const targetSocket = net.connect(port, host, () => {
-      console.log(`[Easy-Net] [连接] 成功与目标建立连接 -> ${host}:${port}`);
+      logConnection(`[Easy-Net] [连接] 成功与目标建立连接 -> ${host}:${port}`);
       targetSocket.setKeepAlive(true, 30000);
       targetReady = true;
       if (protocolV2 && ws.readyState === WebSocket.OPEN) ws.send('READY');
@@ -1502,13 +1509,13 @@ wss.on('connection', (ws, req) => {
     });
 
     targetSocket.on('close', () => {
-      console.log(`[Easy-Net] [关闭] 目标主机已断开连接 -> ${host}:${port}`);
+      logConnection(`[Easy-Net] [关闭] 目标主机已断开连接 -> ${host}:${port}`);
       if (!v2TargetErrorPending) ws.close();
       cleanupConnection();
     });
 
     ws.on('close', () => {
-      console.log(`[Easy-Net] [关闭] 客户端已断开连接 -> ${host}:${port}`);
+      logConnection(`[Easy-Net] [关闭] 客户端已断开连接 -> ${host}:${port}`);
       cleanupConnection();
     });
 
@@ -1574,6 +1581,7 @@ initDatabase()
       console.log(`本地数据库: ${DB_FILE}`);
       console.log(`Context Path: ${CONTEXT_PATH || '/'}`);
       console.log(`用户数量: ${userCount}`);
+      console.log(`逐连接日志: ${CONNECTION_LOG_ENABLED ? '已启用' : '已关闭'}`);
       console.log(`管理端: ${withContextPath('/admin')}`);
       console.log(`用户端: ${withContextPath('/user')}`);
       if (MONITOR_INTERVAL_SECONDS > 0) {

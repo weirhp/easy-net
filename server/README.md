@@ -57,6 +57,23 @@ Docker Compose 默认会挂载：
 | `SECRETS` | 旧版兼容。首次启动时会迁移为 `legacy_x` 用户，后续推荐在管理端维护。 | 空 |
 | `ADMIN_KEY` | 旧版兼容。仍可访问 `/stats?admin_key=...`。 | 空 |
 | `MONITOR_INTERVAL_SECONDS` | 定时输出监控日志间隔，`0` 表示关闭。 | `0` |
+| `CONNECTION_LOG_ENABLED` | 是否记录每条 TCP/UDP 连接、成功和关闭事件；排查时可临时设为 `true`。 | `false` |
+| `DOCKER_LOG_MAX_SIZE` | Docker `json-file` 单个日志文件的轮转阈值。 | `10m` |
+| `DOCKER_LOG_MAX_FILES` | Docker 日志保留文件数量。 | `3` |
+
+Compose 管理的 Easy-Net 容器使用 Docker 原生 `json-file` 轮转，默认最多约 `10 MiB × 3`。对于不能安全重建的旧容器，可以使用仓库中的兼容脚本按小时调用系统 `logrotate`：
+
+```bash
+sudo ./scripts/configure-legacy-docker-logrotate.sh ewomail
+```
+
+确认不再需要现有 Docker 控制台日志时，可同时清空旧文件：
+
+```bash
+sudo ./scripts/configure-legacy-docker-logrotate.sh ewomail --clear
+```
+
+脚本会先通过 `docker inspect` 解析并校验精确日志路径，只接受 `/var/lib/docker/containers/.../*-json.log`，不会删除容器或挂载数据。`--clear` 会不可恢复地清空当前 Docker 控制台日志；邮件数据和容器内部日志不受影响。
 | `MAX_WS_PAYLOAD_BYTES` | WebSocket 单条消息大小限制。 | `1048576` |
 | `WS_BACKPRESSURE_LIMIT_BYTES` | 单连接 WebSocket 待发送缓冲暂停阈值。 | `4194304` |
 | `WS_BACKPRESSURE_RESUME_BYTES` | 单连接 WebSocket 待发送缓冲恢复阈值。 | `2097152` |

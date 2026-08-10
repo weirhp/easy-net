@@ -35,7 +35,8 @@ async function startEasyNetServer(t, secret, prefix) {
       PORT: String(serverPort),
       DATA_DIR: dataDir,
       SECRETS: secret,
-      ADMIN_PASSWORD: 'test-admin-password'
+      ADMIN_PASSWORD: 'test-admin-password',
+      CONNECTION_LOG_ENABLED: 'false'
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -141,6 +142,8 @@ test('secure header protocol relays target traffic', { timeout: 20000 }, async t
 
   assert.match(response, /^HTTP\/1\.1 200 OK/m);
   assert.match(response, /target-ok/);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.doesNotMatch(serverOutput, /\[Easy-Net\] \[(?:连接|关闭)\]/);
 });
 
 test('v2 tunnel waits for the target connection before reporting ready', { timeout: 20000 }, async t => {
@@ -164,7 +167,8 @@ test('v2 tunnel waits for the target connection before reporting ready', { timeo
       PORT: String(serverPort),
       DATA_DIR: dataDir,
       SECRETS: secret,
-      ADMIN_PASSWORD: 'test-admin-password'
+      ADMIN_PASSWORD: 'test-admin-password',
+      CONNECTION_LOG_ENABLED: 'true'
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -229,6 +233,8 @@ test('v2 tunnel waits for the target connection before reporting ready', { timeo
   assert.equal(response.upgradedProtocol, '2');
   assert.match(response.received, /^HTTP\/1\.1 200 OK/m);
   assert.match(response.received, /v2-ready/);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.match(serverOutput, /\[Easy-Net\] \[连接\]/);
 });
 
 test('v3 UDP tunnel preserves datagram boundaries and target addresses', { timeout: 20000 }, async t => {

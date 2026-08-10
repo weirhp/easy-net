@@ -544,10 +544,10 @@ std::optional<std::filesystem::path> FindAntigravityExecutable(const Options& op
 }
 
 constexpr const wchar_t* kWeChatProcessNames[]{
-    L"WeChat.exe",        L"Weixin.exe",       L"WeChatAppEx.exe",
-    L"WeChatBrowser.exe", L"WeChatOCR.exe",    L"WeChatPlayer.exe",
-    L"WeChatUtility.exe", L"WeChatWeb.exe",    L"WeChatUpdate.exe",
-    L"xwechat.exe",
+    L"WeChat.exe",        L"Weixin.exe",       L"WeChatApp.exe",
+    L"WeChatAppEx.exe",   L"WeChatBrowser.exe", L"WeChatOCR.exe",
+    L"WeChatPlayer.exe",  L"WeChatUtility.exe", L"WeChatWeb.exe",
+    L"WeChatUpdate.exe",  L"xwechat.exe",
 };
 
 bool IsWeChatProcessName(const wchar_t* name) {

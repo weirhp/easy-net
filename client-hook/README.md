@@ -103,7 +103,7 @@ THIRD-PARTY-LICENSES\Detours-LICENSE.md
 
 接管后只有新建连接能够可靠地进入 TUN。建议在微信内切换页面、重新打开小程序或重新登录以触发重连。`--wechat-existing` 不接受 `--wechat-path` 和 `--` 后的启动参数；未找到正在运行的 `Weixin.exe`、`WeChat.exe` 或 `xwechat.exe` 时会直接报错。微信完全退出后，生命周期监视器同样会停止 TUN。
 
-TUN 需要管理员权限，启动器会触发一次 Windows UAC。TUN 运行期间，微信及 `WeChatAppEx.exe`、`WeChatBrowser.exe`、`WeChatOCR.exe`、`WeChatPlayer.exe` 等辅助进程匹配 SOCKS5 出站，其他程序通过同一 TUN 分类后直连。微信完全退出后，生命周期监视器会自动停止 TUN 引擎并删除路由。
+TUN 需要管理员权限，启动器会触发一次 Windows UAC。TUN 运行期间，微信及 `WeChatApp.exe`、`WeChatAppEx.exe`、`WeChatBrowser.exe`、`WeChatOCR.exe`、`WeChatPlayer.exe` 等辅助进程匹配 SOCKS5 出站，其他程序通过同一 TUN 分类后直连。微信完全退出后，生命周期监视器会自动停止 TUN 引擎并删除路由。
 
 为降低服务器上的 CPU 占用，TUN 默认使用 Windows `system` 网络栈，并在路由层绕过常见内网、链路本地和 CGNAT 网段。其他高流量程序即使最终选择 `direct`，如果目标不在绕过列表中，数据包仍会先进入 TUN。可以为 RustDesk 等程序的固定服务器地址增加绕过 CIDR：
 

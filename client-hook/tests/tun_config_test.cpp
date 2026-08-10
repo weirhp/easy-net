@@ -54,6 +54,7 @@ int main() {
     assert(json.find("\"action\": \"hijack-dns\"") != std::string::npos);
     assert(json.find("\"network\": \"udp\"") != std::string::npos);
     assert(json.find("Weixin.exe") != std::string::npos);
+    assert(json.find("WeChatApp.exe") != std::string::npos);
     assert(json.find("\"stack\": \"system\"") != std::string::npos);
     assert(json.find("1.116.229.59/32") != std::string::npos);
     assert(json.find("10.0.0.0/8") != std::string::npos);

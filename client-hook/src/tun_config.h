@@ -270,10 +270,10 @@ inline std::string JsonString(std::string_view value) {
 
 inline const std::vector<std::string>& WeChatProcessNames() {
     static const std::vector<std::string> names{
-        "WeChat.exe",       "Weixin.exe",       "WeChatAppEx.exe",
-        "WeChatBrowser.exe", "WeChatOCR.exe",    "WeChatPlayer.exe",
-        "WeChatUtility.exe", "WeChatWeb.exe",    "WeChatUpdate.exe",
-        "xwechat.exe",
+        "WeChat.exe",        "Weixin.exe",       "WeChatApp.exe",
+        "WeChatAppEx.exe",   "WeChatBrowser.exe", "WeChatOCR.exe",
+        "WeChatPlayer.exe",  "WeChatUtility.exe", "WeChatWeb.exe",
+        "WeChatUpdate.exe",  "xwechat.exe",
     };
     return names;
 }

@@ -8,6 +8,7 @@
 #include <tlhelp32.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <cwchar>
 #include <filesystem>
@@ -21,6 +22,7 @@
 #include <system_error>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "browser_proxy.h"
@@ -28,6 +30,7 @@
 #include "dns_resolver.h"
 #include "launcher_gui.h"
 #include "tun_config.h"
+#include "wechat_supervisor.h"
 #include "windivert_profile.h"
 
 namespace {
@@ -108,8 +111,8 @@ void PrintUsage() {
         << L"  --chatgpt-app          Open the installed ChatGPT app with native Chromium SOCKS5\n"
         << L"  --chatgpt-web          Open ChatGPT in an isolated Edge/Chrome SOCKS5 session\n"
         << L"  --browser-path PATH    Browser executable for --chatgpt-web (optional)\n"
-        << L"  --wechat               Open WeChat/Weixin through per-process TUN routing\n"
-        << L"  --wechat-existing      Attach per-process TUN routing to running WeChat/Weixin\n"
+        << L"  --wechat               Open WeChat/Weixin through per-process routing\n"
+        << L"  --wechat-existing      Attach routing to running WeChat/Weixin\n"
         << L"  --wechat-path PATH     WeChat.exe or Weixin.exe (optional, auto-detected)\n"
         << L"  --wechat-backend MODE  tun or windivert (default: tun)\n"
         << L"  --tun-engine PATH      sing-box.exe used by WeChat TUN modes (optional)\n"
@@ -117,7 +120,8 @@ void PrintUsage() {
         << L"  --tun-udp MODE         auto, proxy, block, or direct (default: auto)\n"
         << L"  --tun-stack MODE       system, mixed, or gvisor (default: system)\n"
         << L"  --tun-bypass CIDR      Bypass TUN for a CIDR; repeat or comma-separate values\n"
-        << L"  --tun-debug-log        Log each TUN connection for temporary diagnostics\n"
+        << L"  --tun-debug-log        Log each network connection for temporary diagnostics\n"
+        << L"  --wechat-status        Show WinDivert supervisor health and exit nonzero if unhealthy\n"
         << L"  --detach               Exit after the target process starts\n"
         << L"  --help                  Show this help\n\n"
         << L"The proxy host must be a literal IPv4 address or a bracketed IPv6 address.\n";
@@ -902,6 +906,91 @@ bool Socks5SupportsUdp(const Options& options, const easy_net::tun::Endpoint& en
     return supported;
 }
 
+bool Socks5EndpointResponsive(const easy_net::tun::Endpoint& endpoint) {
+    WSADATA winsock{};
+    if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
+        return false;
+    }
+    sockaddr_storage address{};
+    int address_length = 0;
+    int family = AF_UNSPEC;
+    if (InetPtonA(AF_INET, endpoint.host.c_str(),
+                  &reinterpret_cast<sockaddr_in*>(&address)->sin_addr) == 1) {
+        auto* ipv4 = reinterpret_cast<sockaddr_in*>(&address);
+        ipv4->sin_family = AF_INET;
+        ipv4->sin_port = htons(endpoint.port);
+        address_length = sizeof(*ipv4);
+        family = AF_INET;
+    } else if (InetPtonA(AF_INET6, endpoint.host.c_str(),
+                         &reinterpret_cast<sockaddr_in6*>(&address)->sin6_addr) == 1) {
+        auto* ipv6 = reinterpret_cast<sockaddr_in6*>(&address);
+        ipv6->sin6_family = AF_INET6;
+        ipv6->sin6_port = htons(endpoint.port);
+        address_length = sizeof(*ipv6);
+        family = AF_INET6;
+    } else {
+        WSACleanup();
+        return false;
+    }
+    const SOCKET socket = ::socket(family, SOCK_STREAM, IPPROTO_TCP);
+    if (socket == INVALID_SOCKET) {
+        WSACleanup();
+        return false;
+    }
+    bool healthy = false;
+    do {
+        u_long nonblocking = 1;
+        if (ioctlsocket(socket, FIONBIO, &nonblocking) != 0) {
+            break;
+        }
+        const int connected = connect(socket, reinterpret_cast<const sockaddr*>(&address),
+                                      address_length);
+        if (connected == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK) {
+            break;
+        }
+        if (connected == SOCKET_ERROR) {
+            fd_set writable;
+            fd_set failed;
+            FD_ZERO(&writable);
+            FD_ZERO(&failed);
+            FD_SET(socket, &writable);
+            FD_SET(socket, &failed);
+            timeval timeout{1, 0};
+            if (select(0, nullptr, &writable, &failed, &timeout) <= 0 ||
+                FD_ISSET(socket, &failed)) {
+                break;
+            }
+            int socket_error = 0;
+            int socket_error_size = sizeof(socket_error);
+            if (getsockopt(socket, SOL_SOCKET, SO_ERROR,
+                           reinterpret_cast<char*>(&socket_error), &socket_error_size) != 0 ||
+                socket_error != 0) {
+                break;
+            }
+        }
+        nonblocking = 0;
+        if (ioctlsocket(socket, FIONBIO, &nonblocking) != 0) {
+            break;
+        }
+        const DWORD timeout = 1000;
+        setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO,
+                   reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+        setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO,
+                   reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+        // Advertising both standard methods is enough to verify that a SOCKS5
+        // server is responsive without putting credentials on the supervisor's
+        // command line or creating an external target connection.
+        const std::uint8_t greeting[]{5, 2, 0, 2};
+        std::uint8_t reply[2]{};
+        healthy = SendAll(socket, greeting, sizeof(greeting)) &&
+                  ReceiveAll(socket, reply, sizeof(reply)) && reply[0] == 5 &&
+                  reply[1] != 0xff;
+    } while (false);
+    closesocket(socket);
+    WSACleanup();
+    return healthy;
+}
+
 bool WriteUtf8File(const std::filesystem::path& path, const std::string& content) {
     ScopedHandle file(CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
@@ -912,6 +1001,57 @@ bool WriteUtf8File(const std::filesystem::path& path, const std::string& content
     return content.size() <= MAXDWORD &&
            WriteFile(file.get(), content.data(), static_cast<DWORD>(content.size()), &written,
                      nullptr) && written == content.size();
+}
+
+std::optional<std::string> ReadUtf8File(const std::filesystem::path& path,
+                                        DWORD maximum_bytes = 64 * 1024) {
+    ScopedHandle file(CreateFileW(path.c_str(), GENERIC_READ,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+    if (file.get() == INVALID_HANDLE_VALUE) {
+        return std::nullopt;
+    }
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file.get(), &size) || size.QuadPart < 0 ||
+        size.QuadPart > maximum_bytes) {
+        return std::nullopt;
+    }
+    std::string content(static_cast<std::size_t>(size.QuadPart), '\0');
+    DWORD received = 0;
+    if (!content.empty() &&
+        (!ReadFile(file.get(), content.data(), static_cast<DWORD>(content.size()), &received,
+                   nullptr) || received != static_cast<DWORD>(content.size()))) {
+        return std::nullopt;
+    }
+    return content;
+}
+
+std::string UtcTimestamp() {
+    SYSTEMTIME time{};
+    GetSystemTime(&time);
+    char value[32]{};
+    snprintf(value, sizeof(value), "%04u-%02u-%02uT%02u:%02u:%02uZ",
+             static_cast<unsigned int>(time.wYear),
+             static_cast<unsigned int>(time.wMonth),
+             static_cast<unsigned int>(time.wDay),
+             static_cast<unsigned int>(time.wHour),
+             static_cast<unsigned int>(time.wMinute),
+             static_cast<unsigned int>(time.wSecond));
+    return value;
+}
+
+bool WriteRuntimeStatus(const std::filesystem::path& path,
+                        const easy_net::wechat::RuntimeStatus& status) {
+    const std::filesystem::path temporary = path.wstring() + L".tmp";
+    if (!WriteUtf8File(temporary, easy_net::wechat::BuildRuntimeStatus(status))) {
+        return false;
+    }
+    if (!MoveFileExW(temporary.c_str(), path.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(temporary.c_str());
+        return false;
+    }
+    return true;
 }
 
 bool StartHiddenProcess(const std::filesystem::path& executable,
@@ -988,8 +1128,19 @@ void RelayBoundedTunLog(HANDLE pipe, const std::filesystem::path& log_path) {
     }
 }
 
+struct WeChatSupervisorConfig {
+    bool restart_windivert = false;
+    bool debug_log = false;
+    std::filesystem::path engine_path;
+    std::filesystem::path config_path;
+    std::filesystem::path status_path;
+    std::wstring proxy_text;
+    easy_net::tun::Endpoint proxy;
+};
+
 int WatchWeChat(DWORD root_process_id, DWORD engine_process_id, HANDLE log_pipe = nullptr,
-                const std::filesystem::path& log_path = {}) {
+                const std::filesystem::path& log_path = {},
+                const WeChatSupervisorConfig& supervisor = {}) {
     ScopedHandle root(OpenProcess(SYNCHRONIZE, FALSE, root_process_id));
     ScopedHandle engine(OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, engine_process_id));
     if (engine.get() == nullptr) {
@@ -1002,25 +1153,142 @@ int WatchWeChat(DWORD root_process_id, DWORD engine_process_id, HANDLE log_pipe 
     if (log_pipe != nullptr && log_pipe != INVALID_HANDLE_VALUE && !log_path.empty()) {
         log_relay = std::thread(RelayBoundedTunLog, log_pipe, log_path);
     }
-    if (root.get() != nullptr) {
-        WaitForSingleObject(root.get(), INFINITE);
+    const auto finish_log_relay = [&log_relay] {
+        if (log_relay.joinable()) {
+            CancelSynchronousIo(log_relay.native_handle());
+            log_relay.join();
+        }
+    };
+    easy_net::wechat::RuntimeStatus status;
+    status.backend = supervisor.restart_windivert ? "windivert" : "tun";
+    status.state = easy_net::wechat::HealthState::starting;
+    status.message = "WeChat network engine is starting";
+    status.proxy = ToUtf8(supervisor.proxy_text).value_or("");
+    status.engine_pid = engine_process_id;
+    status.fail_closed = supervisor.restart_windivert;
+    status.heartbeat_tick_ms = GetTickCount64();
+    status.updated_at = UtcTimestamp();
+    if (!supervisor.status_path.empty()) {
+        WriteRuntimeStatus(supervisor.status_path, status);
     }
+
+    const auto update_status = [&](easy_net::wechat::HealthState state,
+                                   std::string message, bool fail_closed) {
+        status.state = state;
+        status.message = std::move(message);
+        status.fail_closed = fail_closed;
+        status.heartbeat_tick_ms = GetTickCount64();
+        status.updated_at = UtcTimestamp();
+        if (!supervisor.status_path.empty()) {
+            WriteRuntimeStatus(supervisor.status_path, status);
+        }
+    };
+    const auto start_windivert = [&]() -> bool {
+        SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+        HANDLE raw_read = nullptr;
+        HANDLE raw_write = nullptr;
+        if (!CreatePipe(&raw_read, &raw_write, &security, 64 * 1024)) {
+            return false;
+        }
+        ScopedHandle read_pipe(raw_read);
+        ScopedHandle write_pipe(raw_write);
+        SetHandleInformation(read_pipe.get(), HANDLE_FLAG_INHERIT, 0);
+        PROCESS_INFORMATION process{};
+        const std::vector<std::wstring> arguments{
+            L"--profile", supervisor.config_path.wstring(), L"--verbose",
+            supervisor.debug_log ? L"3" : L"1",
+        };
+        if (!StartHiddenProcess(supervisor.engine_path, arguments, write_pipe.get(), process)) {
+            return false;
+        }
+        CloseHandle(process.hThread);
+        SetHandleInformation(write_pipe.get(), HANDLE_FLAG_INHERIT, 0);
+        CloseHandle(write_pipe.release());
+        engine = ScopedHandle(process.hProcess);
+        status.engine_pid = process.dwProcessId;
+        log_relay = std::thread(RelayBoundedTunLog, read_pipe.release(), log_path);
+        if (WaitForSingleObject(engine.get(), 1500) == WAIT_OBJECT_0) {
+            finish_log_relay();
+            engine = ScopedHandle();
+            status.engine_pid = 0;
+            return false;
+        }
+        return true;
+    };
+
     unsigned int empty_checks = 0;
-    while (WaitForSingleObject(engine.get(), 0) == WAIT_TIMEOUT) {
+    unsigned int proxy_failures = 0;
+    unsigned int restart_failures = 0;
+    constexpr unsigned int kHealthIntervalTicks = 40;
+    unsigned int health_ticks = kHealthIntervalTicks;
+    for (;;) {
         if (AnyWeChatProcessRunning()) {
             empty_checks = 0;
-        } else if (++empty_checks >= 3) {
-            TerminateProcess(engine.get(), 0);
-            WaitForSingleObject(engine.get(), 5000);
-            break;
+        } else if (++empty_checks >= 12) {
+            if (engine.get() != nullptr &&
+                WaitForSingleObject(engine.get(), 0) == WAIT_TIMEOUT) {
+                TerminateProcess(engine.get(), 0);
+                WaitForSingleObject(engine.get(), 5000);
+            }
+            finish_log_relay();
+            status.engine_pid = 0;
+            update_status(easy_net::wechat::HealthState::stopped,
+                          "WeChat exited; network engine stopped", false);
+            return 0;
         }
-        Sleep(1000);
+
+        if (engine.get() == nullptr || WaitForSingleObject(engine.get(), 0) != WAIT_TIMEOUT) {
+            finish_log_relay();
+            engine = ScopedHandle();
+            status.engine_pid = 0;
+            if (!supervisor.restart_windivert || supervisor.engine_path.empty() ||
+                supervisor.config_path.empty()) {
+                update_status(easy_net::wechat::HealthState::stopped,
+                              "Network engine exited", false);
+                return 5;
+            }
+            ++status.restart_count;
+            update_status(easy_net::wechat::HealthState::restarting,
+                          "WinDivert engine exited; automatic restart pending", false);
+            const unsigned int backoff_seconds =
+                1U << std::min(restart_failures, 5U);
+            for (unsigned int elapsed = 0; elapsed < backoff_seconds * 4; ++elapsed) {
+                if (!AnyWeChatProcessRunning()) {
+                    break;
+                }
+                Sleep(250);
+            }
+            if (!AnyWeChatProcessRunning()) {
+                continue;
+            }
+            if (!start_windivert()) {
+                ++restart_failures;
+                update_status(easy_net::wechat::HealthState::restart_failed,
+                              "WinDivert restart failed; retrying with backoff", false);
+                Sleep(250);
+                continue;
+            }
+            restart_failures = 0;
+            proxy_failures = 0;
+            health_ticks = kHealthIntervalTicks;
+            update_status(easy_net::wechat::HealthState::starting,
+                          "WinDivert restarted; checking SOCKS5", true);
+        }
+
+        if (supervisor.restart_windivert && ++health_ticks >= kHealthIntervalTicks) {
+            health_ticks = 0;
+            if (Socks5EndpointResponsive(supervisor.proxy)) {
+                proxy_failures = 0;
+                update_status(easy_net::wechat::HealthState::healthy,
+                              "WinDivert is running and SOCKS5 is responsive", true);
+            } else if (++proxy_failures >= 2) {
+                update_status(easy_net::wechat::HealthState::proxy_unavailable,
+                              "SOCKS5 is unavailable; matching WeChat traffic remains fail-closed",
+                              true);
+            }
+        }
+        Sleep(250);
     }
-    if (log_relay.joinable()) {
-        CancelSynchronousIo(log_relay.native_handle());
-        log_relay.join();
-    }
-    return 0;
 }
 
 int LaunchWeChat(const Options& options) {
@@ -1114,6 +1382,8 @@ int LaunchWeChat(const Options& options) {
         config_directory / (use_windivert ? L"wechat.pbprofile" : L"wechat.json");
     const std::filesystem::path log_path =
         config_directory / (use_windivert ? L"wechat-windivert.log" : L"wechat-tun.log");
+    const std::filesystem::path status_path =
+        config_directory / L"wechat-status.json";
     easy_net::tun::Config config;
     config.proxy = proxy_endpoint;
     config.interface_name = "easy-net-wechat-" + std::to_string(GetCurrentProcessId());
@@ -1282,6 +1552,9 @@ int LaunchWeChat(const Options& options) {
     }
     std::wcout << (use_windivert ? L"WinDivert log: " : L"TUN log: ")
                << log_path.wstring() << L"\n";
+    if (use_windivert) {
+        std::wcout << L"Supervisor status: " << status_path.wstring() << L"\n";
+    }
 
     const auto launcher_directory = CurrentModuleDirectory();
     const std::filesystem::path launcher =
@@ -1292,12 +1565,17 @@ int LaunchWeChat(const Options& options) {
         SetHandleInformation(log_read.get(), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) != FALSE;
     const std::wstring log_handle =
         std::to_wstring(reinterpret_cast<std::uintptr_t>(log_read.get()));
+    std::vector<std::wstring> watcher_arguments{
+        L"--wechat-watch", std::to_wstring(wechat_process.dwProcessId),
+        std::to_wstring(tun_process.dwProcessId), log_handle, log_path.wstring(),
+    };
+    if (use_windivert) {
+        watcher_arguments.insert(watcher_arguments.end(),
+                                 {L"windivert", engine->wstring(), config_path.wstring(),
+                                  options.proxy, options.tun_debug_log ? L"1" : L"0"});
+    }
     const bool watcher_started = can_inherit_log && !launcher.empty() &&
-        StartHiddenProcess(launcher,
-                           {L"--wechat-watch", std::to_wstring(wechat_process.dwProcessId),
-                            std::to_wstring(tun_process.dwProcessId), log_handle,
-                            log_path.wstring()},
-                           nullptr, watcher, true);
+        StartHiddenProcess(launcher, watcher_arguments, nullptr, watcher, true);
     SetHandleInformation(log_read.get(), HANDLE_FLAG_INHERIT, 0);
     CloseHandle(log_write.release());
     CloseHandle(log_read.release());
@@ -2067,7 +2345,30 @@ int ActivatePackagedApplication(const Options& options,
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
-    if ((argc == 4 || argc == 6) && std::wstring_view(argv[1]) == L"--wechat-watch") {
+    if (argc == 2 && std::wstring_view(argv[1]) == L"--wechat-status") {
+        const auto local_app_data = EnvironmentValue(L"LOCALAPPDATA");
+        if (!local_app_data) {
+            std::wcerr << L"LOCALAPPDATA is unavailable.\n";
+            return 3;
+        }
+        const std::filesystem::path status_path =
+            std::filesystem::path(*local_app_data) /
+            L"EasyNetHook/WinDivert/wechat-status.json";
+        const auto content = ReadUtf8File(status_path);
+        if (!content) {
+            std::wcerr << L"WinDivert supervisor status was not found: "
+                       << status_path.wstring() << L"\n";
+            return 7;
+        }
+        std::cout << *content;
+        const bool fresh = easy_net::wechat::IsFreshStatus(*content, GetTickCount64());
+        if (!fresh) {
+            std::wcerr << L"WinDivert supervisor heartbeat is stale.\n";
+        }
+        return easy_net::wechat::IsHealthyStatus(*content) && fresh ? 0 : 7;
+    }
+    if ((argc == 4 || argc == 6 || argc == 11) &&
+        std::wstring_view(argv[1]) == L"--wechat-watch") {
         wchar_t* root_end = nullptr;
         wchar_t* engine_end = nullptr;
         const unsigned long root_id = std::wcstoul(argv[2], &root_end, 10);
@@ -2083,6 +2384,31 @@ int wmain(int argc, wchar_t** argv) {
         const unsigned long long handle_value = std::wcstoull(argv[4], &handle_end, 10);
         if (handle_value == 0 || handle_end == nullptr || *handle_end != L'\0') {
             return 2;
+        }
+        if (argc == 11) {
+            if (std::wstring_view(argv[6]) != L"windivert" ||
+                (std::wstring_view(argv[10]) != L"0" &&
+                 std::wstring_view(argv[10]) != L"1")) {
+                return 2;
+            }
+            const auto proxy_text = ToUtf8(argv[9]);
+            WeChatSupervisorConfig supervisor;
+            supervisor.restart_windivert = true;
+            supervisor.debug_log = std::wstring_view(argv[10]) == L"1";
+            supervisor.engine_path = argv[7];
+            supervisor.config_path = argv[8];
+            supervisor.status_path = std::filesystem::path(argv[5]).parent_path() /
+                                     L"wechat-status.json";
+            supervisor.proxy_text = argv[9];
+            if (!proxy_text || !easy_net::tun::ParseEndpoint(*proxy_text, supervisor.proxy) ||
+                !std::filesystem::is_regular_file(supervisor.engine_path) ||
+                !std::filesystem::is_regular_file(supervisor.config_path)) {
+                return 2;
+            }
+            return WatchWeChat(
+                static_cast<DWORD>(root_id), static_cast<DWORD>(engine_id),
+                reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(handle_value)),
+                std::filesystem::path(argv[5]), supervisor);
         }
         return WatchWeChat(static_cast<DWORD>(root_id), static_cast<DWORD>(engine_id),
                            reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(handle_value)),

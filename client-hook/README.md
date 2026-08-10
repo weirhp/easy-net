@@ -160,6 +160,28 @@ TUN 日志默认使用 `warn`，并由生命周期监视器限制在 8 MiB；达
 
 WinDivert 后端保留 Windows 系统 DNS，目前不应用 `--dns`；需要指定 DNS 时继续使用 TUN 后端。
 
+WinDivert 模式包含独立守护器：每 250 毫秒检查引擎进程，每 10 秒检查一次 SOCKS5 协议握手。引擎异常退出后按照 1、2、4、8、16、32 秒上限的退避策略持续重启；代理端口断开时不把微信规则回退到 DIRECT，而是让匹配的 TCP/UDP 连接失败，代理恢复后自动继续。
+
+查询运行状态：
+
+```powershell
+.\easy-net-hook.exe --wechat-status
+$LASTEXITCODE
+```
+
+状态保存在 `%LOCALAPPDATA%\EasyNetHook\WinDivert\wechat-status.json`。`state` 为 `healthy` 时查询命令返回 `0`；`proxy-unavailable`、`restarting`、`restart-failed` 或没有状态文件时返回 `7`。文件同时记录当前引擎 PID、累计重启次数、代理地址、更新时间和 `fail_closed` 状态。
+
+验证自动重启：
+
+```powershell
+Stop-Process -Name easy-net-windivert -Force
+Start-Sleep 3
+.\easy-net-hook.exe --wechat-status
+Get-Process easy-net-windivert
+```
+
+验证代理断线阻断时，可以暂时退出 Easy-Net Lite，等待约 20 秒后查询状态。此时应显示 `proxy-unavailable` 和 `fail_closed: true`，微信的新建外网连接应失败；重新启动 Lite 后状态会恢复为 `healthy`。引擎进程本身崩溃到守护器完成重启之间无法承诺严格零窗口防泄漏，状态文件在这段时间会明确显示 `fail_closed: false`；要做到内核级零窗口，需要另外实现 WFP callout 驱动。
+
 #### 验证微信确实进入 TUN
 
 启动或接管后，依次检查：
@@ -391,6 +413,7 @@ Chromium 的 SOCKS5 模式不支持用户名密码，因此网页模式只能连
 --wechat-backend M  微信后端：tun/windivert；默认 tun
 --tun-engine PATH   指定 sing-box.exe；默认查找 tun 子目录和 PATH
 --windivert-engine  指定 easy-net-windivert.exe
+--wechat-status     查询 WinDivert 守护器状态；健康返回 0，否则返回 7
 --tun-udp MODE      微信 UDP 策略：auto/proxy/block/direct
 --tun-stack MODE    TUN 栈：system/mixed/gvisor；默认 system
 --tun-bypass CIDR   让目标 CIDR 绕过 TUN；可重复或使用逗号分隔

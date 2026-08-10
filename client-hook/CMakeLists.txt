@@ -121,6 +121,7 @@ add_executable(easy_net_hook_launcher
     src/launcher_gui.h
     src/resource.h
     src/tun_config.h
+    src/wechat_supervisor.h
     src/windivert_profile.h
     src/dns_resolver.cpp
     src/dns_resolver.h
@@ -218,6 +219,17 @@ target_compile_options(windivert_profile_test PRIVATE /W4 /permissive- /EHsc /UN
 set_property(TARGET windivert_profile_test PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_test(NAME windivert_profile_test COMMAND windivert_profile_test)
+
+add_executable(wechat_supervisor_test
+    tests/wechat_supervisor_test.cpp
+    src/wechat_supervisor.h
+    src/tun_config.h
+)
+target_compile_features(wechat_supervisor_test PRIVATE cxx_std_20)
+target_compile_options(wechat_supervisor_test PRIVATE /W4 /permissive- /EHsc /UNDEBUG)
+set_property(TARGET wechat_supervisor_test PROPERTY
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_test(NAME wechat_supervisor_test COMMAND wechat_supervisor_test)
 
 add_custom_command(TARGET easy_net_hook_launcher POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

@@ -105,6 +105,19 @@ THIRD-PARTY-LICENSES\Detours-LICENSE.md
 
 TUN 需要管理员权限，启动器会触发一次 Windows UAC。TUN 运行期间，微信及 `WeChatAppEx.exe`、`WeChatBrowser.exe`、`WeChatOCR.exe`、`WeChatPlayer.exe` 等辅助进程匹配 SOCKS5 出站，其他程序通过同一 TUN 分类后直连。微信完全退出后，生命周期监视器会自动停止 TUN 引擎并删除路由。
 
+为降低服务器上的 CPU 占用，TUN 默认使用 Windows `system` 网络栈，并在路由层绕过常见内网、链路本地和 CGNAT 网段。其他高流量程序即使最终选择 `direct`，如果目标不在绕过列表中，数据包仍会先进入 TUN。可以为 RustDesk 等程序的固定服务器地址增加绕过 CIDR：
+
+```powershell
+.\easy-net-hook.exe `
+  --proxy 127.0.0.1:1082 `
+  --wechat-existing `
+  --tun-stack system `
+  --tun-bypass 1.116.229.59/32 `
+  --detach
+```
+
+`--tun-bypass` 可重复使用，也接受逗号分隔的多个 IPv4/IPv6 CIDR。绕过项直接使用 Windows 原网络，不经过 sing-box 或 SOCKS5；只应配置明确需要直连的目标。兼容性排查时可用 `--tun-stack mixed` 或 `--tun-stack gvisor` 恢复其他网络栈。
+
 UDP 模式默认是 `auto`：
 
 - SOCKS5 支持 `UDP ASSOCIATE` 时，微信 UDP/QUIC 通过代理。
@@ -347,6 +360,8 @@ Chromium 的 SOCKS5 模式不支持用户名密码，因此网页模式只能连
 --wechat-path PATH  指定 WeChat.exe/Weixin.exe；通常可以自动查找
 --tun-engine PATH   指定 sing-box.exe；默认查找 tun 子目录和 PATH
 --tun-udp MODE      微信 UDP 策略：auto/proxy/block/direct
+--tun-stack MODE    TUN 栈：system/mixed/gvisor；默认 system
+--tun-bypass CIDR   让目标 CIDR 绕过 TUN；可重复或使用逗号分隔
 --tun-debug-log     临时记录每条 TUN 连接；日志仍限制为 8 MiB
 --dns IP[:PORT]     指定普通 DNS 服务；端口默认 53
 --allow-udp-direct  允许 UDP 直连；这会产生代理泄漏风险

@@ -70,6 +70,9 @@ struct Options {
     std::wstring wechat_path;
     std::wstring tun_engine_path;
     easy_net::tun::UdpMode tun_udp_mode = easy_net::tun::UdpMode::automatic;
+    easy_net::tun::Stack tun_stack = easy_net::tun::Stack::system;
+    bool tun_stack_explicit = false;
+    std::vector<std::string> tun_bypass;
     std::wstring app_user_model_id;
     std::optional<DWORD> process_id;
     std::vector<std::wstring> command;
@@ -107,6 +110,8 @@ void PrintUsage() {
         << L"  --wechat-path PATH     WeChat.exe or Weixin.exe (optional, auto-detected)\n"
         << L"  --tun-engine PATH      sing-box.exe used by WeChat TUN modes (optional)\n"
         << L"  --tun-udp MODE         auto, proxy, block, or direct (default: auto)\n"
+        << L"  --tun-stack MODE       system, mixed, or gvisor (default: system)\n"
+        << L"  --tun-bypass CIDR      Bypass TUN for a CIDR; repeat or comma-separate values\n"
         << L"  --tun-debug-log        Log each TUN connection for temporary diagnostics\n"
         << L"  --detach               Exit after the target process starts\n"
         << L"  --help                  Show this help\n\n"
@@ -128,6 +133,7 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
                    argument == L"--pid" || argument == L"--browser-path" ||
                    argument == L"--antigravity-path" || argument == L"--wechat-path" ||
                    argument == L"--tun-engine" || argument == L"--tun-udp" ||
+                   argument == L"--tun-stack" || argument == L"--tun-bypass" ||
                    argument == L"--appx") {
             if (++index >= argc) {
                 std::wcerr << L"Missing value for " << argument << L".\n";
@@ -153,6 +159,20 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
                 const auto value = ToUtf8(argv[index]);
                 if (!value || !easy_net::tun::ParseUdpMode(*value, options.tun_udp_mode)) {
                     std::wcerr << L"Invalid --tun-udp value. Use auto, proxy, block, or direct.\n";
+                    return false;
+                }
+            } else if (argument == L"--tun-stack") {
+                const auto value = ToUtf8(argv[index]);
+                if (!value || !easy_net::tun::ParseStack(*value, options.tun_stack)) {
+                    std::wcerr << L"Invalid --tun-stack value. Use system, mixed, or gvisor.\n";
+                    return false;
+                }
+                options.tun_stack_explicit = true;
+            } else if (argument == L"--tun-bypass") {
+                const auto value = ToUtf8(argv[index]);
+                if (!value ||
+                    !easy_net::tun::AppendRouteExclusions(*value, options.tun_bypass)) {
+                    std::wcerr << L"Invalid --tun-bypass value. Use an IPv4 or IPv6 CIDR.\n";
                     return false;
                 }
             } else if (argument == L"--appx") {
@@ -238,10 +258,10 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
         return false;
     }
     if ((!options.tun_engine_path.empty() || options.tun_udp_mode != easy_net::tun::UdpMode::automatic ||
-         options.tun_debug_log) &&
+         options.tun_stack_explicit || !options.tun_bypass.empty() || options.tun_debug_log) &&
         !options.wechat) {
-        std::wcerr << L"--tun-engine, --tun-udp, and --tun-debug-log can only be used with a "
-                      L"WeChat TUN mode.\n";
+        std::wcerr << L"--tun-engine, --tun-udp, --tun-stack, --tun-bypass, and "
+                      L"--tun-debug-log can only be used with a WeChat TUN mode.\n";
         return false;
     }
     return true;
@@ -1049,6 +1069,14 @@ int LaunchWeChat(const Options& options) {
     config.username = *username;
     config.password = *password;
     config.udp_mode = udp_mode;
+    config.stack = options.tun_stack;
+    for (const auto& prefix : options.tun_bypass) {
+        if (std::find(config.route_exclude_addresses.begin(),
+                      config.route_exclude_addresses.end(), prefix) ==
+            config.route_exclude_addresses.end()) {
+            config.route_exclude_addresses.push_back(prefix);
+        }
+    }
     config.log_level = options.tun_debug_log ? "info" : "warn";
     if (!options.dns.empty()) {
         const auto dns_text = ToUtf8(options.dns);

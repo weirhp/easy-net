@@ -17,6 +17,12 @@ enum class UdpMode {
     direct,
 };
 
+enum class Stack {
+    system,
+    mixed,
+    gvisor,
+};
+
 struct Endpoint {
     std::string host;
     std::uint16_t port = 0;
@@ -31,6 +37,14 @@ struct Config {
     std::string log_path;
     std::string log_level = "warn";
     UdpMode udp_mode = UdpMode::block;
+    Stack stack = Stack::system;
+    std::vector<std::string> route_exclude_addresses{
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+    };
 };
 
 inline bool ParsePort(std::string_view value, std::uint16_t& port) {
@@ -112,6 +126,119 @@ inline bool ParseUdpMode(std::string_view value, UdpMode& mode) {
     return true;
 }
 
+inline bool ParseStack(std::string_view value, Stack& stack) {
+    std::string normalized(value);
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+    if (normalized == "system") {
+        stack = Stack::system;
+    } else if (normalized == "mixed") {
+        stack = Stack::mixed;
+    } else if (normalized == "gvisor") {
+        stack = Stack::gvisor;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+inline const char* StackName(Stack stack) {
+    switch (stack) {
+        case Stack::system: return "system";
+        case Stack::mixed: return "mixed";
+        case Stack::gvisor: return "gvisor";
+    }
+    return "system";
+}
+
+inline bool ParseDecimal(std::string_view value, unsigned int maximum) {
+    if (value.empty()) {
+        return false;
+    }
+    unsigned int parsed = 0;
+    for (const char character : value) {
+        if (character < '0' || character > '9') {
+            return false;
+        }
+        const unsigned int digit = static_cast<unsigned int>(character - '0');
+        if (parsed > (maximum - digit) / 10) {
+            return false;
+        }
+        parsed = parsed * 10 + digit;
+    }
+    return true;
+}
+
+inline bool IsIpv4Address(std::string_view value) {
+    std::size_t start = 0;
+    for (int part = 0; part < 4; ++part) {
+        const std::size_t end = value.find('.', start);
+        if ((part < 3 && end == std::string_view::npos) ||
+            (part == 3 && end != std::string_view::npos)) {
+            return false;
+        }
+        const std::size_t length = (end == std::string_view::npos ? value.size() : end) - start;
+        if (length == 0 || length > 3 || !ParseDecimal(value.substr(start, length), 255)) {
+            return false;
+        }
+        start = end == std::string_view::npos ? value.size() : end + 1;
+    }
+    return start == value.size();
+}
+
+inline bool IsRoutePrefix(std::string_view value) {
+    const std::size_t slash = value.find('/');
+    if (slash == std::string_view::npos || slash == 0 || slash + 1 >= value.size() ||
+        value.find('/', slash + 1) != std::string_view::npos) {
+        return false;
+    }
+    const std::string_view address = value.substr(0, slash);
+    const std::string_view prefix = value.substr(slash + 1);
+    if (address.find(':') == std::string_view::npos) {
+        return IsIpv4Address(address) && ParseDecimal(prefix, 32);
+    }
+    if (!ParseDecimal(prefix, 128)) {
+        return false;
+    }
+    bool has_colon = false;
+    for (const unsigned char character : address) {
+        if (character == ':') {
+            has_colon = true;
+        } else if (character != '.' && !std::isxdigit(character)) {
+            return false;
+        }
+    }
+    return has_colon;
+}
+
+inline bool AppendRouteExclusions(std::string_view value,
+                                  std::vector<std::string>& exclusions) {
+    std::size_t start = 0;
+    while (start <= value.size()) {
+        const std::size_t comma = value.find(',', start);
+        const std::size_t end = comma == std::string_view::npos ? value.size() : comma;
+        std::string_view item = value.substr(start, end - start);
+        while (!item.empty() && std::isspace(static_cast<unsigned char>(item.front()))) {
+            item.remove_prefix(1);
+        }
+        while (!item.empty() && std::isspace(static_cast<unsigned char>(item.back()))) {
+            item.remove_suffix(1);
+        }
+        if (!IsRoutePrefix(item)) {
+            return false;
+        }
+        const std::string prefix(item);
+        if (std::find(exclusions.begin(), exclusions.end(), prefix) == exclusions.end()) {
+            exclusions.push_back(prefix);
+        }
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        start = comma + 1;
+    }
+    return true;
+}
+
 inline std::string JsonString(std::string_view value) {
     std::string output;
     output.reserve(value.size() + 2);
@@ -164,6 +291,18 @@ inline std::string ProcessNameArray() {
     return output;
 }
 
+inline std::string JsonStringArray(const std::vector<std::string>& values) {
+    std::string output = "[";
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output += JsonString(values[index]);
+    }
+    output.push_back(']');
+    return output;
+}
+
 inline std::string BuildConfig(const Config& config) {
     const std::string processes = ProcessNameArray();
     std::ostringstream json;
@@ -185,7 +324,12 @@ inline std::string BuildConfig(const Config& config) {
     json << "  \"inbounds\": [{\"type\": \"tun\", \"tag\": \"tun-in\", "
          << "\"interface_name\": \"easy-net-wechat\", \"address\": [\"172.19.0.1/30\"], "
          << "\"mtu\": 1500, \"auto_route\": true, \"strict_route\": false, "
-         << "\"stack\": \"mixed\"}],\n"
+         << "\"stack\": " << JsonString(StackName(config.stack));
+    if (!config.route_exclude_addresses.empty()) {
+        json << ", \"route_exclude_address\": "
+             << JsonStringArray(config.route_exclude_addresses);
+    }
+    json << "}],\n"
          << "  \"outbounds\": [{\"type\": \"socks\", \"tag\": \"socks-out\", "
          << "\"server\": " << JsonString(config.proxy.host)
          << ", \"server_port\": " << config.proxy.port << ", \"version\": \"5\"";

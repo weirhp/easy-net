@@ -69,9 +69,13 @@ windivert\WinDivert64.sys         （仅 x64）
 .\easy-net-hook.exe --gui
 ```
 
-界面可以选择 ChatGPT、Antigravity IDE、微信 TUN、微信 WinDivert 或通用 Hook 模式，填写 SOCKS5 地址、程序路径、启动参数和可选 DNS。每次成功启动后会自动记录配置，之后可在左侧列表双击快捷启动，也可以删除单条记录或清空全部记录。
+界面左侧是图标形式的“快捷启动入口”，右侧是入口编辑器。选择 ChatGPT、Antigravity IDE、微信 TUN、微信 WinDivert 或通用 Hook 场景，填写入口名称和代理设置后，可以只保存，也可以“保存并启动”。再次修改同一个入口会原位更新，不会产生重复的启动历史；单击入口进行编辑，双击则按保存的设置直接启动。
 
-记录最多保留 30 条，保存在 `%LOCALAPPDATA%\EasyNetHook\launcher-history.tsv`。其中不保存代理用户名或密码。ChatGPT 使用隔离且可复用的用户目录；Antigravity 默认复用桌面版的用户目录和登录状态，也可以在界面中勾选“使用独立配置”。
+入口最多保留 30 个，保存在 `%LOCALAPPDATA%\EasyNetHook\launcher-entries.tsv`，不保存代理用户名或密码。新版第一次运行时会把旧的 `launcher-history.tsv` 自动迁移成快捷入口，同时保留旧文件作为备份。微信入口可以直接勾选“接管已经运行的微信”，不再需要手写 `--wechat-existing` 命令。
+
+“启动成功后关闭本窗口”默认开启。这里关闭的只是启动器界面，不会退出已经启动的 ChatGPT、Antigravity、微信或通用 Hook 目标进程：ChatGPT 的 Chromium 代理参数已由目标进程继承，普通程序的 Hook DLL 已注入，微信 TUN/WinDivert 与 Antigravity language server 监视器则是独立的后台进程。各场景在界面中会显示相应的限制、权限和关闭行为提示。若要连续编辑多个入口，可以取消该选项。
+
+ChatGPT 使用隔离且可复用的用户目录；Antigravity 默认复用桌面版的用户目录和登录状态，也可以在界面中勾选“使用独立配置”。
 
 ### 微信（TUN）
 

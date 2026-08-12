@@ -27,6 +27,13 @@ int wmain() {
     assert(with_udp_mode.front().mode == L"wechat");
     assert(with_udp_mode.front().udp_mode == L"proxy");
 
+    Entry existing_wechat = wechat;
+    existing_wechat.wechat_existing = true;
+    const auto existing_round_trip = easy_net::history::Parse(
+        easy_net::history::Serialize({existing_wechat}));
+    assert(existing_round_trip.size() == 1);
+    assert(existing_round_trip[0].wechat_existing);
+
     const auto legacy = easy_net::history::Parse(
         L"antigravity\tAntigravity IDE\tD:\\\\IDE.exe\t\t127.0.0.1:1082\t\t98\n");
     assert(legacy.size() == 1);
@@ -40,6 +47,19 @@ int wmain() {
     assert(updated.size() == 2);
     assert(updated[0].name == L"Renamed");
     assert(updated[0].last_used == L"101");
+
+    Entry edited = updated[1];
+    edited.name = L"Edited in place";
+    const std::size_t edited_index = easy_net::history::SaveEntry(updated, edited, 1);
+    assert(edited_index == 1);
+    assert(updated.size() == 2);
+    assert(updated[1].name == L"Edited in place");
+
+    Entry created = updated[0];
+    created.name = L"New shortcut";
+    const std::size_t created_index = easy_net::history::SaveEntry(updated, created);
+    assert(created_index == 0);
+    assert(updated.front().name == L"New shortcut");
 
     std::vector<Entry> limited;
     for (int index = 0; index < 5; ++index) {

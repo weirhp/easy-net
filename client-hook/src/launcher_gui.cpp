@@ -2,12 +2,14 @@
 
 #include <commctrl.h>
 #include <commdlg.h>
+#include <shellapi.h>
 
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
 #include <filesystem>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -32,8 +34,10 @@ struct GuiState {
     HINSTANCE instance = nullptr;
     HWND dialog = nullptr;
     std::wstring launcher_path;
-    std::filesystem::path history_path;
-    std::vector<easy_net::history::Entry> history;
+    std::filesystem::path entries_path;
+    std::vector<easy_net::history::Entry> entries;
+    std::size_t editing_index = std::numeric_limits<std::size_t>::max();
+    HIMAGELIST entry_images = nullptr;
     HFONT title_font = nullptr;
     bool updating = false;
 };
@@ -83,7 +87,7 @@ std::wstring QuoteArgument(const std::wstring& argument) {
     return quoted;
 }
 
-std::filesystem::path HistoryPath() {
+std::filesystem::path StoragePath(const wchar_t* filename) {
     const DWORD required = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
     if (required == 0) {
         return {};
@@ -95,7 +99,7 @@ std::filesystem::path HistoryPath() {
         return {};
     }
     local_app_data.resize(written);
-    return std::filesystem::path(local_app_data) / L"EasyNetHook" / L"launcher-history.tsv";
+    return std::filesystem::path(local_app_data) / L"EasyNetHook" / filename;
 }
 
 std::vector<easy_net::history::Entry> LoadHistory(const std::filesystem::path& path) {
@@ -132,21 +136,21 @@ std::vector<easy_net::history::Entry> LoadHistory(const std::filesystem::path& p
     return easy_net::history::Parse(text);
 }
 
-bool SaveHistory(const GuiState& state) {
-    if (state.history_path.empty()) {
+bool SaveEntries(const GuiState& state) {
+    if (state.entries_path.empty()) {
         return false;
     }
     std::error_code error;
-    std::filesystem::create_directories(state.history_path.parent_path(), error);
+    std::filesystem::create_directories(state.entries_path.parent_path(), error);
     if (error) {
         return false;
     }
-    HANDLE file = CreateFileW(state.history_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+    HANDLE file = CreateFileW(state.entries_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                               FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) {
         return false;
     }
-    const std::wstring content = easy_net::history::Serialize(state.history);
+    const std::wstring content = easy_net::history::Serialize(state.entries);
     constexpr wchar_t byte_order_mark = 0xfeff;
     DWORD written = 0;
     bool succeeded =
@@ -219,22 +223,66 @@ const wchar_t* ModeLabel(const std::wstring& mode) {
     return L"ChatGPT";
 }
 
-void RefreshHistory(GuiState& state) {
-    const HWND list = GetDlgItem(state.dialog, IDC_HISTORY);
+HICON EntryIcon(const easy_net::history::Entry& entry, bool& owned) {
+    owned = false;
+    if (!entry.path.empty()) {
+        SHFILEINFOW information{};
+        if (SHGetFileInfoW(entry.path.c_str(), 0, &information, sizeof(information),
+                           SHGFI_ICON | SHGFI_LARGEICON) != 0 &&
+            information.hIcon != nullptr) {
+            owned = true;
+            return information.hIcon;
+        }
+    }
+    if (entry.mode == kModeWeChat || entry.mode == kModeWeChatWinDivert) {
+        return LoadIconW(nullptr, IDI_SHIELD);
+    }
+    if (entry.mode == kModeChatGpt) {
+        return LoadIconW(nullptr, IDI_INFORMATION);
+    }
+    return LoadIconW(nullptr, IDI_APPLICATION);
+}
+
+void RefreshEntries(GuiState& state, std::size_t selected_index =
+                                             std::numeric_limits<std::size_t>::max()) {
+    const HWND list = GetDlgItem(state.dialog, IDC_ENTRIES);
     ListView_DeleteAllItems(list);
-    for (std::size_t index = 0; index < state.history.size(); ++index) {
-        const auto& entry = state.history[index];
+    if (state.entry_images != nullptr) {
+        ImageList_RemoveAll(state.entry_images);
+    }
+    for (std::size_t index = 0; index < state.entries.size(); ++index) {
+        const auto& entry = state.entries[index];
+        bool owned_icon = false;
+        HICON icon = EntryIcon(entry, owned_icon);
+        const int image_index = state.entry_images != nullptr && icon != nullptr
+                                    ? ImageList_AddIcon(state.entry_images, icon)
+                                    : -1;
+        if (owned_icon && icon != nullptr) {
+            DestroyIcon(icon);
+        }
         LVITEMW item{};
-        item.mask = LVIF_TEXT | LVIF_PARAM;
+        item.mask = LVIF_TEXT | LVIF_PARAM | LVIF_IMAGE;
         item.iItem = static_cast<int>(index);
         item.pszText = const_cast<wchar_t*>(entry.name.c_str());
         item.lParam = static_cast<LPARAM>(index);
+        item.iImage = image_index;
         const int row = ListView_InsertItem(list, &item);
         ListView_SetItemText(list, row, 1,
                              const_cast<wchar_t*>(ModeLabel(entry.mode)));
         ListView_SetItemText(list, row, 2, const_cast<wchar_t*>(entry.proxy.c_str()));
-        ListView_SetItemText(list, row, 3,
-                             const_cast<wchar_t*>(entry.last_used.c_str()));
+        UINT columns[]{1, 2};
+        LVTILEINFOW tile{};
+        tile.cbSize = sizeof(tile);
+        tile.iItem = row;
+        tile.cColumns = static_cast<UINT>(std::size(columns));
+        tile.puColumns = columns;
+        ListView_SetTileInfo(list, &tile);
+    }
+    if (selected_index < state.entries.size()) {
+        ListView_SetItemState(list, static_cast<int>(selected_index),
+                              LVIS_SELECTED | LVIS_FOCUSED,
+                              LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(list, static_cast<int>(selected_index), FALSE);
     }
 }
 
@@ -244,52 +292,62 @@ void UpdateModeUi(GuiState& state) {
     const bool chatgpt = mode == 0;
     const bool antigravity = mode == 1;
     const bool wechat = mode == 2 || mode == 3;
-    EnableWindow(GetDlgItem(state.dialog, IDC_PATH), !chatgpt);
-    EnableWindow(GetDlgItem(state.dialog, IDC_BROWSE), !chatgpt);
-    EnableWindow(GetDlgItem(state.dialog, IDC_ARGUMENTS), !chatgpt);
+    const bool existing_wechat = wechat &&
+        IsDlgButtonChecked(state.dialog, IDC_WECHAT_EXISTING) == BST_CHECKED;
+    EnableWindow(GetDlgItem(state.dialog, IDC_PATH), !chatgpt && !existing_wechat);
+    EnableWindow(GetDlgItem(state.dialog, IDC_BROWSE), !chatgpt && !existing_wechat);
+    EnableWindow(GetDlgItem(state.dialog, IDC_ARGUMENTS), !chatgpt && !existing_wechat);
     EnableWindow(GetDlgItem(state.dialog, IDC_DNS), !chatgpt && mode != 3);
     ShowWindow(GetDlgItem(state.dialog, IDC_ISOLATED), antigravity ? SW_SHOW : SW_HIDE);
     EnableWindow(GetDlgItem(state.dialog, IDC_ISOLATED), antigravity);
+    ShowWindow(GetDlgItem(state.dialog, IDC_WECHAT_EXISTING), wechat ? SW_SHOW : SW_HIDE);
+    EnableWindow(GetDlgItem(state.dialog, IDC_WECHAT_EXISTING), wechat);
     ShowWindow(GetDlgItem(state.dialog, IDC_UDP_LABEL), wechat ? SW_SHOW : SW_HIDE);
     ShowWindow(GetDlgItem(state.dialog, IDC_UDP_MODE), wechat ? SW_SHOW : SW_HIDE);
     EnableWindow(GetDlgItem(state.dialog, IDC_UDP_MODE), wechat);
     if (chatgpt) {
         SetControlText(state.dialog, IDC_PATH, L"");
         SetControlText(state.dialog, IDC_HINT,
-                       L"隔离配置启动；ChatGPT 界面与 codex.exe 后端都通过代理。\r\n"
-                       L"无需 DLL 注入。首次启动可能需要稍候。");
+                       L"ChatGPT 使用独立配置，界面与 codex.exe 后端都通过代理。首次需登录。\r\n"
+                       L"启动成功后可关闭 Easy-Net Hook，不影响 ChatGPT 使用。");
     } else if (mode == 1) {
         SetControlText(state.dialog, IDC_HINT,
-                       L"默认复用桌面版登录状态；启动前请完全退出 Antigravity。\r\n"
-                       L"独立配置可并行运行，但需要单独登录；language server 有兜底 Hook。");
+                       L"默认复用桌面版登录状态；启动前请完全退出 Antigravity。独立配置需单独登录。\r\n"
+                       L"启动后可关闭本窗口，language server 监视器会在后台继续运行。");
     } else if (mode == 2) {
         SetControlText(state.dialog, IDC_HINT,
-                       L"使用按进程 TUN 代理微信 TCP/UDP；需要管理员权限和 x64-TUN 包。\r\n"
-                       L"程序路径可留空自动查找；启动前请完全退出微信。 ");
+                       existing_wechat
+                           ? L"将 TUN 接管到已运行微信；只有新连接生效。需要管理员权限。\r\n关闭本窗口不影响代理，微信退出后 TUN 自动停止。"
+                           : L"通过 TUN 启动微信并代理 TCP/UDP；需要管理员权限，资源占用较高。\r\n程序路径可留空自动查找；启动前请完全退出微信。");
     } else if (mode == 3) {
         SetControlText(state.dialog, IDC_HINT,
-                       L"使用 WinDivert 按进程代理微信 TCP/UDP；不创建 TUN 网卡，通常 CPU 更低。\r\n"
-                       L"需要管理员权限和 x64-TUN 包；DNS 保持 Windows 系统设置。");
+                       existing_wechat
+                           ? L"推荐：接管已运行微信的新连接，WinDivert 守护器会自动重启并检测代理。\r\n关闭本窗口不影响代理；微信退出后守护器自动停止。"
+                           : L"推荐：通过 WinDivert 启动微信，代理 TCP/UDP，通常比 TUN 更省资源。\r\n需要管理员权限；DNS 保持 Windows 系统设置。");
     } else {
         SetControlText(state.dialog, IDC_HINT,
-                       L"适合普通 Win32 程序。通过 DLL Hook 代理 TCP；可选自定义 DNS。\r\n"
-                       L"受保护进程或特殊网络栈可能不兼容。");
+                       L"适合普通 Win32 程序：DLL Hook 代理 TCP，外部 UDP 默认阻断。\r\n"
+                       L"启动后可关闭本窗口；受保护进程或特殊网络栈可能不兼容。");
     }
 }
 
 void LoadEntry(GuiState& state, std::size_t index) {
-    if (index >= state.history.size()) {
+    if (index >= state.entries.size()) {
         return;
     }
     state.updating = true;
-    const auto& entry = state.history[index];
+    state.editing_index = index;
+    const auto& entry = state.entries[index];
     SendDlgItemMessageW(state.dialog, IDC_MODE, CB_SETCURSEL, ModeIndex(entry.mode), 0);
+    SetControlText(state.dialog, IDC_ENTRY_NAME, entry.name);
     SetControlText(state.dialog, IDC_PROXY, entry.proxy);
     SetControlText(state.dialog, IDC_PATH, entry.path);
     SetControlText(state.dialog, IDC_ARGUMENTS, entry.arguments);
     SetControlText(state.dialog, IDC_DNS, entry.dns);
     CheckDlgButton(state.dialog, IDC_ISOLATED,
                    entry.isolated ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(state.dialog, IDC_WECHAT_EXISTING,
+                   entry.wechat_existing ? BST_CHECKED : BST_UNCHECKED);
     int udp_index = 0;
     if (entry.udp_mode == L"proxy") udp_index = 1;
     else if (entry.udp_mode == L"block") udp_index = 2;
@@ -299,11 +357,62 @@ void LoadEntry(GuiState& state, std::size_t index) {
     if (entry.mode != kModeChatGpt) {
         SetControlText(state.dialog, IDC_PATH, entry.path);
     }
+    SetControlText(state.dialog, IDC_ENTRY_STATE, L"正在编辑：" + entry.name);
+    SetControlText(state.dialog, IDC_STATUS, L"修改后可保存或直接启动");
+    EnableWindow(GetDlgItem(state.dialog, IDC_REMOVE_ENTRY), TRUE);
     state.updating = false;
 }
 
-int SelectedHistoryIndex(HWND dialog) {
-    return ListView_GetNextItem(GetDlgItem(dialog, IDC_HISTORY), -1, LVNI_SELECTED);
+int SelectedEntryIndex(HWND dialog) {
+    return ListView_GetNextItem(GetDlgItem(dialog, IDC_ENTRIES), -1, LVNI_SELECTED);
+}
+
+std::wstring DefaultEntryName(int mode) {
+    if (mode == 1) {
+        return L"Antigravity IDE";
+    }
+    if (mode == 2) {
+        return L"微信 TUN";
+    }
+    if (mode == 3) {
+        return L"微信 WinDivert";
+    }
+    if (mode == 4) {
+        return L"我的程序";
+    }
+    return L"ChatGPT";
+}
+
+bool IsDefaultEntryName(const std::wstring& name) {
+    for (int mode = 0; mode < 5; ++mode) {
+        if (name == DefaultEntryName(mode)) {
+            return true;
+        }
+    }
+    return name.empty();
+}
+
+void NewEntry(GuiState& state) {
+    state.updating = true;
+    state.editing_index = std::numeric_limits<std::size_t>::max();
+    ListView_SetItemState(GetDlgItem(state.dialog, IDC_ENTRIES), -1, 0,
+                          LVIS_SELECTED | LVIS_FOCUSED);
+    SendDlgItemMessageW(state.dialog, IDC_MODE, CB_SETCURSEL, 0, 0);
+    SendDlgItemMessageW(state.dialog, IDC_UDP_MODE, CB_SETCURSEL, 0, 0);
+    SetControlText(state.dialog, IDC_ENTRY_NAME, DefaultEntryName(0));
+    SetControlText(state.dialog, IDC_PROXY, L"127.0.0.1:1082");
+    SetControlText(state.dialog, IDC_PATH, L"");
+    SetControlText(state.dialog, IDC_ARGUMENTS, L"");
+    SetControlText(state.dialog, IDC_DNS, L"");
+    CheckDlgButton(state.dialog, IDC_ISOLATED, BST_UNCHECKED);
+    CheckDlgButton(state.dialog, IDC_WECHAT_EXISTING, BST_UNCHECKED);
+    EnableWindow(GetDlgItem(state.dialog, IDC_REMOVE_ENTRY), FALSE);
+    SetControlText(state.dialog, IDC_ENTRY_STATE, L"新入口将在首次保存或启动后出现在左侧");
+    SetControlText(state.dialog, IDC_STATUS, L"正在新建入口");
+    UpdateModeUi(state);
+    state.updating = false;
+    SetFocus(GetDlgItem(state.dialog, IDC_ENTRY_NAME));
+    SendDlgItemMessageW(state.dialog, IDC_ENTRY_NAME, EM_SETSEL, 0, -1);
 }
 
 bool BrowseForExecutable(GuiState& state) {
@@ -333,6 +442,7 @@ easy_net::history::Entry CurrentEntry(GuiState& state) {
                                                            0, 0));
     easy_net::history::Entry entry;
     entry.mode = ModeValue(mode);
+    entry.name = ControlText(state.dialog, IDC_ENTRY_NAME);
     entry.path = ControlText(state.dialog, IDC_PATH);
     entry.arguments = ControlText(state.dialog, IDC_ARGUMENTS);
     entry.proxy = ControlText(state.dialog, IDC_PROXY);
@@ -342,6 +452,13 @@ easy_net::history::Entry CurrentEntry(GuiState& state) {
     }
     entry.isolated = mode == 1 &&
                      IsDlgButtonChecked(state.dialog, IDC_ISOLATED) == BST_CHECKED;
+    entry.wechat_existing = (mode == 2 || mode == 3) &&
+                            IsDlgButtonChecked(state.dialog, IDC_WECHAT_EXISTING) ==
+                                BST_CHECKED;
+    if (entry.wechat_existing) {
+        entry.path.clear();
+        entry.arguments.clear();
+    }
     if (mode == 2 || mode == 3) {
         const int udp_mode = static_cast<int>(SendDlgItemMessageW(
             state.dialog, IDC_UDP_MODE, CB_GETCURSEL, 0, 0));
@@ -349,16 +466,10 @@ easy_net::history::Entry CurrentEntry(GuiState& state) {
         entry.udp_mode = udp_mode >= 0 && udp_mode < 4 ? values[udp_mode] : L"auto";
     }
     entry.last_used = CurrentTimestamp();
-    if (mode == 0) {
-        entry.name = L"ChatGPT";
-    } else if (mode == 1) {
-        entry.name = L"Antigravity IDE";
-    } else if (mode == 2 || mode == 3) {
-        entry.name = mode == 3 ? L"微信 WinDivert" : L"微信";
-    } else if (!entry.path.empty()) {
+    if (entry.name.empty() && mode == 4 && !entry.path.empty()) {
         entry.name = std::filesystem::path(entry.path).stem().wstring();
-    } else {
-        entry.name = L"未命名程序";
+    } else if (entry.name.empty()) {
+        entry.name = DefaultEntryName(mode);
     }
     return entry;
 }
@@ -405,18 +516,19 @@ std::wstring BuildLauncherCommand(const GuiState& state,
             command += L" -- " + entry.arguments;
         }
     } else if (IsWeChatMode(entry.mode)) {
-        command += L" --wechat --tun-udp " +
+        command += entry.wechat_existing ? L" --wechat-existing" : L" --wechat";
+        command += L" --tun-udp " +
                    QuoteArgument(entry.udp_mode.empty() ? L"auto" : entry.udp_mode);
         if (entry.mode == kModeWeChatWinDivert) {
             command += L" --wechat-backend windivert";
         }
-        if (!entry.path.empty()) {
+        if (!entry.wechat_existing && !entry.path.empty()) {
             command += L" --wechat-path " + QuoteArgument(entry.path);
         }
         if (!entry.dns.empty()) {
             command += L" --dns " + QuoteArgument(entry.dns);
         }
-        if (!entry.arguments.empty()) {
+        if (!entry.wechat_existing && !entry.arguments.empty()) {
             command += L" -- " + entry.arguments;
         }
     } else {
@@ -431,11 +543,70 @@ std::wstring BuildLauncherCommand(const GuiState& state,
     return command;
 }
 
+bool SaveCurrentEntry(GuiState& state, bool show_feedback) {
+    auto entry = CurrentEntry(state);
+    if (!ValidateEntry(state.dialog, entry)) {
+        return false;
+    }
+    const auto previous_entries = state.entries;
+    const std::size_t previous_index = state.editing_index;
+    const std::size_t saved_index = easy_net::history::SaveEntry(
+        state.entries, std::move(entry), state.editing_index);
+    state.editing_index = saved_index;
+    if (!SaveEntries(state)) {
+        state.entries = previous_entries;
+        state.editing_index = previous_index;
+        MessageBoxW(state.dialog,
+                    L"入口无法保存到本机配置目录。请检查磁盘空间和目录权限。",
+                    L"保存失败", MB_OK | MB_ICONERROR);
+        SetControlText(state.dialog, IDC_STATUS, L"入口保存失败");
+        return false;
+    }
+    RefreshEntries(state, saved_index);
+    if (show_feedback) {
+        SetControlText(state.dialog, IDC_ENTRY_STATE,
+                       L"已保存：" + state.entries[saved_index].name);
+        SetControlText(state.dialog, IDC_STATUS, L"入口已保存，下次可直接双击启动");
+    }
+    return true;
+}
+
+std::wstring LaunchSuccessText(const easy_net::history::Entry& entry) {
+    if (entry.mode == kModeChatGpt) {
+        return L"ChatGPT 已启动。现在可以关闭 Easy-Net Hook，不影响 ChatGPT 使用。";
+    }
+    if (entry.mode == kModeAntigravity) {
+        return L"Antigravity 已启动。关闭本窗口不会停止 IDE 或后台 language server 监视器。";
+    }
+    if (entry.mode == kModeWeChatWinDivert) {
+        return L"微信 WinDivert 代理已启动。关闭本窗口不影响代理，微信退出后守护器自动停止。";
+    }
+    if (entry.mode == kModeWeChat) {
+        return L"微信 TUN 代理已启动。关闭本窗口不影响代理，微信退出后 TUN 自动停止。";
+    }
+    return L"程序已通过代理启动。关闭本窗口不影响已注入的目标进程。";
+}
+
 bool LaunchEntry(GuiState& state) {
     auto entry = CurrentEntry(state);
     if (!ValidateEntry(state.dialog, entry)) {
         return false;
     }
+    const auto previous_entries = state.entries;
+    const std::size_t previous_index = state.editing_index;
+    const std::size_t saved_index = easy_net::history::SaveEntry(
+        state.entries, entry, state.editing_index);
+    state.editing_index = saved_index;
+    if (!SaveEntries(state)) {
+        state.entries = previous_entries;
+        state.editing_index = previous_index;
+        MessageBoxW(state.dialog,
+                    L"入口无法保存，因此尚未启动程序。请检查磁盘空间和目录权限。",
+                    L"保存失败", MB_OK | MB_ICONERROR);
+        SetControlText(state.dialog, IDC_STATUS, L"入口保存失败，尚未启动");
+        return false;
+    }
+    RefreshEntries(state, saved_index);
     std::wstring command_line = BuildLauncherCommand(state, entry);
     std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
     mutable_command.push_back(L'\0');
@@ -467,9 +638,11 @@ bool LaunchEntry(GuiState& state) {
             return false;
         }
         if (exit_code == 6 && IsWeChatMode(entry.mode)) {
-            MessageBoxW(state.dialog,
-                        L"检测到微信仍在运行。请从托盘或任务管理器完全退出后重试；如需接管已运行微信，请使用命令行 --wechat-existing。",
-                        L"请先退出微信", MB_OK | MB_ICONWARNING);
+            const wchar_t* message = entry.wechat_existing
+                ? L"没有检测到可接管的微信进程。请先正常打开微信，然后重试。"
+                : L"检测到微信仍在运行。请勾选“接管已经运行的微信”，或从托盘和任务管理器完全退出微信后重试。";
+            MessageBoxW(state.dialog, message, L"无法启动微信代理",
+                        MB_OK | MB_ICONWARNING);
             SetControlText(state.dialog, IDC_STATUS, L"等待退出微信");
             return false;
         }
@@ -480,22 +653,24 @@ bool LaunchEntry(GuiState& state) {
         SetControlText(state.dialog, IDC_STATUS, L"启动失败");
         return false;
     }
-    easy_net::history::Upsert(state.history, std::move(entry));
-    SaveHistory(state);
-    RefreshHistory(state);
-    SetControlText(state.dialog, IDC_STATUS, L"已通过代理启动");
+    const std::wstring success = LaunchSuccessText(entry);
+    SetControlText(state.dialog, IDC_ENTRY_STATE, L"已启动：" + entry.name);
+    SetControlText(state.dialog, IDC_STATUS, success);
+    if (IsDlgButtonChecked(state.dialog, IDC_CLOSE_AFTER_LAUNCH) == BST_CHECKED) {
+        EndDialog(state.dialog, 0);
+    }
     return true;
 }
 
-void InitializeList(HWND list) {
-    ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER |
-                                               LVS_EX_LABELTIP);
+void InitializeList(GuiState& state) {
+    const HWND list = GetDlgItem(state.dialog, IDC_ENTRIES);
+    ListView_SetExtendedListViewStyle(list, LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP |
+                                               LVS_EX_BORDERSELECT);
     struct Column {
         const wchar_t* name;
         int width;
     };
-    constexpr Column columns[]{{L"名称", 105}, {L"模式", 78}, {L"代理", 98},
-                               {L"最近使用", 120}};
+    constexpr Column columns[]{{L"名称", 150}, {L"模式", 105}, {L"代理", 145}};
     for (int index = 0; index < static_cast<int>(std::size(columns)); ++index) {
         LVCOLUMNW column{};
         column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
@@ -504,6 +679,20 @@ void InitializeList(HWND list) {
         column.iSubItem = index;
         ListView_InsertColumn(list, index, &column);
     }
+    state.entry_images = ImageList_Create(40, 40, ILC_COLOR32 | ILC_MASK, 8, 8);
+    if (state.entry_images != nullptr) {
+        ListView_SetImageList(list, state.entry_images, LVSIL_NORMAL);
+    }
+    ListView_SetView(list, LV_VIEW_TILE);
+    LVTILEVIEWINFO tile_view{};
+    tile_view.cbSize = sizeof(tile_view);
+    tile_view.dwMask = LVTVIM_TILESIZE | LVTVIM_COLUMNS | LVTVIM_LABELMARGIN;
+    tile_view.dwFlags = LVTVIF_FIXEDSIZE;
+    tile_view.sizeTile.cx = 282;
+    tile_view.sizeTile.cy = 62;
+    tile_view.cLines = 2;
+    tile_view.rcLabelMargin = {8, 5, 6, 5};
+    ListView_SetTileViewInfo(list, &tile_view);
 }
 
 void CenterDialog(HWND dialog) {
@@ -524,8 +713,18 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
         auto* state = reinterpret_cast<GuiState*>(long_parameter);
         state->dialog = dialog;
         SetWindowLongPtrW(dialog, DWLP_USER, reinterpret_cast<LONG_PTR>(state));
-        state->history_path = HistoryPath();
-        state->history = LoadHistory(state->history_path);
+        state->entries_path = StoragePath(L"launcher-entries.tsv");
+        std::error_code storage_error;
+        const bool entries_exist = !state->entries_path.empty() &&
+                                   std::filesystem::exists(state->entries_path, storage_error);
+        state->entries = LoadHistory(state->entries_path);
+        if (!entries_exist) {
+            const auto legacy_path = StoragePath(L"launcher-history.tsv");
+            state->entries = LoadHistory(legacy_path);
+            if (!state->entries.empty()) {
+                SaveEntries(*state);
+            }
+        }
 
         SendDlgItemMessageW(dialog, IDC_MODE, CB_ADDSTRING, 0,
                             reinterpret_cast<LPARAM>(L"ChatGPT（推荐）"));
@@ -544,9 +743,15 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
                                 reinterpret_cast<LPARAM>(label));
         }
         SendDlgItemMessageW(dialog, IDC_UDP_MODE, CB_SETCURSEL, 0, 0);
-        InitializeList(GetDlgItem(dialog, IDC_HISTORY));
-        RefreshHistory(*state);
-        UpdateModeUi(*state);
+        CheckDlgButton(dialog, IDC_CLOSE_AFTER_LAUNCH, BST_CHECKED);
+        InitializeList(*state);
+        RefreshEntries(*state, state->entries.empty() ?
+                                    std::numeric_limits<std::size_t>::max() : 0);
+        if (state->entries.empty()) {
+            NewEntry(*state);
+        } else {
+            LoadEntry(*state, 0);
+        }
         state->title_font = CreateFontW(-22, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
@@ -569,33 +774,57 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
             const int identifier = LOWORD(word_parameter);
             const int notification = HIWORD(word_parameter);
             if (identifier == IDC_MODE && notification == CBN_SELCHANGE && !state->updating) {
+                const std::wstring current_name = ControlText(dialog, IDC_ENTRY_NAME);
+                if (IsDefaultEntryName(current_name)) {
+                    const int mode = static_cast<int>(SendDlgItemMessageW(
+                        dialog, IDC_MODE, CB_GETCURSEL, 0, 0));
+                    SetControlText(dialog, IDC_ENTRY_NAME, DefaultEntryName(mode));
+                }
+                UpdateModeUi(*state);
+                return TRUE;
+            }
+            if (identifier == IDC_WECHAT_EXISTING && notification == BN_CLICKED) {
                 UpdateModeUi(*state);
                 return TRUE;
             }
             if (identifier == IDC_BROWSE && notification == BN_CLICKED) {
-                BrowseForExecutable(*state);
+                if (BrowseForExecutable(*state)) {
+                    const std::wstring name = ControlText(dialog, IDC_ENTRY_NAME);
+                    if (name.empty() || name == DefaultEntryName(4)) {
+                        SetControlText(dialog, IDC_ENTRY_NAME,
+                                       std::filesystem::path(ControlText(dialog, IDC_PATH))
+                                           .stem().wstring());
+                    }
+                }
+                return TRUE;
+            }
+            if (identifier == IDC_NEW_ENTRY && notification == BN_CLICKED) {
+                NewEntry(*state);
+                return TRUE;
+            }
+            if (identifier == IDC_SAVE_ENTRY && notification == BN_CLICKED) {
+                SaveCurrentEntry(*state, true);
                 return TRUE;
             }
             if (identifier == IDC_LAUNCH && notification == BN_CLICKED) {
                 LaunchEntry(*state);
                 return TRUE;
             }
-            if (identifier == IDC_REMOVE_HISTORY && notification == BN_CLICKED) {
-                const int selected = SelectedHistoryIndex(dialog);
-                if (selected >= 0 && static_cast<std::size_t>(selected) < state->history.size()) {
-                    state->history.erase(state->history.begin() + selected);
-                    SaveHistory(*state);
-                    RefreshHistory(*state);
-                }
-                return TRUE;
-            }
-            if (identifier == IDC_CLEAR_HISTORY && notification == BN_CLICKED) {
-                if (!state->history.empty() &&
-                    MessageBoxW(dialog, L"确定清空全部启动记录吗？", L"清空记录",
+            if (identifier == IDC_REMOVE_ENTRY && notification == BN_CLICKED) {
+                const int selected = SelectedEntryIndex(dialog);
+                if (selected >= 0 && static_cast<std::size_t>(selected) < state->entries.size() &&
+                    MessageBoxW(dialog, L"确定删除这个快捷启动入口吗？", L"删除入口",
                                 MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) {
-                    state->history.clear();
-                    SaveHistory(*state);
-                    RefreshHistory(*state);
+                    const auto previous_entries = state->entries;
+                    state->entries.erase(state->entries.begin() + selected);
+                    if (!SaveEntries(*state)) {
+                        state->entries = previous_entries;
+                        MessageBoxW(dialog, L"无法保存删除结果，请检查配置目录权限。",
+                                    L"删除失败", MB_OK | MB_ICONERROR);
+                        return TRUE;
+                    }
+                    RefreshEntries(*state);
+                    NewEntry(*state);
                 }
                 return TRUE;
             }
@@ -607,15 +836,15 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
         }
         case WM_NOTIFY: {
             const auto* header = reinterpret_cast<NMHDR*>(long_parameter);
-            if (header->idFrom == IDC_HISTORY && header->code == LVN_ITEMCHANGED) {
+            if (header->idFrom == IDC_ENTRIES && header->code == LVN_ITEMCHANGED) {
                 const auto* changed = reinterpret_cast<NMLISTVIEW*>(long_parameter);
                 if ((changed->uNewState & LVIS_SELECTED) != 0 && changed->iItem >= 0) {
                     LoadEntry(*state, static_cast<std::size_t>(changed->iItem));
                 }
                 return TRUE;
             }
-            if (header->idFrom == IDC_HISTORY && header->code == NM_DBLCLK) {
-                const int selected = SelectedHistoryIndex(dialog);
+            if (header->idFrom == IDC_ENTRIES && header->code == NM_DBLCLK) {
+                const int selected = SelectedEntryIndex(dialog);
                 if (selected >= 0) {
                     LoadEntry(*state, static_cast<std::size_t>(selected));
                     LaunchEntry(*state);
@@ -628,6 +857,11 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
             EndDialog(dialog, 0);
             return TRUE;
         case WM_DESTROY:
+            if (state->entry_images != nullptr) {
+                ListView_SetImageList(GetDlgItem(dialog, IDC_ENTRIES), nullptr, LVSIL_NORMAL);
+                ImageList_Destroy(state->entry_images);
+                state->entry_images = nullptr;
+            }
             if (state->title_font != nullptr) {
                 DeleteObject(state->title_font);
                 state->title_font = nullptr;

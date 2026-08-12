@@ -271,7 +271,7 @@ void RefreshEntries(GuiState& state, std::size_t selected_index =
                              const_cast<wchar_t*>(ModeLabel(entry.mode)));
         ListView_SetItemText(list, row, 2, const_cast<wchar_t*>(entry.proxy.c_str()));
         UINT columns[]{1, 2};
-        LVTILEINFOW tile{};
+        LVTILEINFO tile{};
         tile.cbSize = sizeof(tile);
         tile.iItem = row;
         tile.cColumns = static_cast<UINT>(std::size(columns));

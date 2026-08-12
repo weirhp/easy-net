@@ -679,7 +679,7 @@ void InitializeList(GuiState& state) {
         column.iSubItem = index;
         ListView_InsertColumn(list, index, &column);
     }
-    state.entry_images = ImageList_Create(40, 40, ILC_COLOR32 | ILC_MASK, 8, 8);
+    state.entry_images = ImageList_Create(28, 28, ILC_COLOR32 | ILC_MASK, 8, 8);
     if (state.entry_images != nullptr) {
         ListView_SetImageList(list, state.entry_images, LVSIL_NORMAL);
     }
@@ -688,10 +688,10 @@ void InitializeList(GuiState& state) {
     tile_view.cbSize = sizeof(tile_view);
     tile_view.dwMask = LVTVIM_TILESIZE | LVTVIM_COLUMNS | LVTVIM_LABELMARGIN;
     tile_view.dwFlags = LVTVIF_FIXEDSIZE;
-    tile_view.sizeTile.cx = 282;
-    tile_view.sizeTile.cy = 62;
+    tile_view.sizeTile.cx = 178;
+    tile_view.sizeTile.cy = 52;
     tile_view.cLines = 2;
-    tile_view.rcLabelMargin = {8, 5, 6, 5};
+    tile_view.rcLabelMargin = {6, 3, 4, 3};
     ListView_SetTileViewInfo(list, &tile_view);
 }
 
@@ -752,7 +752,7 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
         } else {
             LoadEntry(*state, 0);
         }
-        state->title_font = CreateFontW(-22, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+        state->title_font = CreateFontW(-18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
         if (state->title_font != nullptr) {

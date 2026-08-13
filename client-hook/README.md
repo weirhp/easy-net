@@ -315,7 +315,7 @@ Antigravity 的 Electron 主进程、network service、renderer 和 GPU 进程�
 
 ### Cursor
 
-Cursor 使用专用的 Electron/Chromium 原生代理模式，不向 Cursor 注入 DLL：
+Cursor 使用混合代理模式：Electron/Chromium 页面走原生 SOCKS5；AI、Opus 和扩展宿主所在的无沙箱 `node.mojom.NodeService` 通过 Hook 兜底。renderer、GPU、crashpad 等沙箱进程不会注入，因此不需要开启系统全局 TUN：
 
 ```powershell
 .\easy-net-hook.exe `
@@ -325,7 +325,7 @@ Cursor 使用专用的 Electron/Chromium 原生代理模式，不向 Cursor 注�
   --detach
 ```
 
-程序会优先使用当前运行的 `Cursor.exe` 路径，并查找常见的用户级和系统级安装目录；便携版或自定义安装目录首次使用时通过界面“浏览”或 `--cursor-path` 指定。默认复用 `%APPDATA%\Cursor`，因此保留正常登录、扩展和设置。Chromium URL 使用 SOCKS5、代理端解析域名并禁用 QUIC；扩展宿主和其他子进程会继承 HTTP/HTTPS、WebSocket、`ALL_PROXY` 与 `NO_PROXY` 环境变量。
+程序会优先使用当前运行的 `Cursor.exe` 路径，并查找常见的用户级和系统级安装目录；便携版或自定义安装目录首次使用时通过界面“浏览”或 `--cursor-path` 指定。默认复用 `%APPDATA%\Cursor`，因此保留正常登录、扩展和设置。Chromium URL 使用 SOCKS5、代理端解析域名并禁用 QUIC；扩展宿主和其他子进程会继承 HTTP/HTTPS、WebSocket、`ALL_PROXY` 与 `NO_PROXY` 环境变量。由于部分 Cursor AI 请求会绕过这些环境变量，启动器还会从进程创建阶段只向无沙箱 Node service 递归加载 `easy-net-hook.dll`，从而在首次建连前覆盖这部分 TCP。
 
 如果已有 Cursor 不是由相同 Easy-Net 代理启动，默认模式会停止并提示先完全退出，避免新窗口被转交给原有直连实例。由当前版本 Easy-Net 启动后，后台生命周期标记会一直跟随 Cursor 主进程；之后使用相同代理再次点击入口，可以直接打开新窗口。若要与当前桌面 Cursor 并行运行，可使用独立配置：
 
@@ -487,7 +487,7 @@ DNS 查询是目标进程到指定 DNS 服务的普通 UDP/TCP 流量，会绕�
 
 ### 进程与兼容性
 
-- `--chatgpt-app` 和 `--cursor` 使用原生代理参数及继承环境，不注入 DLL。Cursor 默认复用正常登录配置，并用轻量生命周期标记安全识别相同代理的多窗口启动。`--antigravity` 默认复用正常登录配置，同样不向 Electron 进程注入，但会监视其后代并只 Hook `language_server_windows_x64.exe`，兜底处理忽略代理环境变量的外部 TCP。
+- `--chatgpt-app` 使用原生代理参数及继承环境，不注入 DLL。`--cursor` 同时使用原生代理和定向 Hook：根进程负责把 Hook 传递给 Chromium network service 与无沙箱 Node service，renderer、GPU、crashpad 等沙箱进程不会加载；Cursor 默认复用正常登录配置，并用轻量生命周期标记安全识别相同代理的多窗口启动。`--antigravity` 默认复用正常登录配置，同样不向 Electron 进程注入，但会监视其后代并只 Hook `language_server_windows_x64.exe`，兜底处理忽略代理环境变量的外部 TCP。
 - `--wechat` 和 `--wechat-existing` 不注入 DLL，可使用 TUN 或 WinDivert 捕获流量并按进程名分流；它们要求 x64 和管理员权限。接管模式只保证新建连接进入新路由。
 - `--pid` 采用标准远程 `LoadLibraryW` 注入，只影响注入后新建的连接；已经建立的连接仍保持原路径。
 - Chromium/Electron 子进程采用网络服务定向注入；其 renderer、GPU、crashpad 和非网络 utility 子进程不会加载 Hook。`--no-children` 会连网络服务也一并跳过，因此不适合需要代理 Chromium/Electron 流量的场景。
@@ -514,7 +514,7 @@ easy-net-hook.exe
   ├─ GUI + 本地历史记录（快捷启动常用配置）
   ├─ --chatgpt-app（原生 SOCKS5 参数 + 后端代理环境）
   ├─ --antigravity（默认配置/可选隔离配置 + IDE 原生代理 + LS 兜底 Hook）
-  ├─ --cursor（默认配置/可选隔离配置 + 原生 SOCKS5 + 同代理多窗口识别）
+  ├─ --cursor（原生 SOCKS5 + Node service 定向 Hook + 同代理多窗口识别）
   ├─ --wechat / --wechat-existing（可选 sing-box TUN + 微信进程规则 + UDP 能力检测）
   ├─ DetourCreateProcessWithDllExW（启动普通新进程）
   ├─ --appx + IApplicationActivationManager（激活打包应用）

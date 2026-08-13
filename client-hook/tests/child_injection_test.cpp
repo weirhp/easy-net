@@ -19,5 +19,10 @@ int main() {
         L"ChatGPT.exe --type=utility --utility-sub-type=network.mojom.NetworkService"));
     assert(easy_net::child::ShouldInject(
         "ChatGPT.exe --utility-sub-type=network.mojom.NetworkService --type=utility"));
+    assert(easy_net::child::ShouldInject(
+        L"Cursor.exe --type=utility --utility-sub-type=node.mojom.NodeService "
+        L"--service-sandbox-type=none"));
+    assert(easy_net::child::ShouldInject(
+        "Cursor.exe --utility-sub-type=node.mojom.NodeService --type=utility"));
     return 0;
 }

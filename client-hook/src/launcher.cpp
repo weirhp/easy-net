@@ -2042,6 +2042,34 @@ int LaunchCursor(const Options& options) {
         return 4;
     }
 
+    std::optional<std::string> detours_dll_path;
+    if (!reuse_managed_instance) {
+        const auto module_directory = CurrentModuleDirectory();
+        if (!module_directory) {
+            std::wcerr << L"Cannot locate the launcher directory (error " << GetLastError()
+                       << L").\n";
+            return 3;
+        }
+        const std::filesystem::path dll_path =
+            std::filesystem::path(*module_directory) / L"easy-net-hook.dll";
+        if (!std::filesystem::is_regular_file(dll_path)) {
+            std::wcerr << L"Cursor Node service fallback DLL not found: " << dll_path.wstring()
+                       << L"\n";
+            return 3;
+        }
+        detours_dll_path = ToDetoursPath(dll_path.wstring());
+        if (!detours_dll_path) {
+            std::wcerr << L"The DLL path cannot be represented by the current Windows ANSI "
+                          L"code page. Move the package to an ASCII-only path.\n";
+            return 3;
+        }
+        if (!SetConfigEnvironment(options)) {
+            std::wcerr << L"Cannot configure the Cursor Node service fallback (error "
+                       << GetLastError() << L").\n";
+            return 4;
+        }
+    }
+
     std::vector<std::wstring> command{executable->wstring()};
     if (profile) {
         command.push_back(L"--user-data-dir=" + profile->wstring());
@@ -2062,8 +2090,15 @@ int LaunchCursor(const Options& options) {
                                      ? CREATE_DEFAULT_ERROR_MODE
                                      : CREATE_DEFAULT_ERROR_MODE | CREATE_SUSPENDED;
     const std::wstring working_directory = executable->parent_path().wstring();
-    if (!CreateProcessW(executable->c_str(), mutable_command.data(), nullptr, nullptr, FALSE,
-                        creation_flags, nullptr, working_directory.c_str(), &startup, &process)) {
+    const BOOL created = reuse_managed_instance
+                             ? CreateProcessW(executable->c_str(), mutable_command.data(), nullptr,
+                                              nullptr, FALSE, creation_flags, nullptr,
+                                              working_directory.c_str(), &startup, &process)
+                             : DetourCreateProcessWithDllExW(
+                                   executable->c_str(), mutable_command.data(), nullptr, nullptr,
+                                   TRUE, creation_flags, nullptr, working_directory.c_str(),
+                                   &startup, &process, detours_dll_path->c_str(), nullptr);
+    if (!created) {
         std::wcerr << L"Cannot start Cursor (error " << GetLastError() << L").\n";
         return 5;
     }
@@ -2088,7 +2123,8 @@ int LaunchCursor(const Options& options) {
     CloseHandle(process.hThread);
     std::wcout << (reuse_managed_instance ? L"Opened another Cursor window through "
                                           : L"Opened Cursor through ")
-               << L"native SOCKS5 " << options.proxy << L" (PID " << process.dwProcessId
+               << L"native SOCKS5 plus Node service fallback " << options.proxy << L" (PID "
+               << process.dwProcessId
                << L", profile " << (options.cursor_isolated ? L"isolated" : L"default")
                << L").\n";
     if (options.detach || reuse_managed_instance) {

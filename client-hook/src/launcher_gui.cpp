@@ -328,8 +328,8 @@ void UpdateModeUi(GuiState& state) {
                        L"启动后可关闭本窗口，language server 监视器会在后台继续运行。");
     } else if (mode == 2) {
         SetControlText(state.dialog, IDC_HINT,
-                       L"复用正常登录配置；首次需完全退出直连 Cursor。相同代理可继续开新窗口。\r\n"
-                       L"独立配置可与现有 Cursor 并行，但需要单独登录。");
+                       L"Chromium 原生代理 + AI/扩展 Node 服务 Hook，Opus 无需全局 TUN。\r\n"
+                       L"首次需完全退出直连 Cursor；相同代理可继续开新窗口。");
     } else if (mode == 3) {
         SetControlText(state.dialog, IDC_HINT,
                        existing_wechat
@@ -612,7 +612,7 @@ std::wstring LaunchSuccessText(const easy_net::history::Entry& entry) {
         return L"Antigravity 已启动。关闭本窗口不会停止 IDE 或后台 language server 监视器。";
     }
     if (entry.mode == kModeCursor) {
-        return L"Cursor 已通过代理启动。关闭本窗口不影响 Cursor 使用。";
+        return L"Cursor 已启动；页面和 AI/扩展服务均已接管。关闭本窗口不影响使用。";
     }
     if (entry.mode == kModeWeChatWinDivert) {
         return L"微信 WinDivert 代理已启动。关闭本窗口不影响代理，微信退出后守护器自动停止。";

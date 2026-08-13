@@ -29,6 +29,7 @@
 #include "config_ipc.h"
 #include "dns_resolver.h"
 #include "launcher_gui.h"
+#include "socks5_health.h"
 #include "tun_config.h"
 #include "wechat_supervisor.h"
 #include "windivert_profile.h"
@@ -628,23 +629,12 @@ std::optional<std::filesystem::path> FindCursorExecutable(const Options& options
     return std::nullopt;
 }
 
-constexpr const wchar_t* kWeChatProcessNames[]{
-    L"WeChat.exe",        L"Weixin.exe",       L"WeChatApp.exe",
-    L"WeChatAppEx.exe",   L"WeChatBrowser.exe", L"WeChatOCR.exe",
-    L"WeChatPlayer.exe",  L"WeChatUtility.exe", L"WeChatWeb.exe",
-    L"WeChatUpdate.exe",  L"xwechat.exe",
-};
-
-bool IsWeChatProcessName(const wchar_t* name) {
-    for (const wchar_t* known : kWeChatProcessNames) {
-        if (_wcsicmp(name, known) == 0) {
-            return true;
-        }
-    }
-    return false;
+bool IsWeChatMainProcessName(const wchar_t* name) {
+    return _wcsicmp(name, L"Weixin.exe") == 0 || _wcsicmp(name, L"WeChat.exe") == 0 ||
+           _wcsicmp(name, L"xwechat.exe") == 0;
 }
 
-bool AnyWeChatProcessRunning() {
+bool AnyWeChatMainProcessRunning() {
     ScopedHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
     if (snapshot.get() == INVALID_HANDLE_VALUE) {
         return false;
@@ -655,7 +645,7 @@ bool AnyWeChatProcessRunning() {
         return false;
     }
     do {
-        if (IsWeChatProcessName(entry.szExeFile)) {
+        if (IsWeChatMainProcessName(entry.szExeFile)) {
             return true;
         }
     } while (Process32NextW(snapshot.get(), &entry));
@@ -678,9 +668,7 @@ std::optional<RunningWeChatProcess> FindRunningWeChatProcess() {
         return std::nullopt;
     }
     do {
-        if (_wcsicmp(entry.szExeFile, L"Weixin.exe") == 0 ||
-            _wcsicmp(entry.szExeFile, L"WeChat.exe") == 0 ||
-            _wcsicmp(entry.szExeFile, L"xwechat.exe") == 0) {
+        if (IsWeChatMainProcessName(entry.szExeFile)) {
             return RunningWeChatProcess{entry.th32ProcessID, entry.szExeFile};
         }
     } while (Process32NextW(snapshot.get(), &entry));
@@ -846,14 +834,16 @@ int RelaunchElevated() {
         return 5;
     }
     ScopedHandle elevated(execute.hProcess);
-    const DWORD wait = WaitForSingleObject(elevated.get(), 15000);
+    // Preserve the elevated launcher's actual result. The GUI waits for this hidden worker
+    // asynchronously, so a slow UAC prompt no longer needs to be reported as success.
+    const DWORD wait = WaitForSingleObject(elevated.get(), INFINITE);
     if (wait == WAIT_OBJECT_0) {
         DWORD exit_code = 5;
         if (GetExitCodeProcess(elevated.get(), &exit_code)) {
             return static_cast<int>(exit_code);
         }
     }
-    return 0;
+    return 5;
 }
 
 bool SendAll(SOCKET socket, const std::uint8_t* data, std::size_t size) {
@@ -967,88 +957,7 @@ bool Socks5SupportsUdp(const Options& options, const easy_net::tun::Endpoint& en
 }
 
 bool Socks5EndpointResponsive(const easy_net::tun::Endpoint& endpoint) {
-    WSADATA winsock{};
-    if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
-        return false;
-    }
-    sockaddr_storage address{};
-    int address_length = 0;
-    int family = AF_UNSPEC;
-    if (InetPtonA(AF_INET, endpoint.host.c_str(),
-                  &reinterpret_cast<sockaddr_in*>(&address)->sin_addr) == 1) {
-        auto* ipv4 = reinterpret_cast<sockaddr_in*>(&address);
-        ipv4->sin_family = AF_INET;
-        ipv4->sin_port = htons(endpoint.port);
-        address_length = sizeof(*ipv4);
-        family = AF_INET;
-    } else if (InetPtonA(AF_INET6, endpoint.host.c_str(),
-                         &reinterpret_cast<sockaddr_in6*>(&address)->sin6_addr) == 1) {
-        auto* ipv6 = reinterpret_cast<sockaddr_in6*>(&address);
-        ipv6->sin6_family = AF_INET6;
-        ipv6->sin6_port = htons(endpoint.port);
-        address_length = sizeof(*ipv6);
-        family = AF_INET6;
-    } else {
-        WSACleanup();
-        return false;
-    }
-    const SOCKET socket = ::socket(family, SOCK_STREAM, IPPROTO_TCP);
-    if (socket == INVALID_SOCKET) {
-        WSACleanup();
-        return false;
-    }
-    bool healthy = false;
-    do {
-        u_long nonblocking = 1;
-        if (ioctlsocket(socket, FIONBIO, &nonblocking) != 0) {
-            break;
-        }
-        const int connected = connect(socket, reinterpret_cast<const sockaddr*>(&address),
-                                      address_length);
-        if (connected == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK) {
-            break;
-        }
-        if (connected == SOCKET_ERROR) {
-            fd_set writable;
-            fd_set failed;
-            FD_ZERO(&writable);
-            FD_ZERO(&failed);
-            FD_SET(socket, &writable);
-            FD_SET(socket, &failed);
-            timeval timeout{1, 0};
-            if (select(0, nullptr, &writable, &failed, &timeout) <= 0 ||
-                FD_ISSET(socket, &failed)) {
-                break;
-            }
-            int socket_error = 0;
-            int socket_error_size = sizeof(socket_error);
-            if (getsockopt(socket, SOL_SOCKET, SO_ERROR,
-                           reinterpret_cast<char*>(&socket_error), &socket_error_size) != 0 ||
-                socket_error != 0) {
-                break;
-            }
-        }
-        nonblocking = 0;
-        if (ioctlsocket(socket, FIONBIO, &nonblocking) != 0) {
-            break;
-        }
-        const DWORD timeout = 1000;
-        setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO,
-                   reinterpret_cast<const char*>(&timeout), sizeof(timeout));
-        setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO,
-                   reinterpret_cast<const char*>(&timeout), sizeof(timeout));
-        // Advertising both standard methods is enough to verify that a SOCKS5
-        // server is responsive without putting credentials on the supervisor's
-        // command line or creating an external target connection.
-        const std::uint8_t greeting[]{5, 2, 0, 2};
-        std::uint8_t reply[2]{};
-        healthy = SendAll(socket, greeting, sizeof(greeting)) &&
-                  ReceiveAll(socket, reply, sizeof(reply)) && reply[0] == 5 &&
-                  reply[1] != 0xff;
-    } while (false);
-    closesocket(socket);
-    WSACleanup();
-    return healthy;
+    return easy_net::socks5_health::Responsive(endpoint);
 }
 
 bool WriteUtf8File(const std::filesystem::path& path, const std::string& content) {
@@ -1282,7 +1191,7 @@ int WatchWeChat(DWORD root_process_id, DWORD engine_process_id, HANDLE log_pipe 
     constexpr unsigned int kHealthIntervalTicks = 40;
     unsigned int health_ticks = kHealthIntervalTicks;
     for (;;) {
-        if (AnyWeChatProcessRunning()) {
+        if (AnyWeChatMainProcessRunning()) {
             empty_checks = 0;
         } else if (++empty_checks >= 12) {
             if (engine.get() != nullptr &&
@@ -1313,12 +1222,12 @@ int WatchWeChat(DWORD root_process_id, DWORD engine_process_id, HANDLE log_pipe 
             const unsigned int backoff_seconds =
                 1U << std::min(restart_failures, 5U);
             for (unsigned int elapsed = 0; elapsed < backoff_seconds * 4; ++elapsed) {
-                if (!AnyWeChatProcessRunning()) {
+                if (!AnyWeChatMainProcessRunning()) {
                     break;
                 }
                 Sleep(250);
             }
-            if (!AnyWeChatProcessRunning()) {
+            if (!AnyWeChatMainProcessRunning()) {
                 continue;
             }
             if (!start_windivert()) {
@@ -1383,7 +1292,8 @@ int LaunchWeChat(const Options& options) {
             std::wcerr << L"WeChat.exe or Weixin.exe was not found. Use --wechat-path PATH.\n";
             return 3;
         }
-        if (AnyWeChatProcessRunning()) {
+        // Orphaned browser/update helpers must not prevent a fresh main WeChat instance.
+        if (AnyWeChatMainProcessRunning()) {
             std::wcerr << L"WeChat is already running. Use --wechat-existing to attach TUN "
                           L"routing, or exit it completely before using --wechat.\n";
             return 6;

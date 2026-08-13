@@ -47,11 +47,22 @@ Config g_config;
 char g_dll_path[MAX_PATH]{};
 SRWLOCK g_socket_state_lock = SRWLOCK_INIT;
 std::unordered_set<SOCKET> g_nonblocking_sockets;
+struct RelayContext {
+    std::atomic<long> references{2};
+    std::atomic<SOCKET> listener{INVALID_SOCKET};
+    sockaddr_storage destination{};
+    int destination_length = 0;
+};
+
+void ReleaseRelayContext(RelayContext* context);
+void CloseRelayListener(RelayContext* context);
+
 struct ProxiedPeer {
     sockaddr_storage original{};
     int original_length = 0;
     sockaddr_storage relay{};
     int relay_length = 0;
+    RelayContext* relay_context = nullptr;
 };
 SRWLOCK g_proxied_peer_lock = SRWLOCK_INIT;
 std::unordered_map<SOCKET, ProxiedPeer> g_proxied_peers;
@@ -70,6 +81,7 @@ decltype(&WSAConnect) RealWSAConnect = WSAConnect;
 decltype(&sendto) RealSendTo = sendto;
 decltype(&WSASendTo) RealWSASendTo = WSASendTo;
 decltype(&send) RealSend = send;
+decltype(&WSASend) RealWSASend = WSASend;
 decltype(&recv) RealRecv = recv;
 decltype(&recvfrom) RealRecvFrom = recvfrom;
 decltype(&ioctlsocket) RealIoctlSocket = ioctlsocket;
@@ -924,15 +936,31 @@ void RememberProxiedPeer(SOCKET socket,
                          const sockaddr* original,
                          int original_length,
                          const sockaddr* relay,
-                         int relay_length) {
+                         int relay_length,
+                         RelayContext* relay_context) {
     ProxiedPeer peer;
     peer.original_length = (std::min)(original_length, static_cast<int>(sizeof(peer.original)));
     peer.relay_length = (std::min)(relay_length, static_cast<int>(sizeof(peer.relay)));
     std::memcpy(&peer.original, original, static_cast<std::size_t>(peer.original_length));
     std::memcpy(&peer.relay, relay, static_cast<std::size_t>(peer.relay_length));
+    peer.relay_context = relay_context;
+    if (relay_context != nullptr) {
+        relay_context->references.fetch_add(1);
+    }
     AcquireSRWLockExclusive(&g_proxied_peer_lock);
-    g_proxied_peers[socket] = peer;
+    const auto existing = g_proxied_peers.find(socket);
+    RelayContext* previous_context = nullptr;
+    if (existing != g_proxied_peers.end()) {
+        previous_context = existing->second.relay_context;
+        existing->second = peer;
+    } else {
+        g_proxied_peers.emplace(socket, peer);
+    }
     ReleaseSRWLockExclusive(&g_proxied_peer_lock);
+    if (previous_context != nullptr) {
+        CloseRelayListener(previous_context);
+        ReleaseRelayContext(previous_context);
+    }
 }
 
 bool FindProxiedPeer(SOCKET socket, ProxiedPeer& peer) {
@@ -947,17 +975,19 @@ bool FindProxiedPeer(SOCKET socket, ProxiedPeer& peer) {
 }
 
 void ForgetProxiedPeer(SOCKET socket) {
+    RelayContext* context = nullptr;
     AcquireSRWLockExclusive(&g_proxied_peer_lock);
-    g_proxied_peers.erase(socket);
+    const auto iterator = g_proxied_peers.find(socket);
+    if (iterator != g_proxied_peers.end()) {
+        context = iterator->second.relay_context;
+        g_proxied_peers.erase(iterator);
+    }
     ReleaseSRWLockExclusive(&g_proxied_peer_lock);
+    if (context != nullptr) {
+        CloseRelayListener(context);
+        ReleaseRelayContext(context);
+    }
 }
-
-struct RelayContext {
-    std::atomic<long> references{2};
-    std::atomic<SOCKET> listener{INVALID_SOCKET};
-    sockaddr_storage destination{};
-    int destination_length = 0;
-};
 
 struct RelayTicket {
     RelayContext* context = nullptr;
@@ -1154,7 +1184,8 @@ int ConnectThroughRelay(SOCKET socket, const sockaddr* destination, int destinat
         return SOCKET_ERROR;
     }
     RememberProxiedPeer(socket, destination, destination_length,
-                        reinterpret_cast<const sockaddr*>(&ticket.endpoint), ticket.endpoint_length);
+                        reinterpret_cast<const sockaddr*>(&ticket.endpoint), ticket.endpoint_length,
+                        ticket.context);
     const int result = RealConnect(socket, reinterpret_cast<const sockaddr*>(&ticket.endpoint),
                                    ticket.endpoint_length);
     const int error = result == SOCKET_ERROR ? WSAGetLastError() : 0;
@@ -1205,8 +1236,10 @@ int ProxyConnect(SOCKET socket, const sockaddr* destination, int destination_len
     if (RealConnect(socket, reinterpret_cast<const sockaddr*>(&proxy_for_socket), proxy_length) != 0) {
         const int error = WSAGetLastError();
         if (error == WSAEWOULDBLOCK || error == WSAEINPROGRESS || error == WSAEALREADY) {
-            SetSocketNonblocking(socket, false);
-            RealCloseSocket(socket);
+            // The socket was already nonblocking before the hook observed it (for example,
+            // when attaching to an existing process). Never destroy a caller-owned handle.
+            // Report the unsupported state and let the caller decide whether to close/recreate it.
+            SetSocketNonblocking(socket, true);
             return FailSocket(WSAEOPNOTSUPP);
         }
         WSASetLastError(error);
@@ -1246,6 +1279,41 @@ bool ShouldBlockDatagram(SOCKET socket, const sockaddr* destination, int destina
     const Config& config = GetConfig();
     return config.enabled && !config.allow_udp_direct && SocketType(socket) == SOCK_DGRAM &&
            !IsLoopback(destination, destination_length);
+}
+
+bool ShouldBlockConnectedDatagram(SOCKET socket) {
+    const Config& config = GetConfig();
+    if (!config.enabled || config.allow_udp_direct || SocketType(socket) != SOCK_DGRAM) {
+        return false;
+    }
+    sockaddr_storage destination{};
+    int destination_length = sizeof(destination);
+    if (RealGetPeerName(socket, reinterpret_cast<sockaddr*>(&destination), &destination_length) != 0) {
+        // A connected UDP send cannot succeed without a peer. Fail closed so an existing
+        // pre-injection socket cannot leak traffic while its state is uncertain.
+        return true;
+    }
+    return !IsLoopback(reinterpret_cast<const sockaddr*>(&destination), destination_length);
+}
+
+int WSAAPI HookedSend(SOCKET socket, const char* buffer, int length, int flags) {
+    if (ShouldBlockConnectedDatagram(socket)) {
+        return FailSocket(WSAEOPNOTSUPP);
+    }
+    return RealSend(socket, buffer, length, flags);
+}
+
+int WSAAPI HookedWSASend(SOCKET socket,
+                         LPWSABUF buffers,
+                         DWORD buffer_count,
+                         LPDWORD bytes_sent,
+                         DWORD flags,
+                         LPWSAOVERLAPPED overlapped,
+                         LPWSAOVERLAPPED_COMPLETION_ROUTINE completion) {
+    if (ShouldBlockConnectedDatagram(socket)) {
+        return FailSocket(WSAEOPNOTSUPP);
+    }
+    return RealWSASend(socket, buffers, buffer_count, bytes_sent, flags, overlapped, completion);
 }
 
 int WSAAPI HookedSendTo(SOCKET socket,
@@ -1307,7 +1375,8 @@ BOOL PASCAL HookedConnectEx(SOCKET socket,
         return FALSE;
     }
     RememberProxiedPeer(socket, destination, destination_length,
-                        reinterpret_cast<const sockaddr*>(&ticket.endpoint), ticket.endpoint_length);
+                        reinterpret_cast<const sockaddr*>(&ticket.endpoint), ticket.endpoint_length,
+                        ticket.context);
     const BOOL result = original(socket, reinterpret_cast<const sockaddr*>(&ticket.endpoint),
                                  ticket.endpoint_length, send_buffer, send_length,
                                  bytes_sent, overlapped);
@@ -1409,8 +1478,15 @@ int WSAAPI HookedWSAAsyncSelect(SOCKET socket, HWND window, unsigned int message
 
 int WSAAPI HookedCloseSocket(SOCKET socket) {
     SetSocketNonblocking(socket, false);
-    ForgetProxiedPeer(socket);
-    return RealCloseSocket(socket);
+    const int result = RealCloseSocket(socket);
+    const int error = result == SOCKET_ERROR ? WSAGetLastError() : 0;
+    if (result == 0) {
+        ForgetProxiedPeer(socket);
+    }
+    if (result == SOCKET_ERROR) {
+        WSASetLastError(error);
+    }
+    return result;
 }
 
 int WSAAPI HookedGetPeerName(SOCKET socket, sockaddr* address, int* address_length) {
@@ -1545,7 +1621,7 @@ Function ResolveExtensionFunction(const GUID& identifier, int socket_type, int p
     return result;
 }
 
-unsigned __stdcall InstallExtensionHooks(void*) {
+DWORD WINAPI InstallExtensionHooks(void*) {
     RealConnectEx = ResolveExtensionFunction<LPFN_CONNECTEX>(WSAID_CONNECTEX,
                                                              SOCK_STREAM, IPPROTO_TCP);
     RealWSASendMsg = ResolveExtensionFunction<LPFN_WSASENDMSG>(WSAID_WSASENDMSG,
@@ -1576,12 +1652,13 @@ unsigned __stdcall InstallExtensionHooks(void*) {
 
 void AttachHooks() {
     DetourTransactionBegin();
-    std::vector<HANDLE> threads;
-    UpdateProcessThreadsForDetour(threads);
+    DetourUpdateThread(GetCurrentThread());
     DetourAttach(reinterpret_cast<PVOID*>(&RealConnect), reinterpret_cast<PVOID>(HookedConnect));
     DetourAttach(reinterpret_cast<PVOID*>(&RealWSAConnect), reinterpret_cast<PVOID>(HookedWSAConnect));
     DetourAttach(reinterpret_cast<PVOID*>(&RealSendTo), reinterpret_cast<PVOID>(HookedSendTo));
     DetourAttach(reinterpret_cast<PVOID*>(&RealWSASendTo), reinterpret_cast<PVOID>(HookedWSASendTo));
+    DetourAttach(reinterpret_cast<PVOID*>(&RealSend), reinterpret_cast<PVOID>(HookedSend));
+    DetourAttach(reinterpret_cast<PVOID*>(&RealWSASend), reinterpret_cast<PVOID>(HookedWSASend));
     DetourAttach(reinterpret_cast<PVOID*>(&RealWSAIoctl), reinterpret_cast<PVOID>(HookedWSAIoctl));
     DetourAttach(reinterpret_cast<PVOID*>(&RealIoctlSocket), reinterpret_cast<PVOID>(HookedIoctlSocket));
     DetourAttach(reinterpret_cast<PVOID*>(&RealWSAEventSelect), reinterpret_cast<PVOID>(HookedWSAEventSelect));
@@ -1597,7 +1674,6 @@ void AttachHooks() {
     DetourAttach(reinterpret_cast<PVOID*>(&RealCreateProcessW), reinterpret_cast<PVOID>(HookedCreateProcessW));
     DetourAttach(reinterpret_cast<PVOID*>(&RealCreateProcessA), reinterpret_cast<PVOID>(HookedCreateProcessA));
     const LONG error = DetourTransactionCommit();
-    CloseDetourThreadHandles(threads);
     if (error != NO_ERROR) {
         OutputDebugStringW(L"[Easy-Net Hook] Failed to attach one or more hooks.\n");
     }
@@ -1605,8 +1681,7 @@ void AttachHooks() {
 
 void DetachHooks() {
     DetourTransactionBegin();
-    std::vector<HANDLE> threads;
-    UpdateProcessThreadsForDetour(threads);
+    DetourUpdateThread(GetCurrentThread());
     if (g_connect_ex_hook_attached.load() && RealConnectEx != nullptr) {
         DetourDetach(reinterpret_cast<PVOID*>(&RealConnectEx), reinterpret_cast<PVOID>(HookedConnectEx));
     }
@@ -1617,6 +1692,8 @@ void DetachHooks() {
     DetourDetach(reinterpret_cast<PVOID*>(&RealWSAConnect), reinterpret_cast<PVOID>(HookedWSAConnect));
     DetourDetach(reinterpret_cast<PVOID*>(&RealSendTo), reinterpret_cast<PVOID>(HookedSendTo));
     DetourDetach(reinterpret_cast<PVOID*>(&RealWSASendTo), reinterpret_cast<PVOID>(HookedWSASendTo));
+    DetourDetach(reinterpret_cast<PVOID*>(&RealSend), reinterpret_cast<PVOID>(HookedSend));
+    DetourDetach(reinterpret_cast<PVOID*>(&RealWSASend), reinterpret_cast<PVOID>(HookedWSASend));
     DetourDetach(reinterpret_cast<PVOID*>(&RealWSAIoctl), reinterpret_cast<PVOID>(HookedWSAIoctl));
     DetourDetach(reinterpret_cast<PVOID*>(&RealIoctlSocket), reinterpret_cast<PVOID>(HookedIoctlSocket));
     DetourDetach(reinterpret_cast<PVOID*>(&RealWSAEventSelect), reinterpret_cast<PVOID>(HookedWSAEventSelect));
@@ -1632,12 +1709,11 @@ void DetachHooks() {
     DetourDetach(reinterpret_cast<PVOID*>(&RealCreateProcessW), reinterpret_cast<PVOID>(HookedCreateProcessW));
     DetourDetach(reinterpret_cast<PVOID*>(&RealCreateProcessA), reinterpret_cast<PVOID>(HookedCreateProcessA));
     DetourTransactionCommit();
-    CloseDetourThreadHandles(threads);
 }
 
 }  // namespace
 
-BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
+BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
     if (DetourIsHelperProcess()) {
         return TRUE;
     }
@@ -1647,13 +1723,14 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
         GetModuleFileNameA(module, g_dll_path, static_cast<DWORD>(std::size(g_dll_path)));
         GetConfig();
         AttachHooks();
-        const auto extension_thread_value = _beginthreadex(nullptr, 0, InstallExtensionHooks,
-                                                           nullptr, 0, nullptr);
-        const HANDLE extension_thread = reinterpret_cast<HANDLE>(extension_thread_value);
+        // CreateThread will not execute the entry point until DLL initialization completes.
+        // Avoid invoking CRT thread startup while the loader lock is held.
+        const HANDLE extension_thread =
+            CreateThread(nullptr, 0, InstallExtensionHooks, nullptr, 0, nullptr);
         if (extension_thread != nullptr) {
             CloseHandle(extension_thread);
         }
-    } else if (reason == DLL_PROCESS_DETACH) {
+    } else if (reason == DLL_PROCESS_DETACH && reserved == nullptr) {
         DetachHooks();
     }
     return TRUE;

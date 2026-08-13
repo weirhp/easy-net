@@ -120,6 +120,7 @@ add_executable(easy_net_hook_launcher
     src/launcher_gui.cpp
     src/launcher_gui.h
     src/resource.h
+    src/socks5_health.h
     src/tun_config.h
     src/wechat_supervisor.h
     src/windivert_profile.h
@@ -222,6 +223,15 @@ target_compile_options(windivert_profile_test PRIVATE /W4 /permissive- /EHsc /UN
 set_property(TARGET windivert_profile_test PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_test(NAME windivert_profile_test COMMAND windivert_profile_test)
+
+add_executable(socks5_health_test tests/socks5_health_test.cpp src/socks5_health.h src/tun_config.h)
+target_compile_features(socks5_health_test PRIVATE cxx_std_20)
+target_compile_definitions(socks5_health_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(socks5_health_test PRIVATE /W4 /permissive- /EHsc /UNDEBUG)
+target_link_libraries(socks5_health_test PRIVATE ws2_32)
+set_property(TARGET socks5_health_test PROPERTY
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_test(NAME socks5_health_test COMMAND socks5_health_test)
 
 add_executable(wechat_supervisor_test
     tests/wechat_supervisor_test.cpp

@@ -146,6 +146,9 @@ enable_testing()
 add_test(NAME launcher_help_test COMMAND easy_net_hook_launcher --help)
 set_tests_properties(launcher_help_test PROPERTIES
     PASS_REGULAR_EXPRESSION "wechat-existing")
+add_test(NAME launcher_cursor_help_test COMMAND easy_net_hook_launcher --help)
+set_tests_properties(launcher_cursor_help_test PROPERTIES
+    PASS_REGULAR_EXPRESSION "cursor-isolated")
 
 add_executable(socks5_protocol_test tests/socks5_protocol_test.cpp src/socks5_protocol.h)
 target_compile_features(socks5_protocol_test PRIVATE cxx_std_20)

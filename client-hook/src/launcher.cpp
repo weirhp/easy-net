@@ -64,12 +64,15 @@ struct Options {
     bool detach = false;
     bool antigravity = false;
     bool antigravity_isolated = false;
+    bool cursor = false;
+    bool cursor_isolated = false;
     bool chatgpt_app = false;
     bool chatgpt_web = false;
     bool wechat = false;
     bool wechat_existing = false;
     bool tun_debug_log = false;
     std::wstring antigravity_path;
+    std::wstring cursor_path;
     std::wstring browser_path;
     std::wstring wechat_path;
     std::wstring tun_engine_path;
@@ -92,6 +95,7 @@ void PrintUsage() {
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 [--dns DNS] [options] --pid PID\n\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 [--dns DNS] [options] --appx AUMID\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --antigravity [options] [-- app-args...]\n"
+        << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --cursor [options] [-- app-args...]\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --chatgpt-app [options]\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --chatgpt-web [options]\n\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --wechat [options] [-- app-args...]\n"
@@ -108,6 +112,9 @@ void PrintUsage() {
         << L"  --antigravity          Open Antigravity IDE and its language server through SOCKS5\n"
         << L"  --antigravity-path P   Antigravity IDE executable (optional)\n"
         << L"  --antigravity-isolated Use a separate profile instead of the normal login state\n"
+        << L"  --cursor               Open Cursor through native Chromium SOCKS5\n"
+        << L"  --cursor-path PATH     Cursor.exe executable (optional, auto-detected)\n"
+        << L"  --cursor-isolated      Use a separate Cursor profile instead of normal login state\n"
         << L"  --chatgpt-app          Open the installed ChatGPT app with native Chromium SOCKS5\n"
         << L"  --chatgpt-web          Open ChatGPT in an isolated Edge/Chrome SOCKS5 session\n"
         << L"  --browser-path PATH    Browser executable for --chatgpt-web (optional)\n"
@@ -140,7 +147,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
         } else if (argument == L"--proxy" || argument == L"--username" ||
                    argument == L"--password" || argument == L"--dns" ||
                    argument == L"--pid" || argument == L"--browser-path" ||
-                   argument == L"--antigravity-path" || argument == L"--wechat-path" ||
+                   argument == L"--antigravity-path" || argument == L"--cursor-path" ||
+                   argument == L"--wechat-path" ||
                    argument == L"--tun-engine" || argument == L"--windivert-engine" ||
                    argument == L"--wechat-backend" || argument == L"--tun-udp" ||
                    argument == L"--tun-stack" || argument == L"--tun-bypass" ||
@@ -161,6 +169,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
                 options.browser_path = argv[index];
             } else if (argument == L"--antigravity-path") {
                 options.antigravity_path = argv[index];
+            } else if (argument == L"--cursor-path") {
+                options.cursor_path = argv[index];
             } else if (argument == L"--wechat-path") {
                 options.wechat_path = argv[index];
             } else if (argument == L"--tun-engine") {
@@ -212,6 +222,10 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
             options.antigravity = true;
         } else if (argument == L"--antigravity-isolated") {
             options.antigravity_isolated = true;
+        } else if (argument == L"--cursor") {
+            options.cursor = true;
+        } else if (argument == L"--cursor-isolated") {
+            options.cursor_isolated = true;
         } else if (argument == L"--chatgpt-app") {
             options.chatgpt_app = true;
         } else if (argument == L"--chatgpt-web") {
@@ -238,17 +252,18 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
         std::wcerr << L"--proxy is required.\n";
         return false;
     }
-    const int target_count = ((!options.command.empty() && !options.antigravity && !options.wechat) ? 1 : 0) +
+    const int target_count = ((!options.command.empty() && !options.antigravity && !options.cursor && !options.wechat) ? 1 : 0) +
                               (options.process_id.has_value() ? 1 : 0) +
                               (!options.app_user_model_id.empty() ? 1 : 0) +
                               (options.antigravity ? 1 : 0) +
+                              (options.cursor ? 1 : 0) +
                               (options.chatgpt_app ? 1 : 0) +
                               (options.chatgpt_web ? 1 : 0) +
                               (options.wechat ? 1 : 0);
     if (target_count != 1) {
         std::wcerr << L"Specify exactly one target: a command after --, --pid PID, "
                       L"--appx AUMID, --antigravity, --chatgpt-app, --chatgpt-web, --wechat, "
-                      L"or --wechat-existing.\n";
+                      L"--cursor, or --wechat-existing.\n";
         return false;
     }
     if (!options.browser_path.empty() && !options.chatgpt_web) {
@@ -261,6 +276,14 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
     }
     if (options.antigravity_isolated && !options.antigravity) {
         std::wcerr << L"--antigravity-isolated can only be used with --antigravity.\n";
+        return false;
+    }
+    if (!options.cursor_path.empty() && !options.cursor) {
+        std::wcerr << L"--cursor-path can only be used with --cursor.\n";
+        return false;
+    }
+    if (options.cursor_isolated && !options.cursor) {
+        std::wcerr << L"--cursor-isolated can only be used with --cursor.\n";
         return false;
     }
     if (!options.wechat_path.empty() && !options.wechat) {
@@ -559,6 +582,43 @@ std::optional<std::filesystem::path> FindAntigravityExecutable(const Options& op
     }
     if (program_files_x86) {
         add_candidates(*program_files_x86);
+    }
+    for (const auto& candidate : candidates) {
+        if (std::filesystem::is_regular_file(candidate)) {
+            return candidate;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> FindCursorExecutable(const Options& options) {
+    if (!options.cursor_path.empty()) {
+        const std::filesystem::path configured(options.cursor_path);
+        if (std::filesystem::is_regular_file(configured)) {
+            return configured;
+        }
+        return std::nullopt;
+    }
+    if (const auto running = FindRunningExecutable(L"Cursor.exe")) {
+        return running;
+    }
+
+    std::vector<std::filesystem::path> candidates;
+    const auto local_app_data = EnvironmentValue(L"LOCALAPPDATA");
+    const auto program_files = EnvironmentValue(L"ProgramFiles");
+    const auto program_files_x86 = EnvironmentValue(L"ProgramFiles(x86)");
+    if (local_app_data) {
+        candidates.emplace_back(std::filesystem::path(*local_app_data) /
+                                L"Programs/cursor/Cursor.exe");
+        candidates.emplace_back(std::filesystem::path(*local_app_data) /
+                                L"Programs/Cursor/Cursor.exe");
+    }
+    if (program_files) {
+        candidates.emplace_back(std::filesystem::path(*program_files) / L"Cursor/Cursor.exe");
+    }
+    if (program_files_x86) {
+        candidates.emplace_back(std::filesystem::path(*program_files_x86) /
+                                L"Cursor/Cursor.exe");
     }
     for (const auto& candidate : candidates) {
         if (std::filesystem::is_regular_file(candidate)) {
@@ -1667,6 +1727,71 @@ bool StartAntigravityWatcher(DWORD process_id, const Options& options) {
     return true;
 }
 
+std::wstring CursorWatcherReadyEventName(DWORD process_id) {
+    return L"Local\\EasyNetHook_CursorWatcher_" + std::to_wstring(process_id);
+}
+
+std::wstring CursorManagedEventName(const Options& options) {
+    if (options.cursor_isolated) {
+        return L"Local\\EasyNetHook_Cursor_Isolated_" +
+               easy_net::browser::ProfileKey(options.proxy);
+    }
+    return L"Local\\EasyNetHook_Cursor_Default";
+}
+
+std::wstring CursorProxyEventName(const std::wstring& proxy) {
+    return L"Local\\EasyNetHook_Cursor_DefaultProxy_" +
+           easy_net::browser::ProfileKey(proxy);
+}
+
+bool NamedEventExists(const std::wstring& name) {
+    ScopedHandle event(OpenEventW(SYNCHRONIZE, FALSE, name.c_str()));
+    return event.get() != nullptr;
+}
+
+bool StartCursorWatcher(DWORD process_id, const Options& options) {
+    std::vector<wchar_t> module_path(32768);
+    const DWORD length = GetModuleFileNameW(nullptr, module_path.data(),
+                                            static_cast<DWORD>(module_path.size()));
+    if (length == 0 || length >= static_cast<DWORD>(module_path.size())) {
+        return false;
+    }
+    const std::wstring executable(module_path.data(), length);
+    ScopedHandle ready(CreateEventW(nullptr, TRUE, FALSE,
+                                    CursorWatcherReadyEventName(process_id).c_str()));
+    if (ready.get() == nullptr) {
+        return false;
+    }
+
+    std::vector<std::wstring> command{
+        executable, L"--cursor-watch", std::to_wstring(process_id), L"--proxy", options.proxy,
+    };
+    if (options.cursor_isolated) {
+        command.push_back(L"--isolated");
+    }
+    std::wstring command_line = BuildCommandLine(command);
+    std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
+    mutable_command.push_back(L'\0');
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION watcher{};
+    if (!CreateProcessW(executable.c_str(), mutable_command.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW | CREATE_DEFAULT_ERROR_MODE, nullptr, nullptr,
+                        &startup, &watcher)) {
+        return false;
+    }
+    CloseHandle(watcher.hThread);
+    const DWORD wait = WaitForSingleObject(ready.get(), 5000);
+    if (wait != WAIT_OBJECT_0) {
+        TerminateProcess(watcher.hProcess, 4);
+        WaitForSingleObject(watcher.hProcess, 5000);
+        CloseHandle(watcher.hProcess);
+        return false;
+    }
+    CloseHandle(watcher.hProcess);
+    return true;
+}
+
 int LaunchChatGptApp(const Options& options) {
     if (!options.username.empty() || !options.password.empty()) {
         std::wcerr << L"Chromium does not support SOCKS5 username/password authentication. "
@@ -1851,6 +1976,122 @@ int LaunchAntigravity(const Options& options) {
                << process.dwProcessId << L", profile "
                << (options.antigravity_isolated ? L"isolated" : L"default") << L").\n";
     if (options.detach) {
+        CloseHandle(process.hProcess);
+        return 0;
+    }
+    WaitForSingleObject(process.hProcess, INFINITE);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(process.hProcess, &exit_code);
+    CloseHandle(process.hProcess);
+    return static_cast<int>(exit_code);
+}
+
+int LaunchCursor(const Options& options) {
+    if (!options.username.empty() || !options.password.empty()) {
+        std::wcerr << L"Cursor Chromium networking does not support SOCKS5 username/password "
+                      L"authentication. Use a local unauthenticated SOCKS5 endpoint.\n";
+        return 2;
+    }
+    if (!options.dns.empty()) {
+        std::wcerr << L"--dns is not supported by Cursor native proxy mode. DNS names are "
+                      L"resolved through the SOCKS5 proxy automatically.\n";
+        return 2;
+    }
+    std::wstring proxy_host;
+    if (!easy_net::browser::ParseLiteralSocksEndpoint(options.proxy, proxy_host)) {
+        std::wcerr << L"--cursor requires a literal SOCKS5 address such as 127.0.0.1:1080.\n";
+        return 2;
+    }
+    const auto executable = FindCursorExecutable(options);
+    if (!executable) {
+        std::wcerr << L"Cursor.exe was not found. Use --cursor-path PATH.\n";
+        return 3;
+    }
+
+    const bool cursor_running = FindRunningExecutable(L"Cursor.exe").has_value();
+    const std::wstring managed_event = CursorManagedEventName(options);
+    bool reuse_managed_instance = NamedEventExists(managed_event);
+    if (!options.cursor_isolated && cursor_running) {
+        const bool same_proxy = NamedEventExists(CursorProxyEventName(options.proxy));
+        if (!reuse_managed_instance || !same_proxy) {
+            std::wcerr << L"Cursor is already running without this Easy-Net proxy. Fully exit "
+                          L"Cursor first, or use --cursor-isolated.\n";
+            return 6;
+        }
+    }
+
+    std::optional<std::filesystem::path> profile;
+    if (options.cursor_isolated) {
+        const auto local_app_data = EnvironmentValue(L"LOCALAPPDATA");
+        if (!local_app_data) {
+            std::wcerr << L"LOCALAPPDATA is unavailable; cannot create the Cursor profile.\n";
+            return 3;
+        }
+        profile = std::filesystem::path(*local_app_data) / L"EasyNetHook/CursorProfile" /
+                  easy_net::browser::ProfileKey(options.proxy);
+        std::error_code directory_error;
+        std::filesystem::create_directories(*profile, directory_error);
+        if (directory_error) {
+            std::wcerr << L"Cannot create the Cursor profile: " << profile->wstring() << L".\n";
+            return 3;
+        }
+    }
+    if (!SetNativeSocksEnvironment(options.proxy, true)) {
+        std::wcerr << L"Cannot configure the Cursor proxy environment (error "
+                   << GetLastError() << L").\n";
+        return 4;
+    }
+
+    std::vector<std::wstring> command{executable->wstring()};
+    if (profile) {
+        command.push_back(L"--user-data-dir=" + profile->wstring());
+    }
+    const auto proxy_arguments = easy_net::browser::NativeSocksArguments(options.proxy, proxy_host);
+    command.insert(command.end(), proxy_arguments.begin(), proxy_arguments.end());
+    command.push_back(L"--no-first-run");
+    command.push_back(L"--new-window");
+    command.insert(command.end(), options.command.begin(), options.command.end());
+
+    std::wstring command_line = BuildCommandLine(command);
+    std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
+    mutable_command.push_back(L'\0');
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    const DWORD creation_flags = reuse_managed_instance
+                                     ? CREATE_DEFAULT_ERROR_MODE
+                                     : CREATE_DEFAULT_ERROR_MODE | CREATE_SUSPENDED;
+    const std::wstring working_directory = executable->parent_path().wstring();
+    if (!CreateProcessW(executable->c_str(), mutable_command.data(), nullptr, nullptr, FALSE,
+                        creation_flags, nullptr, working_directory.c_str(), &startup, &process)) {
+        std::wcerr << L"Cannot start Cursor (error " << GetLastError() << L").\n";
+        return 5;
+    }
+    if (!reuse_managed_instance) {
+        if (!StartCursorWatcher(process.dwProcessId, options)) {
+            std::wcerr << L"Cannot start the Cursor lifecycle monitor.\n";
+            TerminateProcess(process.hProcess, 5);
+            WaitForSingleObject(process.hProcess, 5000);
+            CloseHandle(process.hThread);
+            CloseHandle(process.hProcess);
+            return 5;
+        }
+        if (ResumeThread(process.hThread) == static_cast<DWORD>(-1)) {
+            std::wcerr << L"Cannot resume Cursor (error " << GetLastError() << L").\n";
+            TerminateProcess(process.hProcess, 5);
+            WaitForSingleObject(process.hProcess, 5000);
+            CloseHandle(process.hThread);
+            CloseHandle(process.hProcess);
+            return 5;
+        }
+    }
+    CloseHandle(process.hThread);
+    std::wcout << (reuse_managed_instance ? L"Opened another Cursor window through "
+                                          : L"Opened Cursor through ")
+               << L"native SOCKS5 " << options.proxy << L" (PID " << process.dwProcessId
+               << L", profile " << (options.cursor_isolated ? L"isolated" : L"default")
+               << L").\n";
+    if (options.detach || reuse_managed_instance) {
         CloseHandle(process.hProcess);
         return 0;
     }
@@ -2287,6 +2528,44 @@ int WatchAntigravityLanguageServer(DWORD root_process_id, const std::wstring& pr
     return 0;
 }
 
+int WatchCursorProcess(DWORD root_process_id, const std::wstring& proxy, bool isolated) {
+    std::wstring proxy_host;
+    if (!easy_net::browser::ParseLiteralSocksEndpoint(proxy, proxy_host)) {
+        return 2;
+    }
+    ScopedHandle root_process(OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                                          FALSE, root_process_id));
+    if (root_process.get() == nullptr) {
+        return 4;
+    }
+    ScopedHandle ready(OpenEventW(EVENT_MODIFY_STATE, FALSE,
+                                  CursorWatcherReadyEventName(root_process_id).c_str()));
+    if (ready.get() == nullptr) {
+        return 4;
+    }
+    Options options;
+    options.proxy = proxy;
+    options.cursor_isolated = isolated;
+    ScopedHandle managed(CreateEventW(nullptr, TRUE, FALSE,
+                                      CursorManagedEventName(options).c_str()));
+    if (managed.get() == nullptr) {
+        return 4;
+    }
+    ScopedHandle proxy_marker;
+    if (!isolated) {
+        proxy_marker = ScopedHandle(CreateEventW(nullptr, TRUE, FALSE,
+                                                 CursorProxyEventName(proxy).c_str()));
+        if (proxy_marker.get() == nullptr) {
+            return 4;
+        }
+    }
+    if (!SetEvent(ready.get())) {
+        return 4;
+    }
+    WaitForSingleObject(root_process.get(), INFINITE);
+    return 0;
+}
+
 int ActivatePackagedApplication(const Options& options,
                                 const std::filesystem::path& dll_path) {
     const HRESULT com_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -2439,6 +2718,19 @@ int wmain(int argc, wchar_t** argv) {
         }
         return WatchAntigravityLanguageServer(static_cast<DWORD>(process_id), proxy, dns);
     }
+    if ((argc == 5 || argc == 6) && std::wstring_view(argv[1]) == L"--cursor-watch") {
+        wchar_t* end = nullptr;
+        const unsigned long process_id = std::wcstoul(argv[2], &end, 10);
+        if (process_id == 0 || end == argv[2] || end == nullptr || *end != L'\0' ||
+            std::wstring_view(argv[3]) != L"--proxy") {
+            return 2;
+        }
+        const bool isolated = argc == 6 && std::wstring_view(argv[5]) == L"--isolated";
+        if (argc == 6 && !isolated) {
+            return 2;
+        }
+        return WatchCursorProcess(static_cast<DWORD>(process_id), argv[4], isolated);
+    }
     if (argc == 1 || (argc == 2 && std::wstring_view(argv[1]) == L"--gui")) {
         std::vector<wchar_t> module_path(32768);
         const DWORD length = GetModuleFileNameW(nullptr, module_path.data(),
@@ -2465,6 +2757,9 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (options.antigravity) {
         return LaunchAntigravity(options);
+    }
+    if (options.cursor) {
+        return LaunchCursor(options);
     }
     if (options.wechat) {
         return LaunchWeChat(options);

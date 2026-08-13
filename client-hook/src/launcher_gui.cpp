@@ -22,6 +22,7 @@ namespace {
 
 constexpr wchar_t kModeChatGpt[] = L"chatgpt";
 constexpr wchar_t kModeAntigravity[] = L"antigravity";
+constexpr wchar_t kModeCursor[] = L"cursor";
 constexpr wchar_t kModeWeChat[] = L"wechat";
 constexpr wchar_t kModeWeChatWinDivert[] = L"wechat-windivert";
 constexpr wchar_t kModeHook[] = L"hook";
@@ -180,13 +181,16 @@ int ModeIndex(const std::wstring& mode) {
         return 1;
     }
     if (mode == kModeHook) {
-        return 4;
+        return 5;
     }
     if (mode == kModeWeChat) {
-        return 2;
+        return 3;
     }
     if (mode == kModeWeChatWinDivert) {
-        return 3;
+        return 4;
+    }
+    if (mode == kModeCursor) {
+        return 2;
     }
     return 0;
 }
@@ -196,12 +200,15 @@ const wchar_t* ModeValue(int index) {
         return kModeAntigravity;
     }
     if (index == 2) {
-        return kModeWeChat;
+        return kModeCursor;
     }
     if (index == 3) {
-        return kModeWeChatWinDivert;
+        return kModeWeChat;
     }
     if (index == 4) {
+        return kModeWeChatWinDivert;
+    }
+    if (index == 5) {
         return kModeHook;
     }
     return kModeChatGpt;
@@ -213,6 +220,9 @@ const wchar_t* ModeLabel(const std::wstring& mode) {
     }
     if (mode == kModeHook) {
         return L"通用 Hook";
+    }
+    if (mode == kModeCursor) {
+        return L"Cursor";
     }
     if (mode == kModeWeChat) {
         return L"微信 TUN";
@@ -291,15 +301,17 @@ void UpdateModeUi(GuiState& state) {
                                                            0, 0));
     const bool chatgpt = mode == 0;
     const bool antigravity = mode == 1;
-    const bool wechat = mode == 2 || mode == 3;
+    const bool cursor = mode == 2;
+    const bool wechat = mode == 3 || mode == 4;
     const bool existing_wechat = wechat &&
         IsDlgButtonChecked(state.dialog, IDC_WECHAT_EXISTING) == BST_CHECKED;
     EnableWindow(GetDlgItem(state.dialog, IDC_PATH), !chatgpt && !existing_wechat);
     EnableWindow(GetDlgItem(state.dialog, IDC_BROWSE), !chatgpt && !existing_wechat);
     EnableWindow(GetDlgItem(state.dialog, IDC_ARGUMENTS), !chatgpt && !existing_wechat);
-    EnableWindow(GetDlgItem(state.dialog, IDC_DNS), !chatgpt && mode != 3);
-    ShowWindow(GetDlgItem(state.dialog, IDC_ISOLATED), antigravity ? SW_SHOW : SW_HIDE);
-    EnableWindow(GetDlgItem(state.dialog, IDC_ISOLATED), antigravity);
+    EnableWindow(GetDlgItem(state.dialog, IDC_DNS), !chatgpt && !cursor && mode != 4);
+    ShowWindow(GetDlgItem(state.dialog, IDC_ISOLATED),
+               antigravity || cursor ? SW_SHOW : SW_HIDE);
+    EnableWindow(GetDlgItem(state.dialog, IDC_ISOLATED), antigravity || cursor);
     ShowWindow(GetDlgItem(state.dialog, IDC_WECHAT_EXISTING), wechat ? SW_SHOW : SW_HIDE);
     EnableWindow(GetDlgItem(state.dialog, IDC_WECHAT_EXISTING), wechat);
     ShowWindow(GetDlgItem(state.dialog, IDC_UDP_LABEL), wechat ? SW_SHOW : SW_HIDE);
@@ -316,10 +328,14 @@ void UpdateModeUi(GuiState& state) {
                        L"启动后可关闭本窗口，language server 监视器会在后台继续运行。");
     } else if (mode == 2) {
         SetControlText(state.dialog, IDC_HINT,
+                       L"复用正常登录配置；首次需完全退出直连 Cursor。相同代理可继续开新窗口。\r\n"
+                       L"独立配置可与现有 Cursor 并行，但需要单独登录。");
+    } else if (mode == 3) {
+        SetControlText(state.dialog, IDC_HINT,
                        existing_wechat
                            ? L"将 TUN 接管到已运行微信；只有新连接生效。需要管理员权限。\r\n关闭本窗口不影响代理，微信退出后 TUN 自动停止。"
                            : L"通过 TUN 启动微信并代理 TCP/UDP；需要管理员权限，资源占用较高。\r\n程序路径可留空自动查找；启动前请完全退出微信。");
-    } else if (mode == 3) {
+    } else if (mode == 4) {
         SetControlText(state.dialog, IDC_HINT,
                        existing_wechat
                            ? L"推荐：接管已运行微信的新连接，WinDivert 守护器会自动重启并检测代理。\r\n关闭本窗口不影响代理；微信退出后守护器自动停止。"
@@ -372,19 +388,22 @@ std::wstring DefaultEntryName(int mode) {
         return L"Antigravity IDE";
     }
     if (mode == 2) {
-        return L"微信 TUN";
+        return L"Cursor";
     }
     if (mode == 3) {
-        return L"微信 WinDivert";
+        return L"微信 TUN";
     }
     if (mode == 4) {
+        return L"微信 WinDivert";
+    }
+    if (mode == 5) {
         return L"我的程序";
     }
     return L"ChatGPT";
 }
 
 bool IsDefaultEntryName(const std::wstring& name) {
-    for (int mode = 0; mode < 5; ++mode) {
+    for (int mode = 0; mode < 6; ++mode) {
         if (name == DefaultEntryName(mode)) {
             return true;
         }
@@ -447,26 +466,26 @@ easy_net::history::Entry CurrentEntry(GuiState& state) {
     entry.arguments = ControlText(state.dialog, IDC_ARGUMENTS);
     entry.proxy = ControlText(state.dialog, IDC_PROXY);
     entry.dns = ControlText(state.dialog, IDC_DNS);
-    if (mode == 3) {
+    if (mode == 2 || mode == 4) {
         entry.dns.clear();
     }
-    entry.isolated = mode == 1 &&
+    entry.isolated = (mode == 1 || mode == 2) &&
                      IsDlgButtonChecked(state.dialog, IDC_ISOLATED) == BST_CHECKED;
-    entry.wechat_existing = (mode == 2 || mode == 3) &&
+    entry.wechat_existing = (mode == 3 || mode == 4) &&
                             IsDlgButtonChecked(state.dialog, IDC_WECHAT_EXISTING) ==
                                 BST_CHECKED;
     if (entry.wechat_existing) {
         entry.path.clear();
         entry.arguments.clear();
     }
-    if (mode == 2 || mode == 3) {
+    if (mode == 3 || mode == 4) {
         const int udp_mode = static_cast<int>(SendDlgItemMessageW(
             state.dialog, IDC_UDP_MODE, CB_GETCURSEL, 0, 0));
         constexpr const wchar_t* values[]{L"auto", L"proxy", L"block", L"direct"};
         entry.udp_mode = udp_mode >= 0 && udp_mode < 4 ? values[udp_mode] : L"auto";
     }
     entry.last_used = CurrentTimestamp();
-    if (entry.name.empty() && mode == 4 && !entry.path.empty()) {
+    if (entry.name.empty() && mode == 5 && !entry.path.empty()) {
         entry.name = std::filesystem::path(entry.path).stem().wstring();
     } else if (entry.name.empty()) {
         entry.name = DefaultEntryName(mode);
@@ -508,6 +527,20 @@ std::wstring BuildLauncherCommand(const GuiState& state,
         }
         if (!entry.path.empty()) {
             command += L" --antigravity-path " + QuoteArgument(entry.path);
+        }
+        if (!entry.dns.empty()) {
+            command += L" --dns " + QuoteArgument(entry.dns);
+        }
+        if (!entry.arguments.empty()) {
+            command += L" -- " + entry.arguments;
+        }
+    } else if (entry.mode == kModeCursor) {
+        command += L" --cursor";
+        if (entry.isolated) {
+            command += L" --cursor-isolated";
+        }
+        if (!entry.path.empty()) {
+            command += L" --cursor-path " + QuoteArgument(entry.path);
         }
         if (!entry.dns.empty()) {
             command += L" --dns " + QuoteArgument(entry.dns);
@@ -578,6 +611,9 @@ std::wstring LaunchSuccessText(const easy_net::history::Entry& entry) {
     if (entry.mode == kModeAntigravity) {
         return L"Antigravity 已启动。关闭本窗口不会停止 IDE 或后台 language server 监视器。";
     }
+    if (entry.mode == kModeCursor) {
+        return L"Cursor 已通过代理启动。关闭本窗口不影响 Cursor 使用。";
+    }
     if (entry.mode == kModeWeChatWinDivert) {
         return L"微信 WinDivert 代理已启动。关闭本窗口不影响代理，微信退出后守护器自动停止。";
     }
@@ -635,6 +671,14 @@ bool LaunchEntry(GuiState& state) {
                         L"进程后重试，确保新进程能够继承代理；或者勾选“使用独立配置”。",
                         L"请先退出 Antigravity", MB_OK | MB_ICONWARNING);
             SetControlText(state.dialog, IDC_STATUS, L"等待退出现有 Antigravity");
+            return false;
+        }
+        if (exit_code == 6 && entry.mode == kModeCursor && !entry.isolated) {
+            MessageBoxW(state.dialog,
+                        L"检测到当前 Cursor 不是由相同的 Easy-Net 代理启动。请完全退出 "
+                        L"Cursor 后重试，或者勾选“使用独立配置”。",
+                        L"请先退出 Cursor", MB_OK | MB_ICONWARNING);
+            SetControlText(state.dialog, IDC_STATUS, L"等待退出现有 Cursor");
             return false;
         }
         if (exit_code == 6 && IsWeChatMode(entry.mode)) {
@@ -731,6 +775,8 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
         SendDlgItemMessageW(dialog, IDC_MODE, CB_ADDSTRING, 0,
                             reinterpret_cast<LPARAM>(L"Antigravity IDE"));
         SendDlgItemMessageW(dialog, IDC_MODE, CB_ADDSTRING, 0,
+                            reinterpret_cast<LPARAM>(L"Cursor（原生代理）"));
+        SendDlgItemMessageW(dialog, IDC_MODE, CB_ADDSTRING, 0,
                             reinterpret_cast<LPARAM>(L"微信（TUN）"));
         SendDlgItemMessageW(dialog, IDC_MODE, CB_ADDSTRING, 0,
                             reinterpret_cast<LPARAM>(L"微信（WinDivert TCP+UDP）"));
@@ -790,7 +836,7 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
             if (identifier == IDC_BROWSE && notification == BN_CLICKED) {
                 if (BrowseForExecutable(*state)) {
                     const std::wstring name = ControlText(dialog, IDC_ENTRY_NAME);
-                    if (name.empty() || name == DefaultEntryName(4)) {
+                    if (name.empty() || name == DefaultEntryName(5)) {
                         SetControlText(dialog, IDC_ENTRY_NAME,
                                        std::filesystem::path(ControlText(dialog, IDC_PATH))
                                            .stem().wstring());

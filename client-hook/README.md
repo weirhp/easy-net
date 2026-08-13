@@ -69,7 +69,7 @@ windivert\WinDivert64.sys         （仅 x64）
 .\easy-net-hook.exe --gui
 ```
 
-界面左侧是图标形式的“快捷启动入口”，右侧是入口编辑器。选择 ChatGPT、Antigravity IDE、微信 TUN、微信 WinDivert 或通用 Hook 场景，填写入口名称和代理设置后，可以只保存，也可以“保存并启动”。再次修改同一个入口会原位更新，不会产生重复的启动历史；单击入口进行编辑，双击则按保存的设置直接启动。
+界面左侧是图标形式的“快捷启动入口”，右侧是入口编辑器。选择 ChatGPT、Antigravity IDE、Cursor、微信 TUN、微信 WinDivert 或通用 Hook 场景，填写入口名称和代理设置后，可以只保存，也可以“保存并启动”。再次修改同一个入口会原位更新，不会产生重复的启动历史；单击入口进行编辑，双击则按保存的设置直接启动。
 
 入口最多保留 30 个，保存在 `%LOCALAPPDATA%\EasyNetHook\launcher-entries.tsv`，不保存代理用户名或密码。新版第一次运行时会把旧的 `launcher-history.tsv` 自动迁移成快捷入口，同时保留旧文件作为备份。微信入口可以直接勾选“接管已经运行的微信”，不再需要手写 `--wechat-existing` 命令。
 
@@ -313,6 +313,32 @@ IPv6 DNS 地址带端口时使用方括号：
 
 Antigravity 的 Electron 主进程、network service、renderer 和 GPU 进程都不加载 `easy-net-hook.dll`，因此不会触碰其 Chromium 沙箱；只有普通的 x64 language server 使用 Hook。该模式必须使用 x64 包，也不支持 SOCKS5 用户名密码。请使用本机免认证 SOCKS5 端口。默认情况下，兜底 Hook 的域名仍由 Windows DNS 解析；配置 `--dns IP[:PORT]` 后仅 language server 的兜底解析改用指定 DNS，Chromium URL 域名仍交给 SOCKS5 代理。
 
+### Cursor
+
+Cursor 使用专用的 Electron/Chromium 原生代理模式，不向 Cursor 注入 DLL：
+
+```powershell
+.\easy-net-hook.exe `
+  --proxy 127.0.0.1:1082 `
+  --cursor `
+  --cursor-path "D:\soft\cursor\Cursor.exe" `
+  --detach
+```
+
+程序会优先使用当前运行的 `Cursor.exe` 路径，并查找常见的用户级和系统级安装目录；便携版或自定义安装目录首次使用时通过界面“浏览”或 `--cursor-path` 指定。默认复用 `%APPDATA%\Cursor`，因此保留正常登录、扩展和设置。Chromium URL 使用 SOCKS5、代理端解析域名并禁用 QUIC；扩展宿主和其他子进程会继承 HTTP/HTTPS、WebSocket、`ALL_PROXY` 与 `NO_PROXY` 环境变量。
+
+如果已有 Cursor 不是由相同 Easy-Net 代理启动，默认模式会停止并提示先完全退出，避免新窗口被转交给原有直连实例。由当前版本 Easy-Net 启动后，后台生命周期标记会一直跟随 Cursor 主进程；之后使用相同代理再次点击入口，可以直接打开新窗口。若要与当前桌面 Cursor 并行运行，可使用独立配置：
+
+```powershell
+.\easy-net-hook.exe `
+  --proxy 127.0.0.1:1082 `
+  --cursor `
+  --cursor-isolated `
+  --detach
+```
+
+独立配置位于 `%LOCALAPPDATA%\EasyNetHook\CursorProfile`，需要单独登录。Cursor 原生模式不支持 SOCKS5 用户名密码；自定义 `--dns` 不适用于此模式，因为 Chromium 域名已经交给 SOCKS5 代理解析。
+
 ### ChatGPT Windows 客户端
 
 推荐使用专用的原生代理模式：
@@ -408,6 +434,9 @@ Chromium 的 SOCKS5 模式不支持用户名密码，因此网页模式只能连
 --antigravity       原生代理启动 IDE，并只为 x64 language server 启用兜底 Hook
 --antigravity-path  指定 Antigravity IDE.exe；通常可以自动查找
 --antigravity-isolated 使用独立用户目录；默认复用桌面版登录状态
+--cursor            原生 SOCKS5 启动 Cursor，并支持同代理多窗口
+--cursor-path PATH  指定 Cursor.exe；通常可以自动查找
+--cursor-isolated   使用独立 Cursor 用户目录，可与桌面实例并行
 --chatgpt-app       不注入，使用独立配置启动 ChatGPT 客户端的原生 SOCKS5 模式
 --chatgpt-web       不注入，使用独立 Edge/Chrome SOCKS5 会话打开 ChatGPT
 --browser-path PATH 为网页模式指定 Edge/Chrome 可执行文件
@@ -458,7 +487,7 @@ DNS 查询是目标进程到指定 DNS 服务的普通 UDP/TCP 流量，会绕�
 
 ### 进程与兼容性
 
-- `--chatgpt-app` 使用原生代理参数及继承环境，不注入 DLL。`--antigravity` 默认复用正常登录配置，同样不向 Electron 进程注入，但会监视其后代并只 Hook `language_server_windows_x64.exe`，兜底处理忽略代理环境变量的外部 TCP。
+- `--chatgpt-app` 和 `--cursor` 使用原生代理参数及继承环境，不注入 DLL。Cursor 默认复用正常登录配置，并用轻量生命周期标记安全识别相同代理的多窗口启动。`--antigravity` 默认复用正常登录配置，同样不向 Electron 进程注入，但会监视其后代并只 Hook `language_server_windows_x64.exe`，兜底处理忽略代理环境变量的外部 TCP。
 - `--wechat` 和 `--wechat-existing` 不注入 DLL，可使用 TUN 或 WinDivert 捕获流量并按进程名分流；它们要求 x64 和管理员权限。接管模式只保证新建连接进入新路由。
 - `--pid` 采用标准远程 `LoadLibraryW` 注入，只影响注入后新建的连接；已经建立的连接仍保持原路径。
 - Chromium/Electron 子进程采用网络服务定向注入；其 renderer、GPU、crashpad 和非网络 utility 子进程不会加载 Hook。`--no-children` 会连网络服务也一并跳过，因此不适合需要代理 Chromium/Electron 流量的场景。
@@ -485,6 +514,7 @@ easy-net-hook.exe
   ├─ GUI + 本地历史记录（快捷启动常用配置）
   ├─ --chatgpt-app（原生 SOCKS5 参数 + 后端代理环境）
   ├─ --antigravity（默认配置/可选隔离配置 + IDE 原生代理 + LS 兜底 Hook）
+  ├─ --cursor（默认配置/可选隔离配置 + 原生 SOCKS5 + 同代理多窗口识别）
   ├─ --wechat / --wechat-existing（可选 sing-box TUN + 微信进程规则 + UDP 能力检测）
   ├─ DetourCreateProcessWithDllExW（启动普通新进程）
   ├─ --appx + IApplicationActivationManager（激活打包应用）

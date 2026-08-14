@@ -20,6 +20,10 @@ int wmain() {
     assert(parsed[1].arguments == entries[1].arguments);
     assert(parsed[1].isolated);
 
+    entries[0].id = L"entry-123";
+    const auto with_id = easy_net::history::Parse(easy_net::history::Serialize(entries));
+    assert(with_id[0].id == L"entry-123");
+
     Entry wechat{L"wechat", L"微信", L"D:\\Weixin\\Weixin.exe", L"",
                  L"127.0.0.1:10808", L"223.5.5.5:53", L"102", false, L"proxy"};
     easy_net::history::Upsert(entries, wechat);
@@ -38,6 +42,7 @@ int wmain() {
         L"antigravity\tAntigravity IDE\tD:\\\\IDE.exe\t\t127.0.0.1:1082\t\t98\n");
     assert(legacy.size() == 1);
     assert(!legacy[0].isolated);
+    assert(legacy[0].id.empty());
 
     auto updated = parsed;
     Entry replacement = parsed[0];

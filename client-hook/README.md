@@ -71,6 +71,8 @@ windivert\WinDivert64.sys         （仅 x64）
 
 界面左侧是图标形式的“快捷启动入口”，右侧是入口编辑器。选择 ChatGPT、Antigravity IDE、Cursor、微信 TUN、微信 WinDivert 或通用 Hook 场景，填写入口名称和代理设置后，可以只保存，也可以“保存并启动”。再次修改同一个入口会原位更新，不会产生重复的启动历史；单击入口进行编辑，双击则按保存的设置直接启动。
 
+“桌面快捷方式”会先保存当前入口，再在当前用户桌面创建“入口名称（代理）.lnk”。快捷方式只保存入口的稳定标识；每次双击都会从 `%LOCALAPPDATA%\EasyNetHook\launcher-entries.tsv` 读取最新的代理地址、程序路径和参数，因此修改入口后不需要重新创建快捷方式。快捷方式指向当前目录中的 `easy-net-hook.exe`，请不要移动或单独复制该 EXE；SOCKS5 客户端也必须先处于可用状态。
+
 入口最多保留 30 个，保存在 `%LOCALAPPDATA%\EasyNetHook\launcher-entries.tsv`，不保存代理用户名或密码。新版第一次运行时会把旧的 `launcher-history.tsv` 自动迁移成快捷入口，同时保留旧文件作为备份。微信入口可以直接勾选“接管已经运行的微信”，不再需要手写 `--wechat-existing` 命令。
 
 “启动成功后关闭本窗口”默认开启。这里关闭的只是启动器界面，不会退出已经启动的 ChatGPT、Antigravity、微信或通用 Hook 目标进程：ChatGPT 的 Chromium 代理参数已由目标进程继承，普通程序的 Hook DLL 已注入，微信 TUN/WinDivert 与 Antigravity language server 监视器则是独立的后台进程。各场景在界面中会显示相应的限制、权限和关闭行为提示。若要连续编辑多个入口，可以取消该选项。

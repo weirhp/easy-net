@@ -2697,7 +2697,39 @@ int wmain(int argc, wchar_t** argv) {
                               std::wstring(module_path.data(), length));
     }
     Options options;
-    if (!ParseOptions(argc, argv, options)) {
+    if (argc == 3 && std::wstring_view(argv[1]) == L"--launch-entry") {
+        std::vector<wchar_t> module_path(32768);
+        const DWORD length = GetModuleFileNameW(nullptr, module_path.data(),
+                                                static_cast<DWORD>(module_path.size()));
+        std::wstring command_line;
+        std::wstring entry_name;
+        if (length == 0 || length >= static_cast<DWORD>(module_path.size()) ||
+            !ResolveSavedEntryCommandLine(std::wstring(module_path.data(), length), argv[2],
+                                          command_line, entry_name)) {
+            MessageBoxW(nullptr,
+                        L"找不到这个代理入口。它可能已被删除，或者入口配置文件不可用。\r\n"
+                        L"请打开 Easy-Net Hook 后重新创建桌面快捷方式。",
+                        L"快捷方式已失效", MB_OK | MB_ICONERROR);
+            return 3;
+        }
+        int resolved_count = 0;
+        LPWSTR* resolved_arguments = CommandLineToArgvW(command_line.c_str(), &resolved_count);
+        if (resolved_arguments == nullptr) {
+            MessageBoxW(nullptr, L"无法读取快捷方式对应的入口设置。",
+                        L"启动失败", MB_OK | MB_ICONERROR);
+            return 4;
+        }
+        const bool parsed = ParseOptions(resolved_count, resolved_arguments, options);
+        LocalFree(resolved_arguments);
+        if (!parsed) {
+            MessageBoxW(nullptr,
+                        (L"入口“" + entry_name + L"”的设置无效。\r\n"
+                         L"请在 Easy-Net Hook 中修改并保存该入口。")
+                            .c_str(),
+                        L"启动失败", MB_OK | MB_ICONERROR);
+            return 2;
+        }
+    } else if (!ParseOptions(argc, argv, options)) {
         PrintUsage();
         return 2;
     }

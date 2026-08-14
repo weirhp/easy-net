@@ -3,7 +3,9 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shellapi.h>
+#include <shlobj.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
@@ -234,6 +236,35 @@ std::wstring CurrentTimestamp() {
     swprintf_s(value, L"%04u-%02u-%02u %02u:%02u", time.wYear, time.wMonth, time.wDay,
                time.wHour, time.wMinute);
     return value;
+}
+
+std::wstring NewEntryId() {
+    GUID guid{};
+    if (FAILED(CoCreateGuid(&guid))) {
+        return std::to_wstring(GetCurrentProcessId()) + L"-" +
+               std::to_wstring(GetTickCount64());
+    }
+    wchar_t value[40]{};
+    if (StringFromGUID2(guid, value, static_cast<int>(std::size(value))) == 0) {
+        return {};
+    }
+    std::wstring result(value);
+    result.erase(std::remove_if(result.begin(), result.end(), [](wchar_t character) {
+                     return character == L'{' || character == L'}' || character == L'-';
+                 }),
+                 result.end());
+    return result;
+}
+
+bool EnsureEntryIds(std::vector<easy_net::history::Entry>& entries) {
+    bool changed = false;
+    for (auto& entry : entries) {
+        if (entry.id.empty()) {
+            entry.id = NewEntryId();
+            changed = true;
+        }
+    }
+    return changed;
 }
 
 int ModeIndex(const std::wstring& mode) {
@@ -606,6 +637,12 @@ easy_net::history::Entry CurrentEntry(GuiState& state) {
     const int mode = static_cast<int>(SendDlgItemMessageW(state.dialog, IDC_MODE, CB_GETCURSEL,
                                                            0, 0));
     easy_net::history::Entry entry;
+    if (state.editing_index < state.entries.size()) {
+        entry.id = state.entries[state.editing_index].id;
+    }
+    if (entry.id.empty()) {
+        entry.id = NewEntryId();
+    }
     entry.mode = ModeValue(mode);
     entry.name = ControlText(state.dialog, IDC_ENTRY_NAME);
     entry.path = ControlText(state.dialog, IDC_PATH);
@@ -679,10 +716,14 @@ bool ValidateEntry(HWND owner, const easy_net::history::Entry& entry) {
     return true;
 }
 
-std::wstring BuildLauncherCommand(const GuiState& state,
-                                  const easy_net::history::Entry& entry) {
-    std::wstring command = QuoteArgument(state.launcher_path) + L" --proxy " +
-                           QuoteArgument(entry.proxy) + L" --detach --gui-worker";
+std::wstring BuildLauncherCommand(const std::wstring& launcher_path,
+                                  const easy_net::history::Entry& entry,
+                                  bool gui_worker) {
+    std::wstring command = QuoteArgument(launcher_path) + L" --proxy " +
+                           QuoteArgument(entry.proxy) + L" --detach";
+    if (gui_worker) {
+        command += L" --gui-worker";
+    }
     if (entry.mode == kModeChatGpt) {
         command += L" --chatgpt-app";
     } else if (entry.mode == kModeAntigravity) {
@@ -739,6 +780,113 @@ std::wstring BuildLauncherCommand(const GuiState& state,
         }
     }
     return command;
+}
+
+std::wstring SafeShortcutName(std::wstring name) {
+    for (wchar_t& character : name) {
+        if (character < 32 || std::wcschr(L"<>:\"/\\|?*", character) != nullptr) {
+            character = L'_';
+        }
+    }
+    while (!name.empty() && (name.back() == L' ' || name.back() == L'.')) {
+        name.pop_back();
+    }
+    return name.empty() ? L"Easy-Net 代理入口" : name;
+}
+
+bool SaveCurrentEntry(GuiState& state, bool show_feedback);
+
+bool CreateDesktopShortcut(GuiState& state) {
+    if (!SaveCurrentEntry(state, false) || state.editing_index >= state.entries.size()) {
+        return false;
+    }
+    const auto& entry = state.entries[state.editing_index];
+    if (entry.id.empty()) {
+        MessageBoxW(state.dialog, L"无法为当前入口生成唯一标识。", L"创建失败",
+                    MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    PWSTR desktop_raw = nullptr;
+    const HRESULT folder_result = SHGetKnownFolderPath(FOLDERID_Desktop, KF_FLAG_DEFAULT,
+                                                        nullptr, &desktop_raw);
+    if (FAILED(folder_result) || desktop_raw == nullptr) {
+        if (desktop_raw != nullptr) CoTaskMemFree(desktop_raw);
+        MessageBoxW(state.dialog, L"无法确定当前用户的桌面目录。", L"创建失败",
+                    MB_OK | MB_ICONERROR);
+        return false;
+    }
+    const std::filesystem::path shortcut_path =
+        std::filesystem::path(desktop_raw) / (SafeShortcutName(entry.name) + L"（代理）.lnk");
+    CoTaskMemFree(desktop_raw);
+
+    std::error_code exists_error;
+    if (std::filesystem::exists(shortcut_path, exists_error) &&
+        MessageBoxW(state.dialog,
+                    (L"桌面上已存在同名快捷方式：\r\n" + shortcut_path.wstring() +
+                     L"\r\n\r\n是否替换？")
+                        .c_str(),
+                    L"替换快捷方式", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+        return false;
+    }
+
+    const HRESULT initialize_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool uninitialize = SUCCEEDED(initialize_result);
+    if (FAILED(initialize_result) && initialize_result != RPC_E_CHANGED_MODE) {
+        MessageBoxW(state.dialog, L"无法初始化 Windows 快捷方式服务。", L"创建失败",
+                    MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    IShellLinkW* shell_link = nullptr;
+    HRESULT result = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                                      IID_PPV_ARGS(&shell_link));
+    if (SUCCEEDED(result)) result = shell_link->SetPath(state.launcher_path.c_str());
+    const std::wstring arguments = L"--launch-entry " + QuoteArgument(entry.id);
+    if (SUCCEEDED(result)) result = shell_link->SetArguments(arguments.c_str());
+    const std::filesystem::path working_directory =
+        std::filesystem::path(state.launcher_path).parent_path();
+    if (SUCCEEDED(result)) result = shell_link->SetWorkingDirectory(working_directory.c_str());
+    if (SUCCEEDED(result)) result = shell_link->SetShowCmd(SW_HIDE);
+    const std::wstring description = L"通过 Easy-Net Hook 代理启动 " + entry.name;
+    if (SUCCEEDED(result)) result = shell_link->SetDescription(description.c_str());
+    const std::filesystem::path icon_path =
+        !entry.path.empty() && std::filesystem::is_regular_file(entry.path)
+            ? std::filesystem::path(entry.path)
+            : std::filesystem::path(state.launcher_path);
+    if (SUCCEEDED(result)) result = shell_link->SetIconLocation(icon_path.c_str(), 0);
+
+    IPersistFile* persist = nullptr;
+    if (SUCCEEDED(result)) {
+        result = shell_link->QueryInterface(IID_PPV_ARGS(&persist));
+    }
+    if (SUCCEEDED(result)) {
+        result = persist->Save(shortcut_path.c_str(), TRUE);
+    }
+    if (persist != nullptr) persist->Release();
+    if (shell_link != nullptr) shell_link->Release();
+    if (uninitialize) CoUninitialize();
+
+    if (FAILED(result)) {
+        MessageBoxW(state.dialog,
+                    (L"无法写入桌面快捷方式。\r\n错误代码：" +
+                     std::to_wstring(static_cast<unsigned long>(result)))
+                        .c_str(),
+                    L"创建失败", MB_OK | MB_ICONERROR);
+        SetControlText(state.dialog, IDC_STATUS, L"桌面快捷方式创建失败");
+        return false;
+    }
+
+    SetControlText(state.dialog, IDC_ENTRY_STATE, L"快捷方式已创建：" + entry.name);
+    SetControlText(state.dialog, IDC_STATUS,
+                   L"以后双击桌面图标即可按此入口的最新设置启动");
+    MessageBoxW(state.dialog,
+                (L"已创建桌面快捷方式：\r\n" + shortcut_path.wstring() +
+                 L"\r\n\r\n它会读取此入口的最新设置。使用时请保持 Easy-Net Hook "
+                 L"程序目录位置不变，并先启动 SOCKS5 服务。")
+                    .c_str(),
+                L"快捷方式已创建", MB_OK | MB_ICONINFORMATION);
+    return true;
 }
 
 bool SaveCurrentEntry(GuiState& state, bool show_feedback) {
@@ -810,8 +958,8 @@ std::wstring LaunchSuccessText(const easy_net::history::Entry& entry) {
 
 void SetLaunchingUi(GuiState& state, bool launching) {
     state.launching = launching;
-    for (const int identifier : {IDC_LAUNCH, IDC_SAVE_ENTRY, IDC_NEW_ENTRY,
-                                 IDC_REMOVE_ENTRY, IDC_ENTRIES}) {
+    for (const int identifier : {IDC_LAUNCH, IDC_SAVE_ENTRY, IDC_CREATE_SHORTCUT,
+                                 IDC_NEW_ENTRY, IDC_REMOVE_ENTRY, IDC_ENTRIES}) {
         EnableWindow(GetDlgItem(state.dialog, identifier), !launching);
     }
     if (!launching && state.editing_index >= state.entries.size()) {
@@ -935,7 +1083,7 @@ bool LaunchEntry(GuiState& state) {
     }
     state.dirty = false;
     RefreshEntries(state, saved_index);
-    std::wstring command_line = BuildLauncherCommand(state, entry);
+    std::wstring command_line = BuildLauncherCommand(state.launcher_path, entry, true);
     std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
     mutable_command.push_back(L'\0');
     STARTUPINFOW startup{};
@@ -1065,6 +1213,9 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
             if (!state->entries.empty()) {
                 SaveEntries(*state);
             }
+        }
+        if (EnsureEntryIds(state->entries)) {
+            SaveEntries(*state);
         }
 
         SendDlgItemMessageW(dialog, IDC_MODE, CB_ADDSTRING, 0,
@@ -1214,6 +1365,10 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
                 SaveCurrentEntry(*state, true);
                 return TRUE;
             }
+            if (identifier == IDC_CREATE_SHORTCUT && notification == BN_CLICKED) {
+                CreateDesktopShortcut(*state);
+                return TRUE;
+            }
             if (identifier == IDC_LAUNCH && notification == BN_CLICKED) {
                 LaunchEntry(*state);
                 return TRUE;
@@ -1344,6 +1499,27 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
 }
 
 }  // namespace
+
+bool ResolveSavedEntryCommandLine(const std::wstring& launcher_path,
+                                  const std::wstring& entry_id,
+                                  std::wstring& command_line,
+                                  std::wstring& entry_name) {
+    if (entry_id.empty()) {
+        return false;
+    }
+    const auto entries = LoadHistory(StoragePath(L"launcher-entries.tsv"));
+    const auto entry = std::find_if(entries.begin(), entries.end(), [&entry_id](const auto& item) {
+        return !item.id.empty() && _wcsicmp(item.id.c_str(), entry_id.c_str()) == 0;
+    });
+    if (entry == entries.end()) {
+        return false;
+    }
+    // Desktop shortcuts are UI launches too: prevent GUI targets such as Cursor
+    // from inheriting the launcher's hidden console handles.
+    command_line = BuildLauncherCommand(launcher_path, *entry, true);
+    entry_name = entry->name;
+    return true;
+}
 
 int RunLauncherGui(HINSTANCE instance, const std::wstring& launcher_path) {
     INITCOMMONCONTROLSEX controls{};

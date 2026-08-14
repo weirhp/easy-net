@@ -682,7 +682,7 @@ bool ValidateEntry(HWND owner, const easy_net::history::Entry& entry) {
 std::wstring BuildLauncherCommand(const GuiState& state,
                                   const easy_net::history::Entry& entry) {
     std::wstring command = QuoteArgument(state.launcher_path) + L" --proxy " +
-                           QuoteArgument(entry.proxy) + L" --detach";
+                           QuoteArgument(entry.proxy) + L" --detach --gui-worker";
     if (entry.mode == kModeChatGpt) {
         command += L" --chatgpt-app";
     } else if (entry.mode == kModeAntigravity) {

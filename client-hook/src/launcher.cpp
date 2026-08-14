@@ -63,6 +63,7 @@ struct Options {
     bool inject_children = true;
     bool allow_udp_direct = false;
     bool detach = false;
+    bool gui_worker = false;
     bool antigravity = false;
     bool antigravity_isolated = false;
     bool cursor = false;
@@ -240,6 +241,10 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
             options.tun_debug_log = true;
         } else if (argument == L"--detach") {
             options.detach = true;
+        } else if (argument == L"--gui-worker") {
+            // Internal GUI flag: the target must not inherit the launcher's
+            // temporary stdout/stderr diagnostic pipe.
+            options.gui_worker = true;
         } else if (argument == L"--help" || argument == L"-h" || argument == L"/?") {
             PrintUsage();
             ExitProcess(0);
@@ -2006,7 +2011,8 @@ int LaunchCursor(const Options& options) {
                                               working_directory.c_str(), &startup, &process)
                              : DetourCreateProcessWithDllExW(
                                    executable->c_str(), mutable_command.data(), nullptr, nullptr,
-                                   TRUE, creation_flags, nullptr, working_directory.c_str(),
+                                   options.gui_worker ? FALSE : TRUE, creation_flags, nullptr,
+                                   working_directory.c_str(),
                                    &startup, &process, detours_dll_path->c_str(), nullptr);
     if (!created) {
         std::wcerr << L"Cannot start Cursor (error " << GetLastError() << L").\n";
@@ -2761,7 +2767,7 @@ int wmain(int argc, wchar_t** argv) {
             mutable_command.data(),
             nullptr,
             nullptr,
-            TRUE,
+            options.gui_worker ? FALSE : TRUE,
             flags,
             nullptr,
             nullptr,

@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "history_store.h"
+#include "chatgpt_package.h"
 #include "dns_resolver.h"
 #include "resource.h"
 #include "socks5_health.h"
@@ -339,16 +340,26 @@ void ClearIconCache(GuiState& state) {
 }
 
 HICON EntryIcon(GuiState& state, const easy_net::history::Entry& entry) {
+    std::filesystem::path icon_source;
     if (!entry.path.empty()) {
-        const auto cached = state.icon_cache.find(entry.path);
+        icon_source = entry.path;
+    } else if (entry.mode == kModeChatGpt) {
+        const auto official_icon = easy_net::chatgpt::FindOfficialIcon();
+        if (official_icon) {
+            icon_source = *official_icon;
+        }
+    }
+    if (!icon_source.empty()) {
+        const std::wstring icon_key = icon_source.wstring();
+        const auto cached = state.icon_cache.find(icon_key);
         if (cached != state.icon_cache.end()) {
             return cached->second;
         }
         HICON icon = nullptr;
         const int icon_size = ScaleForDpi(state.dialog, 28);
-        if (PrivateExtractIconsW(entry.path.c_str(), 0, icon_size, icon_size, &icon, nullptr, 1,
+        if (PrivateExtractIconsW(icon_source.c_str(), 0, icon_size, icon_size, &icon, nullptr, 1,
                                  0) == 1 && icon != nullptr) {
-            state.icon_cache.emplace(entry.path, icon);
+            state.icon_cache.emplace(icon_key, icon);
             return icon;
         }
     }
@@ -794,6 +805,37 @@ std::wstring SafeShortcutName(std::wstring name) {
     return name.empty() ? L"Easy-Net 代理入口" : name;
 }
 
+std::filesystem::path ShortcutIconPath(const GuiState& state,
+                                       const easy_net::history::Entry& entry) {
+    if (!entry.path.empty() && std::filesystem::is_regular_file(entry.path)) {
+        return std::filesystem::path(entry.path);
+    }
+    if (entry.mode == kModeChatGpt) {
+        const auto official_icon = easy_net::chatgpt::FindOfficialIcon();
+        if (official_icon) {
+            const auto cached_icon = StoragePath(L"Icons/chatgpt.ico");
+            if (!cached_icon.empty()) {
+                std::error_code directory_error;
+                std::filesystem::create_directories(cached_icon.parent_path(), directory_error);
+                if (!directory_error &&
+                    CopyFileW(official_icon->c_str(), cached_icon.c_str(), FALSE)) {
+                    return cached_icon;
+                }
+                std::error_code cached_error;
+                if (std::filesystem::is_regular_file(cached_icon, cached_error)) {
+                    return cached_icon;
+                }
+            }
+            return *official_icon;
+        }
+        const auto executable = easy_net::chatgpt::FindExecutable();
+        if (executable) {
+            return *executable;
+        }
+    }
+    return std::filesystem::path(state.launcher_path);
+}
+
 bool SaveCurrentEntry(GuiState& state, bool show_feedback);
 
 bool CreateDesktopShortcut(GuiState& state) {
@@ -850,10 +892,7 @@ bool CreateDesktopShortcut(GuiState& state) {
     if (SUCCEEDED(result)) result = shell_link->SetShowCmd(SW_HIDE);
     const std::wstring description = L"通过 Easy-Net Hook 代理启动 " + entry.name;
     if (SUCCEEDED(result)) result = shell_link->SetDescription(description.c_str());
-    const std::filesystem::path icon_path =
-        !entry.path.empty() && std::filesystem::is_regular_file(entry.path)
-            ? std::filesystem::path(entry.path)
-            : std::filesystem::path(state.launcher_path);
+    const std::filesystem::path icon_path = ShortcutIconPath(state, entry);
     if (SUCCEEDED(result)) result = shell_link->SetIconLocation(icon_path.c_str(), 0);
 
     IPersistFile* persist = nullptr;

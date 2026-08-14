@@ -73,6 +73,8 @@ windivert\WinDivert64.sys         （仅 x64）
 
 “桌面快捷方式”会先保存当前入口，再在当前用户桌面创建“入口名称（代理）.lnk”。快捷方式只保存入口的稳定标识；每次双击都会从 `%LOCALAPPDATA%\EasyNetHook\launcher-entries.tsv` 读取最新的代理地址、程序路径和参数，因此修改入口后不需要重新创建快捷方式。快捷方式指向当前目录中的 `easy-net-hook.exe`，请不要移动或单独复制该 EXE；SOCKS5 客户端也必须先处于可用状态。
 
+ChatGPT 入口会从本机安装的 `OpenAI.Codex` 包读取官方 `icon-chatgpt.ico`，并缓存到 `%LOCALAPPDATA%\EasyNetHook\Icons\chatgpt.ico` 供桌面快捷方式使用。这样 Microsoft Store 更新后清理旧的 WindowsApps 版本目录，也不会让已经创建的快捷方式丢失图标；重新点击“创建桌面快捷方式”可刷新缓存。
+
 入口最多保留 30 个，保存在 `%LOCALAPPDATA%\EasyNetHook\launcher-entries.tsv`，不保存代理用户名或密码。新版第一次运行时会把旧的 `launcher-history.tsv` 自动迁移成快捷入口，同时保留旧文件作为备份。微信入口可以直接勾选“接管已经运行的微信”，不再需要手写 `--wechat-existing` 命令。
 
 “启动成功后关闭本窗口”默认开启。这里关闭的只是启动器界面，不会退出已经启动的 ChatGPT、Antigravity、微信或通用 Hook 目标进程：ChatGPT 的 Chromium 代理参数已由目标进程继承，普通程序的 Hook DLL 已注入，微信 TUN/WinDivert 与 Antigravity language server 监视器则是独立的后台进程。各场景在界面中会显示相应的限制、权限和关闭行为提示。若要连续编辑多个入口，可以取消该选项。

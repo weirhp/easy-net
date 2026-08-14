@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "browser_proxy.h"
+#include "chatgpt_package.h"
 #include "config_ipc.h"
 #include "dns_resolver.h"
 #include "launcher_gui.h"
@@ -483,45 +484,6 @@ std::optional<std::filesystem::path> FindChromiumBrowser(const Options& options)
     for (const auto& candidate : candidates) {
         if (std::filesystem::is_regular_file(candidate)) {
             return candidate;
-        }
-    }
-    return std::nullopt;
-}
-
-std::optional<std::filesystem::path> FindChatGptExecutable() {
-    constexpr wchar_t package_family[] = L"OpenAI.Codex_2p2nqsd0c76g0";
-    UINT32 count = 0;
-    UINT32 buffer_length = 0;
-    LONG result = GetPackagesByPackageFamily(package_family, &count, nullptr,
-                                             &buffer_length, nullptr);
-    if (result != ERROR_INSUFFICIENT_BUFFER || count == 0 || buffer_length == 0) {
-        return std::nullopt;
-    }
-
-    std::vector<PWSTR> package_names(count);
-    std::vector<wchar_t> name_buffer(buffer_length);
-    result = GetPackagesByPackageFamily(package_family, &count, package_names.data(),
-                                        &buffer_length, name_buffer.data());
-    if (result != ERROR_SUCCESS) {
-        return std::nullopt;
-    }
-
-    for (UINT32 index = 0; index < count; ++index) {
-        UINT32 path_length = 0;
-        result = GetStagedPackagePathByFullName(package_names[index], &path_length, nullptr);
-        if (result != ERROR_INSUFFICIENT_BUFFER || path_length == 0) {
-            continue;
-        }
-        std::vector<wchar_t> path_buffer(path_length);
-        result = GetStagedPackagePathByFullName(package_names[index], &path_length,
-                                                path_buffer.data());
-        if (result != ERROR_SUCCESS) {
-            continue;
-        }
-        const std::filesystem::path executable =
-            std::filesystem::path(path_buffer.data()) / L"app/ChatGPT.exe";
-        if (std::filesystem::is_regular_file(executable)) {
-            return executable;
         }
     }
     return std::nullopt;
@@ -1718,7 +1680,7 @@ int LaunchChatGptApp(const Options& options) {
         std::wcerr << L"--chatgpt-app requires a literal SOCKS5 address such as 127.0.0.1:1080.\n";
         return 2;
     }
-    const auto executable = FindChatGptExecutable();
+    const auto executable = easy_net::chatgpt::FindExecutable();
     if (!executable) {
         std::wcerr << L"The installed OpenAI.Codex package or app/ChatGPT.exe was not found.\n";
         return 3;

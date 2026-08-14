@@ -114,6 +114,7 @@ add_executable(easy_net_hook_launcher
     src/easy_net_hook.manifest
     src/easy_net_hook.rc
     src/browser_proxy.h
+    src/chatgpt_package.h
     src/config_ipc.h
     src/history_store.h
     src/launcher.cpp

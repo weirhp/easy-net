@@ -15,8 +15,8 @@
       <div><h1>Easy-Net Lite</h1><p id="app-version">版本读取中</p></div>
     </div>
     <nav class="side-nav" role="tablist" aria-label="管理分区">
-      <button type="button" class="side-nav-item active" id="tab-proxies" data-tab="proxies" role="tab" aria-selected="true"><svg class="icon" aria-hidden="true"><use href="#icon-network"></use></svg><span>代理管理</span></button>
-      <button type="button" class="side-nav-item" id="tab-apps" data-tab="apps" role="tab" aria-selected="false" hidden><svg class="icon" aria-hidden="true"><use href="#icon-apps"></use></svg><span>应用管理</span></button>
+      <button type="button" class="side-nav-item active" id="tab-proxies" data-tab="proxies" role="tab" aria-selected="true"><svg class="icon" aria-hidden="true"><use href="#icon-network"></use></svg><span>网络代理管理</span></button>
+      <button type="button" class="side-nav-item" id="tab-apps" data-tab="apps" role="tab" aria-selected="false" hidden><svg class="icon" aria-hidden="true"><use href="#icon-apps"></use></svg><span>应用代理管理</span></button>
     </nav>
     <div class="sidebar-bottom">
       <p class="sidebar-hint">关闭窗口不会停止代理，Lite 会继续在系统托盘运行。</p>
@@ -27,7 +27,7 @@
 
   <main class="workspace">
     <header class="page-header">
-      <div><p class="eyebrow" id="page-eyebrow">LOCAL PROXY</p><h2 id="page-title">本地代理管理</h2><p class="page-subtitle" id="summary">正在读取配置…</p></div>
+      <div><p class="eyebrow" id="page-eyebrow">LOCAL PROXY</p><h2 id="page-title">网络代理管理</h2><p class="page-subtitle" id="summary">正在读取配置…</p></div>
       <div class="header-actions" data-actions="proxies">
         <button class="button secondary" type="button" data-import><svg class="icon" aria-hidden="true"><use href="#icon-import"></use></svg>导入配置</button>
         <button class="button secondary" type="button" data-command="stop-all"><svg class="icon" aria-hidden="true"><use href="#icon-stop"></use></svg>停止全部</button>
@@ -35,7 +35,7 @@
         <button class="button primary" type="button" data-add="websocket"><svg class="icon" aria-hidden="true"><use href="#icon-plus"></use></svg>添加 WebSocket</button>
         <button class="button primary" type="button" data-add="ssh"><svg class="icon" aria-hidden="true"><use href="#icon-plus"></use></svg>添加 SSH</button>
       </div>
-      <div class="header-actions" data-actions="apps" hidden><button class="button primary" type="button" data-add-launch><svg class="icon" aria-hidden="true"><use href="#icon-plus"></use></svg>添加启动入口</button></div>
+      <div class="header-actions" data-actions="apps" hidden><button class="button primary" type="button" data-add-launch><svg class="icon" aria-hidden="true"><use href="#icon-plus"></use></svg>添加被代理应用</button></div>
     </header>
 
     <section class="notice" aria-labelledby="notice-title">
@@ -47,7 +47,6 @@
       <label class="selection-check"><input type="checkbox" id="select-all-profiles"><span>全选</span></label>
       <span id="selection-count">已选择 0 项</span>
       <button type="button" class="button secondary compact" id="batch-export"><svg class="icon" aria-hidden="true"><use href="#icon-share"></use></svg>批量导出分享码</button>
-      <button type="button" class="text-button" id="clear-selection">取消选择</button>
     </section>
 
     <section class="profiles" id="profiles" aria-live="polite"><div class="empty-state"><div class="loading" aria-hidden="true"></div><p>正在加载代理配置</p></div></section>
@@ -64,7 +63,7 @@
           <div class="form-grid single-column">
             <label class="field full"><span>名称</span><input id="field-name" required maxlength="80" placeholder="例如：公司代理"></label>
             <div class="inline-fields"><label class="field"><span>本地 SOCKS5/HTTP 端口</span><input id="field-local-port" required type="number" min="1" max="65535" inputmode="numeric"></label><label class="check-field inline-check"><input id="field-auto-start" type="checkbox"><span>程序启动后自动运行</span></label></div>
-            <label class="check-field full"><input id="field-bypass-private" type="checkbox"><span>内网目标使用本机网络直连</span></label>
+            <label class="check-field full"><input id="field-bypass-private" type="checkbox"><span>局域网与私有地址直连（不走代理）</span></label>
           </div>
         </section>
         <section id="websocket-fields" class="dialog-section connection-section" hidden>
@@ -90,7 +89,7 @@
         </section>
         <p class="form-error full-span" id="form-error" role="alert" hidden></p>
       </div>
-      <div class="dialog-actions split-actions"><button type="button" class="button test-button" id="test-profile" hidden><svg class="icon" aria-hidden="true"><use href="#icon-bolt"></use></svg>测试连接</button><div class="action-group"><button type="button" class="button secondary" id="cancel-dialog">取消</button><button type="submit" class="button primary" id="save-profile">保存配置</button></div></div>
+      <div class="dialog-actions"><button type="button" class="button test-button" id="test-profile" hidden><svg class="icon" aria-hidden="true"><use href="#icon-bolt"></use></svg>测试连接</button><div class="action-group"><button type="button" class="button secondary" id="cancel-dialog">取消</button><button type="submit" class="button primary" id="save-profile">保存配置</button></div></div>
     </form>
   </dialog>
 
@@ -108,13 +107,13 @@
 
   <dialog id="launch-dialog" class="wide-dialog" aria-labelledby="launch-dialog-title">
     <form id="launch-form" class="dialog-shell">
-      <div class="dialog-header"><div><p class="eyebrow">应用入口</p><h2 id="launch-dialog-title">添加启动入口</h2></div><button type="button" class="icon-button" id="close-launch-dialog" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button></div>
+      <div class="dialog-header"><div><p class="eyebrow">应用代理</p><h2 id="launch-dialog-title">添加被代理应用</h2></div><button type="button" class="icon-button" id="close-launch-dialog" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button></div>
       <div class="dialog-body dialog-columns launch-columns">
         <section class="dialog-section"><h3>基本信息</h3><div class="form-grid single-column"><label class="field"><span>名称</span><input id="launch-name" required maxlength="80" placeholder="例如：ChatGPT"></label><label class="field"><span>场景</span><select id="launch-mode"><option value="chatgpt">ChatGPT</option><option value="antigravity">Antigravity IDE</option><option value="cursor">Cursor</option><option value="wechat">微信 TUN</option><option value="wechat-windivert">微信 WinDivert</option><option value="hook">通用 Hook</option><option value="windivert">通用 WinDivert</option></select></label><label class="field" id="launch-path-row"><span id="launch-path-label">程序路径（可留空自动查找）</span><input id="launch-path" placeholder="C:\Program Files\..."></label><label class="field" id="launch-args-row"><span>附加参数</span><input id="launch-args" placeholder="可选"></label></div></section>
         <section class="dialog-section connection-section"><h3>代理与网络</h3><div class="form-grid"><label class="field full"><span>使用的代理配置</span><select id="launch-profile" required></select><small>可以选择 Lite 配置，也可以输入外部 SOCKS5。</small></label><label class="field full" id="launch-proxy-row" hidden><span>手动 SOCKS5 地址</span><input id="launch-proxy" placeholder="例如 127.0.0.1:10808"><small>Lite 不会启动或管理这个外部代理。</small></label><label class="field" id="launch-udp-row" hidden><span>UDP 策略</span><select id="launch-udp"><option value="auto">自动</option><option value="proxy">走代理</option><option value="block">阻断</option><option value="direct">直连</option></select></label><label class="field" id="launch-dns-row"><span>DNS（可选）</span><input id="launch-dns" placeholder="例如 1.1.1.1"></label><label class="field full" id="launch-processes-row" hidden><span>辅助进程名（可选）</span><input id="launch-processes" placeholder="例如 app.exe;helper.exe"><small>若网络由其他 EXE 发起，用分号添加进程名。</small></label><label class="check-field full" id="launch-isolated-row" hidden><input id="launch-isolated" type="checkbox"><span>使用隔离配置（不影响日常登录状态）</span></label><label class="check-field full" id="launch-wechat-existing-row" hidden><input id="launch-wechat-existing" type="checkbox"><span>接管已运行的微信</span></label></div><p class="share-note" id="launch-mode-note">启动由 Easy-Net Hook 在后台完成。</p></section>
         <p class="form-error full-span" id="launch-error" role="alert" hidden></p>
       </div>
-      <div class="dialog-actions"><button type="button" class="button secondary" id="cancel-launch-dialog">取消</button><button type="submit" class="button primary" id="save-launch">保存入口</button></div>
+      <div class="dialog-actions"><button type="button" class="button secondary" id="cancel-launch-dialog">取消</button><button type="submit" class="button primary" id="save-launch">保存应用</button></div>
     </form>
   </dialog>
 
@@ -131,7 +130,6 @@
     <symbol id="icon-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/></symbol>
     <symbol id="icon-share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="m8.3 10.9 7.4-4.4m-7.4 6.6 7.4 4.4"/></symbol>
     <symbol id="icon-edit" viewBox="0 0 24 24"><path d="M4 20h4l11-11-4-4L4 16zm9.5-13.5 4 4"/></symbol>
-    <symbol id="icon-trash" viewBox="0 0 24 24"><path d="M5 7h14M9 7V4h6v3m2 0-1 13H8L7 7m3 4v5m4-5v5"/></symbol>
     <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
     <symbol id="icon-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></symbol>
     <symbol id="icon-clipboard" viewBox="0 0 24 24"><path d="M9 5H6a2 2 0 0 0-2 2v12h16V7a2 2 0 0 0-2-2h-3M9 3h6v4H9z"/></symbol>

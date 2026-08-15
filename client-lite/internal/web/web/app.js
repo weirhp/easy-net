@@ -133,7 +133,7 @@ function renderProfiles() {
   const running = appState.profiles.filter((item) => item.running).length;
   $("#summary").textContent = `${appState.profiles.length} 个配置 · ${running} 个本地监听`;
   $("#page-eyebrow").textContent = "LOCAL PROXY";
-  $("#page-title").textContent = "本地代理管理";
+  $("#page-title").textContent = "网络代理管理";
   $("#notice-title").textContent = "使用说明";
   $("#overview-note").textContent = "配置并启动代理后，本机流量会通过加密通道传输。关闭此窗口不会停止代理运行，你可以在系统托盘中继续管理。";
   if (!appState.profiles.length) {
@@ -167,7 +167,7 @@ function renderProfiles() {
             <span class="badge">${type}</span>
             <span class="status ${statusClass}">${statusText}</span>
             ${profile.autoStart ? `<span class="badge neutral">自动启动</span>` : ""}
-            ${profile.bypassPrivate ? `<span class="badge neutral">内网直连</span>` : ""}
+            ${profile.bypassPrivate ? `<span class="badge neutral">局域网直连</span>` : ""}
           </div>
           <p class="endpoint">${localCapabilities} ${escapeHTML(profile.listenHost)}:${profile.listenPort} · ${escapeHTML(endpoint)}</p>
 		  <div class="connection-row">${connectionStatus}</div>
@@ -178,9 +178,9 @@ function renderProfiles() {
           <button class="button ${item.running ? "secondary" : "start"}" data-profile-action="${primaryAction}" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon(item.running ? "stop" : "play")}${primaryText}</button>
           <button class="button secondary" data-profile-action="share" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("share")}分享</button>
           <button class="button secondary" data-profile-action="edit" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("edit")}编辑</button>
-          <button class="button danger" title="删除 ${escapeHTML(profile.name)}" aria-label="删除 ${escapeHTML(profile.name)}" data-profile-action="delete" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("trash")}</button>
         </div>
       </div>
+      <button class="card-delete" title="删除 ${escapeHTML(profile.name)}" aria-label="删除 ${escapeHTML(profile.name)}" data-profile-action="delete" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("close")}</button>
     </article>`;
   }).join("");
   updateSelectionToolbar();
@@ -247,13 +247,13 @@ function launchModeLabel(mode) {
 
 function renderLaunches() {
   if (appState.tab !== "apps") return;
-  $("#page-eyebrow").textContent = "APP LAUNCHER";
-  $("#page-title").textContent = "应用启动入口";
-  $("#summary").textContent = `${appState.launches.length} 个启动入口`;
-  $("#notice-title").textContent = "入口说明";
-  $("#overview-note").textContent = "每个入口会先准备所选代理，再由 Easy-Net Hook 在后台启动应用。桌面快捷方式始终读取最新入口设置。";
+  $("#page-eyebrow").textContent = "APPLICATION PROXY";
+  $("#page-title").textContent = "应用代理管理";
+  $("#summary").textContent = `${appState.launches.length} 个被代理应用`;
+  $("#notice-title").textContent = "应用代理说明";
+  $("#overview-note").textContent = "启动应用时会先准备所选代理，再由 Easy-Net Hook 在后台完成代理接管。桌面快捷方式始终读取最新设置。";
   if (!appState.launches.length) {
-    launchesElement.innerHTML = `<div class="empty-state"><h2>还没有启动入口</h2><p>添加 ChatGPT、Cursor、微信或通用程序，选择已有代理后即可启动。</p></div>`;
+    launchesElement.innerHTML = `<div class="empty-state"><h2>还没有被代理应用</h2><p>添加 ChatGPT、Cursor、微信或其他程序，选择代理后即可启动。</p></div>`;
     return;
   }
   launchesElement.innerHTML = appState.launches.map((entry) => {
@@ -278,9 +278,9 @@ function renderLaunches() {
           <button class="button start" data-launch-action="start" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("play")}启动</button>
           <button class="button secondary" data-launch-action="shortcut" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("shortcut")}桌面快捷方式</button>
           <button class="button secondary" data-launch-action="edit" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("edit")}编辑</button>
-          <button class="button danger" title="删除 ${escapeHTML(entry.name)}" aria-label="删除 ${escapeHTML(entry.name)}" data-launch-action="delete" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("trash")}</button>
         </div>
       </div>
+      <button class="card-delete" title="删除 ${escapeHTML(entry.name)}" aria-label="删除 ${escapeHTML(entry.name)}" data-launch-action="delete" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("close")}</button>
     </article>`;
   }).join("");
 }
@@ -326,7 +326,7 @@ function openLaunchDialog(id = "") {
   appState.editingLaunchId = id;
   launchFormElement.reset();
   $("#launch-error").hidden = true;
-  $("#launch-dialog-title").textContent = id ? "编辑启动入口" : "添加启动入口";
+  $("#launch-dialog-title").textContent = id ? "编辑被代理应用" : "添加被代理应用";
   $("#launch-name").value = entry?.name || "";
   $("#launch-mode").value = entry?.mode || "chatgpt";
   $("#launch-path").value = entry?.path || "";
@@ -377,14 +377,14 @@ async function saveLaunch(event) {
       })
     });
     closeLaunchDialog();
-    showToast("启动入口已保存");
+    showToast("被代理应用已保存");
     await loadState();
   } catch (error) {
     errorElement.textContent = error.message;
     errorElement.hidden = false;
   } finally {
     saveButton.disabled = false;
-    saveButton.textContent = "保存入口";
+    saveButton.textContent = "保存应用";
   }
 }
 
@@ -396,15 +396,15 @@ async function launchAction(action, id) {
   if (action === "edit") { openLaunchDialog(id); return; }
   if (action === "delete") {
     const confirmed = await showConfirmModal({
-      kind: "删除入口",
-      title: "删除这个启动入口？",
-      message: `“${entry.name}”将从应用列表中移除。`,
-      details: "已创建的桌面快捷方式不会自动删除，双击后会提示入口已失效。",
-      confirmText: "删除入口",
+      kind: "删除应用",
+      title: "删除这个被代理应用？",
+      message: `“${entry.name}”将从应用代理列表中移除。`,
+      details: "已创建的桌面快捷方式不会自动删除，双击后会提示应用配置已失效。",
+      confirmText: "删除应用",
       danger: true
     });
     if (!confirmed) return;
-    try { await api(`/api/launches/${encodeURIComponent(id)}`, { method: "DELETE" }); showToast("启动入口已删除"); await loadState(); }
+    try { await api(`/api/launches/${encodeURIComponent(id)}`, { method: "DELETE" }); showToast("被代理应用已删除"); await loadState(); }
     catch (error) { showToast(error.message, true); }
     return;
   }
@@ -440,7 +440,7 @@ function openProfileDialog(kind, id = "") {
   $("#field-name").value = profile?.name || "";
   $("#field-local-port").value = profile?.listenPort || nextPort();
   $("#field-auto-start").checked = profile ? profile.autoStart : true;
-  $("#field-bypass-private").checked = Boolean(profile?.bypassPrivate);
+  $("#field-bypass-private").checked = profile ? Boolean(profile.bypassPrivate) : true;
   if (kind === "websocket") {
     $("#field-ws-url").value = profile?.websocket?.url || "";
 	$("#field-ws-secret").placeholder = id ? "已保存；如需更换请重新输入" : "请输入连接密钥";
@@ -838,7 +838,6 @@ document.addEventListener("change", (event) => {
 $("#field-ssh-auth").addEventListener("change", toggleSSHAuth);
 $("#test-profile").addEventListener("click", testEditedProfile);
 $("#batch-export").addEventListener("click", exportSelectedProfiles);
-$("#clear-selection").addEventListener("click", () => setAllProfilesSelected(false));
 $("#select-all-profiles").addEventListener("change", (event) => setAllProfilesSelected(event.target.checked));
 $("#mobile-menu").addEventListener("click", () => setNavigationOpen(!document.body.classList.contains("nav-open")));
 $("#sidebar-scrim").addEventListener("click", () => setNavigationOpen(false));

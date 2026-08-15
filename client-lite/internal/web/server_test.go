@@ -74,7 +74,7 @@ func TestManagementPageAndProfileAPI(t *testing.T) {
 	if response.StatusCode != http.StatusOK || !strings.Contains(string(page), "Easy-Net Lite") {
 		t.Fatalf("unexpected page response: %d", response.StatusCode)
 	}
-	if !strings.Contains(string(page), `data-tab="apps"`) || !strings.Contains(string(page), "添加启动入口") {
+	if !strings.Contains(string(page), `data-tab="apps"`) || !strings.Contains(string(page), "添加被代理应用") {
 		t.Fatal("management page is missing the apps tab markup")
 	}
 	for _, marker := range []string{`id="batch-export"`, `id="select-all-profiles"`, `id="test-profile"`, "粘贴一个或多个分享码"} {

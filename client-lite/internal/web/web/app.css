@@ -61,6 +61,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .button.secondary:hover:not(:disabled) { color: var(--primary); border-color: #bfb3dc; background: white; }
 .button.start { color: var(--success); border-color: #bfe7d8; background: #f5fffb; }
 .button.start:hover:not(:disabled) { color: white; border-color: var(--success); background: var(--success); }
+.button.stop { color: white; border-color: var(--danger); background: var(--danger); }
+.button.stop:hover:not(:disabled) { border-color: #a52c28; background: #a52c28; box-shadow: 0 7px 17px rgba(196, 58, 53, .18); }
 .button.danger { width: 36px; min-width: 36px; padding: 7px; color: var(--danger); border-color: transparent; background: transparent; }
 .button.danger:hover:not(:disabled) { background: var(--danger-soft); }
 .button.danger-solid { color: white; background: var(--danger); }

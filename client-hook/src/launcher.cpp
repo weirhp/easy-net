@@ -983,7 +983,8 @@ int RelaunchElevated() {
 
     SHELLEXECUTEINFOW execute{};
     execute.cbSize = sizeof(execute);
-    execute.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
+    execute.fMask = SEE_MASK_NOCLOSEPROCESS;
+    execute.hwnd = GetForegroundWindow();
     execute.lpVerb = L"runas";
     execute.lpFile = executable.c_str();
     execute.lpParameters = parameter_line.c_str();
@@ -1551,14 +1552,21 @@ int WatchSharedWinDivert(DWORD root_process_id,
     }
 }
 
-bool EnsureSharedWinDivert(const std::filesystem::path& launcher,
-                           DWORD root_process_id,
-                           const std::filesystem::path& engine_path,
-                           const std::filesystem::path& config_path) {
+enum class SharedWinDivertResult {
+    ready,
+    failed,
+    elevation_required,
+};
+
+SharedWinDivertResult EnsureSharedWinDivert(const std::filesystem::path& launcher,
+                                            DWORD root_process_id,
+                                            const std::filesystem::path& engine_path,
+                                            const std::filesystem::path& config_path,
+                                            bool defer_elevation) {
     if (!std::filesystem::is_regular_file(launcher) ||
         !std::filesystem::is_regular_file(engine_path) ||
         !std::filesystem::is_regular_file(config_path)) {
-        return false;
+        return SharedWinDivertResult::failed;
     }
     const std::filesystem::path log_path =
         config_path.parent_path() / L"shared-windivert.log";
@@ -1571,7 +1579,7 @@ bool EnsureSharedWinDivert(const std::filesystem::path& launcher,
     };
     const auto expected_revision = SharedProfileRevision(config_path);
     if (!expected_revision) {
-        return false;
+        return SharedWinDivertResult::failed;
     }
     const auto wait_ready = [&](unsigned int timeout_ms) {
         for (unsigned int waited = 0; waited < timeout_ms; waited += 100) {
@@ -1588,7 +1596,7 @@ bool EnsureSharedWinDivert(const std::filesystem::path& launcher,
     // revision. Waiting for it first avoids a new UAC prompt for every app.
     ScopedHandle existing(OpenMutexW(SYNCHRONIZE, FALSE, kSharedWinDivertMutex));
     if (existing.get() != nullptr && wait_ready(5000)) {
-        return true;
+        return SharedWinDivertResult::ready;
     }
 
     bool supervisor_started = false;
@@ -1599,12 +1607,18 @@ bool EnsureSharedWinDivert(const std::filesystem::path& launcher,
             CloseHandle(supervisor.hThread);
             CloseHandle(supervisor.hProcess);
         }
+    } else if (defer_elevation) {
+        // Easy-Net Lite owns the foreground UI and must request elevation itself.
+        // Asking for UAC from this hidden worker can leave the web UI waiting forever
+        // without a visible consent dialog.
+        return SharedWinDivertResult::elevation_required;
     } else {
         const std::wstring parameters = BuildCommandLine(arguments);
         const std::wstring working_directory = launcher.parent_path().wstring();
         SHELLEXECUTEINFOW execute{};
         execute.cbSize = sizeof(execute);
-        execute.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
+        execute.fMask = SEE_MASK_NOCLOSEPROCESS;
+        execute.hwnd = GetForegroundWindow();
         execute.lpVerb = L"runas";
         execute.lpFile = launcher.c_str();
         execute.lpParameters = parameters.c_str();
@@ -1616,9 +1630,10 @@ bool EnsureSharedWinDivert(const std::filesystem::path& launcher,
         }
     }
     if (!supervisor_started) {
-        return false;
+        return SharedWinDivertResult::failed;
     }
-    return wait_ready(15000);
+    return wait_ready(15000) ? SharedWinDivertResult::ready
+                             : SharedWinDivertResult::failed;
 }
 
 int LaunchWeChat(const Options& options) {
@@ -1976,8 +1991,15 @@ int LaunchWinDivertApplication(const Options& options) {
             std::wcerr << L"The shared WinDivert profile or Lite root process is invalid.\n";
             return 4;
         }
-        if (!EnsureSharedWinDivert(launcher, *options.windivert_shared_root, *engine,
-                                   config_path)) {
+        const auto shared_result = EnsureSharedWinDivert(
+            launcher, *options.windivert_shared_root, *engine, config_path,
+            options.gui_worker && !IsProcessElevated());
+        if (shared_result == SharedWinDivertResult::elevation_required) {
+            std::wcerr << L"Administrator permission is required to start the shared "
+                          L"WinDivert engine.\n";
+            return 8;
+        }
+        if (shared_result != SharedWinDivertResult::ready) {
             std::wcerr << L"The shared WinDivert engine did not become ready. See "
                        << (config_path.parent_path() / L"shared-windivert.log").wstring()
                        << L".\n";

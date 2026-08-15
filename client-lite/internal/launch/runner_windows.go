@@ -4,15 +4,18 @@ package launch
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 	"unicode/utf16"
 	"unsafe"
 
@@ -21,6 +24,37 @@ import (
 )
 
 type windowsRunner struct{}
+
+const (
+	hookElevationRequiredExitCode = 8
+	hookStartTimeout              = 45 * time.Second
+	seeMaskNoCloseProcess         = 0x00000040
+	seeMaskNoAsync                = 0x00000100
+	swHide                        = 0
+)
+
+var (
+	shellExecuteExW     = windows.NewLazySystemDLL("shell32.dll").NewProc("ShellExecuteExW")
+	getForegroundWindow = windows.NewLazySystemDLL("user32.dll").NewProc("GetForegroundWindow")
+)
+
+type shellExecuteInfo struct {
+	Size       uint32
+	Mask       uint32
+	Window     windows.Handle
+	Verb       *uint16
+	File       *uint16
+	Parameters *uint16
+	Directory  *uint16
+	Show       int32
+	Instance   windows.Handle
+	IDList     uintptr
+	Class      *uint16
+	ClassKey   windows.Handle
+	HotKey     uint32
+	Icon       windows.Handle
+	Process    windows.Handle
+}
 
 func DefaultRunner() Runner { return windowsRunner{} }
 
@@ -47,11 +81,22 @@ func (runner windowsRunner) Start(args []string) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(hook, args...)
+	err = runHookProcess(hook, args)
+	var startError *HookStartError
+	if errors.As(err, &startError) && startError.ExitCode == hookElevationRequiredExitCode {
+		return runElevatedHookProcess(hook, args)
+	}
+	return err
+}
+
+func runHookProcess(hook string, args []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), hookStartTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, hook, args...)
 	cmd.Dir = filepath.Dir(hook)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
-		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS | windows.CREATE_NO_WINDOW,
+		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_NO_WINDOW,
 	}
 	var diagnostics bytes.Buffer
 	cmd.Stdout = &diagnostics
@@ -66,9 +111,75 @@ func (runner windowsRunner) Start(args []string) error {
 		if errors.As(err, &exitError) {
 			exitCode = exitError.ExitCode()
 		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			exitCode = 5
+			message = "等待 Easy-Net Hook 完成启动超时；请确认管理员授权窗口没有被其他窗口遮挡"
+		}
 		return &HookStartError{ExitCode: exitCode, Diagnostics: message, Cause: err}
 	}
 	return nil
+}
+
+func runElevatedHookProcess(hook string, args []string) error {
+	// ShellExecuteEx may use COM internally. Keep the call on one initialized OS
+	// thread so the UAC request is reliable when invoked from an HTTP goroutine.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := windows.CoInitializeEx(0, windows.COINIT_APARTMENTTHREADED); err == nil {
+		defer windows.CoUninitialize()
+	}
+	verb, _ := windows.UTF16PtrFromString("runas")
+	file, _ := windows.UTF16PtrFromString(hook)
+	directory, _ := windows.UTF16PtrFromString(filepath.Dir(hook))
+	parameters, _ := windows.UTF16PtrFromString(joinWindowsArguments(args))
+	foreground, _, _ := getForegroundWindow.Call()
+	info := shellExecuteInfo{
+		Size:       uint32(unsafe.Sizeof(shellExecuteInfo{})),
+		Mask:       seeMaskNoCloseProcess | seeMaskNoAsync,
+		Window:     windows.Handle(foreground),
+		Verb:       verb,
+		File:       file,
+		Parameters: parameters,
+		Directory:  directory,
+		Show:       swHide,
+	}
+	result, _, callErr := shellExecuteExW.Call(uintptr(unsafe.Pointer(&info)))
+	if result == 0 {
+		message := "无法获取管理员权限"
+		if errors.Is(callErr, windows.ERROR_CANCELLED) {
+			message = "管理员授权已取消；接管运行中的应用需要管理员权限"
+		} else if callErr != nil && callErr != windows.ERROR_SUCCESS {
+			message = fmt.Sprintf("无法获取管理员权限：%v", callErr)
+		}
+		return &HookStartError{ExitCode: 5, Diagnostics: message, Cause: callErr}
+	}
+	if info.Process == 0 {
+		return &HookStartError{ExitCode: 5, Diagnostics: "管理员进程未能启动"}
+	}
+	defer windows.CloseHandle(info.Process)
+	wait, waitErr := windows.WaitForSingleObject(info.Process, uint32(hookStartTimeout/time.Millisecond))
+	if waitErr != nil {
+		return &HookStartError{ExitCode: 5, Diagnostics: fmt.Sprintf("等待管理员进程失败：%v", waitErr), Cause: waitErr}
+	}
+	if wait == uint32(windows.WAIT_TIMEOUT) {
+		return &HookStartError{ExitCode: 5, Diagnostics: "管理员进程启动超时；请查看 shared-windivert.log"}
+	}
+	var exitCode uint32
+	if err := windows.GetExitCodeProcess(info.Process, &exitCode); err != nil {
+		return &HookStartError{ExitCode: 5, Diagnostics: fmt.Sprintf("读取管理员进程结果失败：%v", err), Cause: err}
+	}
+	if exitCode != 0 {
+		return &HookStartError{ExitCode: int(exitCode), Diagnostics: fmt.Sprintf("管理员进程返回错误代码 %d", exitCode)}
+	}
+	return nil
+}
+
+func joinWindowsArguments(args []string) string {
+	escaped := make([]string, len(args))
+	for index, argument := range args {
+		escaped[index] = syscall.EscapeArg(argument)
+	}
+	return strings.Join(escaped, " ")
 }
 
 func (windowsRunner) CheckProxy(address string) error { return checkSOCKS5Proxy(address) }

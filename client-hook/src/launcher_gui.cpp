@@ -1658,7 +1658,7 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
                 EndDialog(dialog, 0);
             }
             return TRUE;
-        case WM_DESTROY:
+        case WM_DESTROY: {
             KillTimer(dialog, kLaunchTimer);
             if (state->import_thread.joinable()) {
                 state->import_thread.join();
@@ -1687,6 +1687,7 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
                 state->title_font = nullptr;
             }
             return TRUE;
+        }
         default:
             break;
     }

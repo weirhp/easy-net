@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"easy-net/client-lite/internal/launch"
 	"easy-net/client-lite/internal/model"
 	"easy-net/client-lite/internal/service"
 	"easy-net/client-lite/internal/sharecode"
@@ -34,10 +35,12 @@ type Options struct {
 	StatusFile    string
 	Application   string
 	DisableAssets bool
+	Launches      *launch.Service
 }
 
 type Server struct {
 	service       *service.Service
+	launches      *launch.Service
 	http          *http.Server
 	listener      net.Listener
 	token         string
@@ -50,10 +53,16 @@ type Server struct {
 
 type stateResponse struct {
 	Profiles   []profileView `json:"profiles"`
+	Launches   []launch.View `json:"launches,omitempty"`
+	Features   featuresView  `json:"features"`
 	ConfigPath string        `json:"configPath"`
 	Token      string        `json:"token"`
 	Version    string        `json:"version"`
 	Warnings   []string      `json:"warnings,omitempty"`
+}
+
+type featuresView struct {
+	AppLaunches bool `json:"appLaunches"`
 }
 
 type upsertRequest struct {
@@ -150,7 +159,7 @@ func NewWithOptions(svc *service.Service, onQuit func(), options Options) (*Serv
 		listen = listenAddress
 	}
 	s := &Server{
-		service: svc, token: hex.EncodeToString(tokenBytes), onQuit: onQuit,
+		service: svc, launches: options.Launches, token: hex.EncodeToString(tokenBytes), onQuit: onQuit,
 		listenAddress: listen, statusFile: strings.TrimSpace(options.StatusFile),
 		application: application, serveAssets: !options.DisableAssets,
 	}
@@ -161,6 +170,8 @@ func NewWithOptions(svc *service.Service, onQuit func(), options Options) (*Serv
 	mux.HandleFunc("/api/proxy", s.handleProxy)
 	mux.HandleFunc("/api/profiles", s.handleProfiles)
 	mux.HandleFunc("/api/profiles/", s.handleProfileAction)
+	mux.HandleFunc("/api/launches", s.handleLaunches)
+	mux.HandleFunc("/api/launches/", s.handleLaunchAction)
 	mux.HandleFunc("/api/import", s.handleImport)
 	mux.HandleFunc("/api/start-all", s.handleStartAll)
 	mux.HandleFunc("/api/stop-all", s.handleStopAll)
@@ -177,6 +188,9 @@ func NewWithOptions(svc *service.Service, onQuit func(), options Options) (*Serv
 }
 
 func (s *Server) Start() error {
+	if existingURL, ok := probeApplicationStatusFile(s.statusFile, s.application); ok {
+		return &AlreadyRunningError{URL: existingURL}
+	}
 	listener, err := net.Listen("tcp", s.listenAddress)
 	if err != nil {
 		if existingURL, ok := probeApplicationServerAt(
@@ -205,6 +219,30 @@ func (s *Server) Start() error {
 		}
 	}()
 	return nil
+}
+
+func probeApplicationStatusFile(path, expectedApplication string) (string, bool) {
+	if strings.TrimSpace(path) == "" {
+		return "", false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer file.Close()
+	var status struct {
+		Application string `json:"application"`
+		Control     string `json:"control"`
+	}
+	if err := json.NewDecoder(io.LimitReader(file, 64*1024)).Decode(&status); err != nil || status.Application != expectedApplication {
+		return "", false
+	}
+	parsed, err := url.Parse(status.Control)
+	if err != nil || parsed.Scheme != "http" || !isLocalHostname(parsed.Hostname()) || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false
+	}
+	baseURL := strings.TrimRight(status.Control, "/")
+	return probeApplicationServerAt(baseURL, expectedApplication, expectedApplication == "easy-net-lite")
 }
 
 func (s *Server) URL() string {
@@ -260,7 +298,21 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	for _, state := range states {
 		profiles = append(profiles, toProfileView(state))
 	}
-	writeJSON(w, http.StatusOK, stateResponse{Profiles: profiles, ConfigPath: s.service.ConfigPath(), Token: s.token, Version: version.Value, Warnings: s.service.ConfigWarnings()})
+	response := stateResponse{
+		Profiles: profiles, Features: s.features(), ConfigPath: s.service.ConfigPath(),
+		Token: s.token, Version: version.Value, Warnings: s.service.ConfigWarnings(),
+	}
+	if s.launches != nil {
+		response.Launches = s.launches.Views()
+		if response.Launches == nil {
+			response.Launches = []launch.View{}
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) features() featuresView {
+	return featuresView{AppLaunches: s.launches != nil && launch.Supported()}
 }
 
 func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
@@ -386,6 +438,86 @@ func (s *Server) handleProfileAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleLaunches(w http.ResponseWriter, r *http.Request) {
+	if s.launches == nil {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{"launches": s.launches.Views()})
+	case http.MethodPost:
+		if !s.authorized(r) {
+			writeError(w, http.StatusForbidden, "本地管理令牌无效，请刷新页面")
+			return
+		}
+		var entry model.LaunchEntry
+		if err := decodeJSON(w, r, &entry); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		saved, err := s.launches.Upsert(entry)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "entry": saved})
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func (s *Server) handleLaunchAction(w http.ResponseWriter, r *http.Request) {
+	if s.launches == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if !s.authorized(r) {
+		writeError(w, http.StatusForbidden, "本地管理令牌无效，请刷新页面")
+		return
+	}
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/launches/"), "/"), "/")
+	if len(parts) < 1 || parts[0] == "" {
+		http.NotFound(w, r)
+		return
+	}
+	id := parts[0]
+	if len(parts) == 1 && r.Method == http.MethodDelete {
+		if err := s.launches.Delete(id); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
+	if len(parts) != 2 || r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	switch parts[1] {
+	case "start":
+		view, err := s.launches.Start(id)
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, launch.ErrNotFound) {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "entry": view, "listenAddress": view.ListenAddress})
+	case "shortcut":
+		path, err := s.launches.CreateShortcut(id)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": path})
+	default:
+		http.NotFound(w, r)
+	}
 }
 
 func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {

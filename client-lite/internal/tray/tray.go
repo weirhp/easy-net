@@ -53,7 +53,7 @@ func RunWithOptions(options Options, quit <-chan struct{}, requestQuit func()) {
 		}
 		quitItem := systray.AddMenuItem("退出程序", "停止全部代理并退出")
 		go func() {
-			if options.OpenURL != "" {
+			if options.OpenURL != "" && !options.SkipInitialOpen {
 				if err := OpenBrowser(options.OpenURL); err != nil {
 					log.Printf("[Easy-Net Lite] 打开浏览器失败：%v", err)
 				}

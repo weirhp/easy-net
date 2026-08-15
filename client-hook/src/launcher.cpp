@@ -30,6 +30,7 @@
 #include "config_ipc.h"
 #include "dns_resolver.h"
 #include "launcher_gui.h"
+#include "lite_control.h"
 #include "lite_engine.h"
 #include "socks5_health.h"
 #include "tun_config.h"
@@ -107,7 +108,8 @@ void PrintUsage() {
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --wechat [options] [-- app-args...]\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --wechat-existing [options]\n\n"
         << L"Options:\n"
-        << L"  --gui                  Open the graphical launcher (also the default with no arguments)\n"
+        << L"  --gui                  Open Easy-Net Lite's Apps tab (also the default with no arguments)\n"
+        << L"  --legacy-gui           Open the previous Win32 launcher window\n"
         << L"  --share-code VALUE     Import an Easy-Net share code and start the built-in SOCKS5\n"
         << L"  --engine-profile ID    Start a previously imported built-in proxy profile\n"
         << L"  --username VALUE       SOCKS5 username (optional)\n"
@@ -2695,6 +2697,18 @@ int wmain(int argc, wchar_t** argv) {
             return 3;
         }
         FreeConsole();
+        return easy_net::lite_control::OpenLiteApps(std::wstring(module_path.data(), length));
+    }
+    if (argc == 2 && std::wstring_view(argv[1]) == L"--legacy-gui") {
+        std::vector<wchar_t> module_path(32768);
+        const DWORD length = GetModuleFileNameW(nullptr, module_path.data(),
+                                                static_cast<DWORD>(module_path.size()));
+        if (length == 0 || length >= static_cast<DWORD>(module_path.size())) {
+            MessageBoxW(nullptr, L"Cannot locate easy-net-hook.exe.", L"Easy-Net Hook",
+                        MB_OK | MB_ICONERROR);
+            return 3;
+        }
+        FreeConsole();
         return RunLauncherGui(GetModuleHandleW(nullptr),
                               std::wstring(module_path.data(), length));
     }
@@ -2707,6 +2721,11 @@ int wmain(int argc, wchar_t** argv) {
         const DWORD length = GetModuleFileNameW(nullptr, module_path.data(),
                                                 static_cast<DWORD>(module_path.size()));
         launcher_path.assign(module_path.data(), length);
+        const int dispatched =
+            easy_net::lite_control::DispatchLaunchEntry(launcher_path, argv[2]);
+        if (dispatched >= 0) {
+            return dispatched;
+        }
         std::wstring command_line;
         std::wstring entry_name;
         if (length == 0 || length >= static_cast<DWORD>(module_path.size()) ||

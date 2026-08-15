@@ -16,14 +16,22 @@
           <p>WebSocket 与 SSH 本地 SOCKS5/HTTP 混合代理客户端</p>
         </div>
       </div>
-      <div class="header-actions">
+      <div class="header-actions" data-actions="proxies">
         <button class="button secondary" data-import>导入配置</button>
         <button class="button secondary" data-command="stop-all">停止全部</button>
         <button class="button secondary" data-command="start-all">启动全部</button>
         <button class="button primary" data-add="websocket">添加 WebSocket</button>
         <button class="button primary" data-add="ssh">添加 SSH</button>
       </div>
+      <div class="header-actions" data-actions="apps" hidden>
+        <button class="button primary" data-add-launch>添加启动入口</button>
+      </div>
     </header>
+
+    <nav class="tabs" role="tablist" aria-label="管理分区">
+      <button type="button" class="tab active" id="tab-proxies" data-tab="proxies" role="tab" aria-selected="true">代理</button>
+      <button type="button" class="tab" id="tab-apps" data-tab="apps" role="tab" aria-selected="false" hidden>应用</button>
+    </nav>
 
     <section class="overview" aria-labelledby="overview-title">
       <div>
@@ -39,6 +47,8 @@
         <p>正在加载代理配置</p>
       </div>
     </section>
+
+    <section class="profiles" id="launches" hidden aria-live="polite"></section>
 
     <footer>
       <span id="config-path"></span>
@@ -212,6 +222,77 @@
         <button type="button" class="button secondary" id="cancel-import-dialog">取消</button>
         <button type="button" class="button secondary" id="paste-share-code">粘贴剪贴板</button>
         <button type="submit" class="button primary" id="import-profile">导入配置</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="launch-dialog" aria-labelledby="launch-dialog-title">
+    <form id="launch-form" class="dialog-shell">
+      <div class="dialog-header">
+        <div>
+          <p class="eyebrow">应用启动</p>
+          <h2 id="launch-dialog-title">添加启动入口</h2>
+        </div>
+        <button type="button" class="icon-button" id="close-launch-dialog" aria-label="关闭">×</button>
+      </div>
+      <div class="dialog-body">
+        <div class="form-grid">
+          <label class="field">
+            <span>名称</span>
+            <input id="launch-name" required maxlength="80" placeholder="例如：ChatGPT">
+          </label>
+          <label class="field">
+            <span>场景</span>
+            <select id="launch-mode">
+              <option value="chatgpt">ChatGPT</option>
+              <option value="antigravity">Antigravity IDE</option>
+              <option value="cursor">Cursor</option>
+              <option value="wechat">微信 TUN</option>
+              <option value="wechat-windivert">微信 WinDivert</option>
+              <option value="hook">通用程序</option>
+            </select>
+          </label>
+          <label class="field full">
+            <span>使用的代理配置</span>
+            <select id="launch-profile" required></select>
+            <small>请先在“代理”页添加并确认配置。启动应用前会自动打开对应的本地 SOCKS5。</small>
+          </label>
+          <label class="field full" id="launch-path-row">
+            <span id="launch-path-label">程序路径（可留空自动查找）</span>
+            <input id="launch-path" placeholder="C:\Program Files\...">
+          </label>
+          <label class="field full" id="launch-args-row">
+            <span>附加参数</span>
+            <input id="launch-args" placeholder="可选">
+          </label>
+          <label class="field" id="launch-udp-row" hidden>
+            <span>UDP 策略</span>
+            <select id="launch-udp">
+              <option value="auto">自动</option>
+              <option value="proxy">走代理</option>
+              <option value="block">阻断</option>
+              <option value="direct">直连</option>
+            </select>
+          </label>
+          <label class="field" id="launch-dns-row">
+            <span>DNS（可选）</span>
+            <input id="launch-dns" placeholder="例如 1.1.1.1">
+          </label>
+          <label class="check-field full" id="launch-isolated-row" hidden>
+            <input id="launch-isolated" type="checkbox">
+            <span>使用隔离配置（不影响日常登录状态）</span>
+          </label>
+          <label class="check-field full" id="launch-wechat-existing-row" hidden>
+            <input id="launch-wechat-existing" type="checkbox">
+            <span>接管已运行的微信</span>
+          </label>
+        </div>
+        <p class="share-note">启动由 Easy-Net Hook 在后台完成。网页本身不能注入进程；请把 easy-net-hook.exe 和 Lite 放在同一目录。</p>
+        <p class="form-error" id="launch-error" role="alert" hidden></p>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="button secondary" id="cancel-launch-dialog">取消</button>
+        <button type="submit" class="button primary" id="save-launch">保存入口</button>
       </div>
     </form>
   </dialog>

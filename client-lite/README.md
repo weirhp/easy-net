@@ -11,6 +11,7 @@ Easy-Net Lite 是一个使用本地网页管理界面、常驻系统托盘的轻
 - 每个配置可选“内网目标本机直连”，让局域网和 VPN 地址绕过远端代理。
 - 独立“测试连接”、本地监听状态与最近远端连接结果。
 - 加密分享码，可复制分享并快速导入 WebSocket 或 SSH 配置。
+- Windows 上可在管理页「应用」标签启动 ChatGPT、Cursor、微信等，并由同目录的 Easy-Net Hook 注入或接管。
 - 启动后自动打开 `http://127.0.0.1:18081` 管理页面。
 
 ## 使用
@@ -29,9 +30,20 @@ Easy-Net Lite 是一个使用本地网页管理界面、常驻系统托盘的轻
 
 SSH 首次连接会显示服务器 SHA-256 指纹。请与服务器管理员确认后再信任；如果服务器指纹发生变化，程序会拒绝连接。
 
-每个代理卡片都可以生成 `ENL1.` 开头的加密分享码。分享码会包含完整认证信息和 SSH 服务器指纹，导入时自动避开已有配置以及其他程序正在监听的本地端口，并默认关闭自动启动。Windows 上的 Easy-Net Hook 也可以直接导入同一分享码并创建本地 SOCKS5，不必再单独打开本程序。分享码本身属于敏感凭据，任何获得它的人都可以导入并使用，只应发送给可信的人。
+每个代理卡片都可以生成 `ENL1.` 开头的加密分享码。分享码会包含完整认证信息和 SSH 服务器指纹，导入时自动避开已有配置以及其他程序正在监听的本地端口，并默认关闭自动启动。Windows 上可在 Lite 的「应用」页用这些配置启动 ChatGPT、Cursor、微信等。分享码本身属于敏感凭据，任何获得它的人都可以导入并使用，只应发送给可信的人。
 
 关闭网页不会停止代理。可通过托盘菜单再次打开管理页；请通过托盘菜单“退出程序”完全关闭。
+
+## 应用启动（Windows）
+
+Windows 管理页有「代理」和「应用」两个标签。代理页继续管理 SOCKS5/HTTP 配置；应用页保存启动入口，并在启动前自动打开所选配置的本地端口，然后拉起同目录中的 `easy-net-hook.exe`。
+
+- 分享码仍然只在「代理」页导入，应用入口只选择已有配置，不填写原始 SOCKS5 地址。
+- 「桌面快捷方式」指向 `Easy-Net-Lite.exe --launch-entry <ID>`。Lite 已在运行时会直接启动该入口；否则会先启动 Lite。
+- 请把 `easy-net-hook.exe`（以及微信场景需要的 DLL / WinDivert / TUN 文件）和 Lite 放在同一目录，或设置环境变量 `EASY_NET_HOOK`。
+- macOS 不显示「应用」标签。首次在 Windows 上打开 Lite 时，如果存在旧的 `%LOCALAPPDATA%\EasyNetHook\launcher-entries.tsv`，会按本地监听地址匹配并导入到 `%AppData%\Easy-Net Lite\launches.json`。
+
+双击 `easy-net-hook.exe` 或传入 `--gui` 会打开 Lite 管理页的 `#apps`。旧 Win32 启动器窗口仍可用 `--legacy-gui` 打开。
 
 ## 配置与凭据
 
@@ -40,7 +52,7 @@ SSH 首次连接会显示服务器 SHA-256 指纹。请与服务器管理员确�
 - Windows：`%AppData%\Easy-Net Lite\config.json`
 - macOS：`~/Library/Application Support/Easy-Net Lite/config.json`
 
-运行日志保存在同一目录的 `easy-net-lite.log`。
+Windows 应用启动入口保存在同一目录的 `launches.json`。运行日志保存在同一目录的 `easy-net-lite.log`。
 
 WebSocket 密钥、SSH 密码和私钥口令不会写入 JSON，而是保存在系统凭据库。编辑配置时密钥框留空会继续使用原密钥；如果服务端密钥已变更，必须重新填写。网页选择的私钥会复制到应用专用 `keys` 目录并设置为仅当前用户可读，配置中只记录该副本路径。
 

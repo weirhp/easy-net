@@ -3,18 +3,21 @@ package web
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"easy-net/client-lite/internal/config"
+	"easy-net/client-lite/internal/launch"
 	"easy-net/client-lite/internal/model"
 	"easy-net/client-lite/internal/service"
 	"easy-net/client-lite/internal/sharecode"
@@ -70,6 +73,9 @@ func TestManagementPageAndProfileAPI(t *testing.T) {
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusOK || !strings.Contains(string(page), "Easy-Net Lite") {
 		t.Fatalf("unexpected page response: %d", response.StatusCode)
+	}
+	if !strings.Contains(string(page), `data-tab="apps"`) || !strings.Contains(string(page), "添加启动入口") {
+		t.Fatal("management page is missing the apps tab markup")
 	}
 	if !strings.Contains(response.Header.Get("Content-Security-Policy"), "default-src 'self'") {
 		t.Fatal("missing content security policy")
@@ -362,6 +368,42 @@ func TestStatusFileDoesNotPersistManagementToken(t *testing.T) {
 	}
 }
 
+func TestStatusFileFindsLiteOnFallbackPort(t *testing.T) {
+	secrets := &memorySecrets{values: map[string]string{}}
+	dir := t.TempDir()
+	statusPath := filepath.Join(dir, "status.json")
+	firstService, err := service.New(config.NewStoreAt(filepath.Join(dir, "first.json")), secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := NewWithOptions(firstService, func() {}, Options{
+		ListenAddress: "127.0.0.1:0", StatusFile: statusPath, Application: "easy-net-lite",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = first.Shutdown(t.Context()) }()
+
+	secondService, err := service.New(config.NewStoreAt(filepath.Join(dir, "second.json")), secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewWithOptions(secondService, func() {}, Options{
+		ListenAddress: "127.0.0.1:0", StatusFile: statusPath, Application: "easy-net-lite",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = second.Start()
+	var alreadyRunning *AlreadyRunningError
+	if !errors.As(err, &alreadyRunning) || alreadyRunning.URL != first.URL() {
+		t.Fatalf("expected existing fallback Lite at %s, got %v", first.URL(), err)
+	}
+}
+
 func TestEngineImportReportsAutoStartFailure(t *testing.T) {
 	secrets := &memorySecrets{values: map[string]string{}}
 	svc, err := service.New(config.NewStoreAt(filepath.Join(t.TempDir(), "config.json")), secrets)
@@ -517,6 +559,136 @@ func TestEngineImportStartsLocalProxy(t *testing.T) {
 		t.Fatalf("proxy summary failed: %d %#v", proxyRequest.StatusCode, proxy)
 	}
 	svc.Stop("source")
+}
+
+type recordingHookRunner struct {
+	mu   sync.Mutex
+	args [][]string
+}
+
+func (r *recordingHookRunner) Start(args []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.args = append(r.args, append([]string(nil), args...))
+	return nil
+}
+func (r *recordingHookRunner) Executable() (string, error) { return "easy-net-hook.exe", nil }
+func (r *recordingHookRunner) CreateShortcut(options launch.ShortcutOptions) (string, error) {
+	return `C:\Users\test\Desktop\` + options.Name + `.lnk`, nil
+}
+
+func TestLaunchAPIStartsHookAfterProxy(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, portText, _ := net.SplitHostPort(listener.Addr().String())
+	_ = listener.Close()
+	port, _ := strconv.Atoi(portText)
+
+	dir := t.TempDir()
+	secrets := &memorySecrets{values: map[string]string{}}
+	svc, err := service.New(config.NewStoreAt(filepath.Join(dir, "config.json")), secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Upsert(model.Profile{
+		ID: "p1", Name: "应用代理", Type: model.ProxyTypeWebSocket,
+		ListenHost: "127.0.0.1", ListenPort: port,
+		WebSocket: &model.WebSocketConfig{URL: "wss://example.com/tunnel"},
+	}, service.SecretValues{WebSocketSecret: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingHookRunner{}
+	launches, err := launch.New(dir, svc, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewWithOptions(svc, func() {}, Options{Launches: launches})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(manager.Handler())
+	defer server.Close()
+	state := getState(t, server.URL)
+	if state.Features.AppLaunches && !launch.Supported() {
+		t.Fatal("app launches should stay disabled on non-Windows")
+	}
+
+	body, _ := json.Marshal(model.LaunchEntry{Name: "ChatGPT", Mode: model.LaunchModeChatGPT, ProfileID: "p1"})
+	request, _ := http.NewRequest(http.MethodPost, server.URL+"/api/launches", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Easy-Net-Token", state.Token)
+	saveResponse, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved struct {
+		OK    bool              `json:"ok"`
+		Entry model.LaunchEntry `json:"entry"`
+	}
+	if err := json.NewDecoder(saveResponse.Body).Decode(&saved); err != nil {
+		t.Fatal(err)
+	}
+	_ = saveResponse.Body.Close()
+	if saveResponse.StatusCode != http.StatusOK || !saved.OK || saved.Entry.ID == "" {
+		t.Fatalf("save launch: %d %#v", saveResponse.StatusCode, saved)
+	}
+
+	startRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/api/launches/"+saved.Entry.ID+"/start", bytes.NewReader([]byte("{}")))
+	startRequest.Header.Set("Content-Type", "application/json")
+	startRequest.Header.Set("X-Easy-Net-Token", state.Token)
+	startResponse, err := http.DefaultClient.Do(startRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := io.ReadAll(startResponse.Body)
+	_ = startResponse.Body.Close()
+	if startResponse.StatusCode != http.StatusOK {
+		t.Fatalf("start launch failed: %d %s", startResponse.StatusCode, payload)
+	}
+	defer svc.Stop("p1")
+	if len(runner.args) != 1 || strings.Join(runner.args[0], " ") != "--proxy 127.0.0.1:"+portText+" --detach --gui-worker --chatgpt-app" {
+		t.Fatalf("unexpected hook args: %#v", runner.args)
+	}
+
+	missingRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/api/launches/missing-id/start", bytes.NewReader([]byte("{}")))
+	missingRequest.Header.Set("Content-Type", "application/json")
+	missingRequest.Header.Set("X-Easy-Net-Token", state.Token)
+	missingResponse, err := http.DefaultClient.Do(missingRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = missingResponse.Body.Close()
+	if missingResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing launch should be 404, got %d", missingResponse.StatusCode)
+	}
+
+	shortcutRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/api/launches/"+saved.Entry.ID+"/shortcut", nil)
+	shortcutRequest.Header.Set("X-Easy-Net-Token", state.Token)
+	shortcutResponse, err := http.DefaultClient.Do(shortcutRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shortcut map[string]any
+	if err := json.NewDecoder(shortcutResponse.Body).Decode(&shortcut); err != nil {
+		t.Fatal(err)
+	}
+	_ = shortcutResponse.Body.Close()
+	if shortcutResponse.StatusCode != http.StatusOK || shortcut["path"] == nil {
+		t.Fatalf("shortcut: %d %#v", shortcutResponse.StatusCode, shortcut)
+	}
+
+	deleteRequest, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/launches/"+saved.Entry.ID, nil)
+	deleteRequest.Header.Set("X-Easy-Net-Token", state.Token)
+	deleteResponse, err := http.DefaultClient.Do(deleteRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = deleteResponse.Body.Close()
+	if deleteResponse.StatusCode != http.StatusOK {
+		t.Fatalf("delete launch: %d", deleteResponse.StatusCode)
+	}
 }
 
 func getState(t *testing.T, baseURL string) stateResponse {

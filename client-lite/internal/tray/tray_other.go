@@ -13,7 +13,7 @@ func Run(managerURL string, quit <-chan struct{}, requestQuit func()) {
 
 func RunWithOptions(options Options, quit <-chan struct{}, requestQuit func()) {
 	_ = requestQuit
-	if options.OpenURL != "" {
+	if options.OpenURL != "" && !options.SkipInitialOpen {
 		_ = OpenBrowser(options.OpenURL)
 	}
 	<-quit

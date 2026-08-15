@@ -286,6 +286,8 @@ if(GO_EXECUTABLE)
     )
     set(EASY_NET_ENGINE_OUTPUT
         "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/easy-net-engine.exe")
+    set(EASY_NET_LITE_OUTPUT
+        "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/Easy-Net-Lite.exe")
     add_custom_command(OUTPUT "${EASY_NET_ENGINE_OUTPUT}"
         COMMAND ${CMAKE_COMMAND} -E make_directory
             "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>"
@@ -308,10 +310,32 @@ if(GO_EXECUTABLE)
         VERBATIM
     )
     add_custom_target(easy_net_engine ALL DEPENDS "${EASY_NET_ENGINE_OUTPUT}")
-    add_dependencies(easy_net_hook_launcher easy_net_engine)
+    add_custom_command(OUTPUT "${EASY_NET_LITE_OUTPUT}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>"
+        COMMAND ${CMAKE_COMMAND} -E env
+            CGO_ENABLED=0
+            GOOS=windows
+            GOARCH=${EASY_NET_ENGINE_GOARCH}
+            --
+            ${GO_EXECUTABLE} build -trimpath
+            "-ldflags=-s -w -H=windowsgui -X easy-net/client-lite/internal/version.Value=${EASY_NET_ENGINE_VERSION}"
+            -o "${EASY_NET_LITE_OUTPUT}"
+            ./cmd/easy-net
+        DEPENDS
+            ${EASY_NET_ENGINE_GO_SOURCES}
+            "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite/go.mod"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite/go.sum"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite/VERSION"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite"
+        COMMENT "Building full Easy-Net Lite tray application"
+        VERBATIM
+    )
+    add_custom_target(easy_net_lite ALL DEPENDS "${EASY_NET_LITE_OUTPUT}")
+    add_dependencies(easy_net_hook_launcher easy_net_engine easy_net_lite)
 else()
     message(WARNING "Go was not found; easy-net-engine.exe will not be built. "
-                    "client-hook can still use an external SOCKS5, but cannot create proxies itself.")
+                    "Easy-Net-Lite.exe will also be unavailable in the combined package.")
 endif()
 
 if(TARGET proxybridge_core)

@@ -45,6 +45,11 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .brand h1 { margin: 0; font-size: 22px; letter-spacing: -.02em; }
 .brand p { margin: 3px 0 0; color: var(--muted); font-size: 14px; }
 .header-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.tabs { display: flex; gap: 6px; margin: 22px 0 0; padding: 4px; width: fit-content; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.tab { min-height: 36px; padding: 7px 16px; border: 0; border-radius: 9px; background: transparent; color: var(--muted); font-weight: 750; }
+.tab:hover { color: var(--text); background: var(--surface-soft); }
+.tab.active { color: white; background: var(--primary); }
+.tab.active:hover { color: white; background: var(--primary-hover); }
 
 .button { min-height: 38px; padding: 8px 14px; border: 1px solid transparent; border-radius: 9px; font-weight: 650; transition: background-color .18s ease, border-color .18s ease, box-shadow .18s ease; }
 .button.primary { background: var(--primary); color: white; }

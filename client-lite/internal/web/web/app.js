@@ -2,9 +2,13 @@
 
 const appState = {
   profiles: [],
+  launches: [],
+  features: { appLaunches: false },
+  tab: location.hash === "#apps" ? "apps" : "proxies",
   token: "",
   busy: new Set(),
   editingId: "",
+  editingLaunchId: "",
   kind: "websocket",
   poll: null,
   warningsShown: false,
@@ -13,8 +17,11 @@ const appState = {
 };
 const $ = (selector) => document.querySelector(selector);
 const profilesElement = $("#profiles");
+const launchesElement = $("#launches");
 const dialogElement = $("#profile-dialog");
 const formElement = $("#profile-form");
+const launchDialogElement = $("#launch-dialog");
+const launchFormElement = $("#launch-form");
 const actionDialogElement = $("#action-dialog");
 const shareDialogElement = $("#share-dialog");
 const importDialogElement = $("#import-dialog");
@@ -84,9 +91,13 @@ async function loadState(silent = false) {
     const data = await api("/api/state");
 	const previousProfiles = appState.profiles;
     appState.profiles = data.profiles || [];
+    appState.launches = data.launches || [];
+    appState.features = data.features || { appLaunches: false };
     appState.token = data.token;
     $("#config-path").textContent = `Easy-Net Lite ${data.version || "dev"} · 配置文件：${data.configPath}`;
+    syncTabs();
     renderProfiles();
+    renderLaunches();
 	if (appState.initialized) notifyConnectionFailures(previousProfiles, appState.profiles);
 	appState.initialized = true;
     if (!silent && !appState.warningsShown && data.warnings?.length) {
@@ -128,8 +139,11 @@ function formatConnectionTime(value) {
 }
 
 function renderProfiles() {
+  if (appState.tab !== "proxies") return;
   const running = appState.profiles.filter((item) => item.running).length;
   $("#summary").textContent = `${appState.profiles.length} 个配置 · ${running} 个本地监听`;
+  $("#overview-title").textContent = "本机代理";
+  $(".overview-note").textContent = "关闭此网页不会停止代理；程序仍在系统托盘运行。";
   if (!appState.profiles.length) {
     profilesElement.innerHTML = `<div class="empty-state"><h2>还没有代理配置</h2><p>使用右上角按钮添加 WebSocket 或 SSH 代理。</p></div>`;
     return;
@@ -175,6 +189,209 @@ function renderProfiles() {
       </div>
     </article>`;
   }).join("");
+}
+
+function syncTabs() {
+  const canApps = Boolean(appState.features.appLaunches);
+  $("#tab-apps").hidden = !canApps;
+  if (!canApps && appState.tab === "apps") appState.tab = "proxies";
+  document.querySelectorAll("[data-tab]").forEach((tab) => {
+    const active = tab.dataset.tab === appState.tab;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  document.querySelectorAll("[data-actions]").forEach((group) => {
+    group.hidden = group.dataset.actions !== appState.tab;
+  });
+  profilesElement.hidden = appState.tab !== "proxies";
+  launchesElement.hidden = appState.tab !== "apps";
+  if (appState.tab === "apps") {
+    const hash = "#apps";
+    if (location.hash !== hash) history.replaceState(null, "", hash);
+  } else if (location.hash === "#apps") {
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+}
+
+function setTab(tab) {
+  appState.tab = tab === "apps" && appState.features.appLaunches ? "apps" : "proxies";
+  syncTabs();
+  renderProfiles();
+  renderLaunches();
+}
+
+function launchModeLabel(mode) {
+  return ({
+    chatgpt: "ChatGPT",
+    antigravity: "Antigravity IDE",
+    cursor: "Cursor",
+    wechat: "微信 TUN",
+    "wechat-windivert": "微信 WinDivert",
+    hook: "通用程序"
+  })[mode] || mode;
+}
+
+function renderLaunches() {
+  if (appState.tab !== "apps") return;
+  $("#overview-title").textContent = "应用启动";
+  $("#summary").textContent = `${appState.launches.length} 个启动入口`;
+  $(".overview-note").textContent = "启动前会先打开所选代理。桌面快捷方式始终使用最新入口设置。";
+  if (!appState.launches.length) {
+    launchesElement.innerHTML = `<div class="empty-state"><h2>还没有启动入口</h2><p>添加 ChatGPT、Cursor、微信或通用程序，选择已有代理后即可启动。</p></div>`;
+    return;
+  }
+  launchesElement.innerHTML = appState.launches.map((entry) => {
+    const busy = appState.busy.has(`launch:${entry.id}`);
+    const profileText = entry.profileName
+      ? `${entry.profileName} · ${entry.listenAddress || "未监听"}`
+      : "尚未选择代理配置";
+    const statusClass = busy ? "busy" : entry.profileRunning ? "running" : "";
+    const statusText = busy ? "正在处理" : entry.profileStarting ? "代理启动中" : entry.profileRunning ? "代理已就绪" : "代理未启动";
+    return `<article class="profile-card">
+      <div class="card-main">
+        <div>
+          <div class="card-title-row">
+            <h2 class="card-title">${escapeHTML(entry.name)}</h2>
+            <span class="badge">${escapeHTML(entry.modeLabel || launchModeLabel(entry.mode))}</span>
+            <span class="status ${statusClass}">${statusText}</span>
+          </div>
+          <p class="endpoint">${escapeHTML(profileText)}${entry.path ? ` · ${escapeHTML(entry.path)}` : ""}</p>
+        </div>
+        <div class="card-actions">
+          <button class="button start" data-launch-action="start" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>启动</button>
+          <button class="button secondary" data-launch-action="shortcut" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>桌面快捷方式</button>
+          <button class="button secondary" data-launch-action="edit" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>编辑</button>
+          <button class="button danger" data-launch-action="delete" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>删除</button>
+        </div>
+      </div>
+    </article>`;
+  }).join("");
+}
+
+function fillLaunchProfiles(selectedId) {
+  const select = $("#launch-profile");
+  const options = appState.profiles.map((item) => {
+    const profile = item.profile;
+    const selected = profile.id === selectedId ? "selected" : "";
+    return `<option value="${escapeHTML(profile.id)}" ${selected}>${escapeHTML(profile.name)}（${escapeHTML(profile.listenHost)}:${profile.listenPort}）</option>`;
+  });
+  select.innerHTML = options.length ? options.join("") : `<option value="">请先添加代理配置</option>`;
+}
+
+function syncLaunchFields() {
+  const mode = $("#launch-mode").value;
+  const wechat = mode === "wechat" || mode === "wechat-windivert";
+  const existing = wechat && $("#launch-wechat-existing").checked;
+  $("#launch-path-row").hidden = mode === "chatgpt" || existing;
+  $("#launch-args-row").hidden = mode === "chatgpt" || existing;
+  $("#launch-isolated-row").hidden = mode !== "antigravity" && mode !== "cursor";
+  $("#launch-wechat-existing-row").hidden = !wechat;
+  $("#launch-udp-row").hidden = !wechat;
+  $("#launch-dns-row").hidden = mode === "chatgpt";
+  $("#launch-path-label").textContent = mode === "hook" ? "程序路径" : "程序路径（可留空自动查找）";
+  $("#launch-path").required = mode === "hook" && !existing;
+  if (!wechat) $("#launch-wechat-existing").checked = false;
+}
+
+function openLaunchDialog(id = "") {
+  const entry = id ? appState.launches.find((item) => item.id === id) : null;
+  appState.editingLaunchId = id;
+  launchFormElement.reset();
+  $("#launch-error").hidden = true;
+  $("#launch-dialog-title").textContent = id ? "编辑启动入口" : "添加启动入口";
+  $("#launch-name").value = entry?.name || "";
+  $("#launch-mode").value = entry?.mode || "chatgpt";
+  $("#launch-path").value = entry?.path || "";
+  $("#launch-args").value = entry?.arguments || "";
+  $("#launch-udp").value = entry?.udpMode || "auto";
+  $("#launch-dns").value = entry?.dns || "";
+  $("#launch-isolated").checked = Boolean(entry?.isolated);
+  $("#launch-wechat-existing").checked = Boolean(entry?.wechatExisting);
+  fillLaunchProfiles(entry?.profileId || appState.profiles[0]?.profile?.id || "");
+  syncLaunchFields();
+  launchDialogElement.showModal();
+  $("#launch-name").focus();
+}
+
+function closeLaunchDialog() {
+  if (launchDialogElement.open) launchDialogElement.close();
+  appState.editingLaunchId = "";
+}
+
+async function saveLaunch(event) {
+  event.preventDefault();
+  const saveButton = $("#save-launch");
+  const errorElement = $("#launch-error");
+  errorElement.hidden = true;
+  syncLaunchFields();
+  if (!launchFormElement.reportValidity()) return;
+  if (!$("#launch-profile").value) {
+    errorElement.textContent = "请选择要使用的代理配置";
+    errorElement.hidden = false;
+    return;
+  }
+  saveButton.disabled = true;
+  saveButton.textContent = "保存中…";
+  try {
+    await api("/api/launches", {
+      method: "POST",
+      body: JSON.stringify({
+        id: appState.editingLaunchId || "",
+        name: $("#launch-name").value.trim(),
+        mode: $("#launch-mode").value,
+        profileId: $("#launch-profile").value,
+        path: $("#launch-path-row").hidden ? "" : $("#launch-path").value.trim(),
+        arguments: $("#launch-args-row").hidden ? "" : $("#launch-args").value.trim(),
+        isolated: !$("#launch-isolated-row").hidden && $("#launch-isolated").checked,
+        wechatExisting: !$("#launch-wechat-existing-row").hidden && $("#launch-wechat-existing").checked,
+        udpMode: $("#launch-udp-row").hidden ? "" : $("#launch-udp").value,
+        dns: $("#launch-dns-row").hidden ? "" : $("#launch-dns").value.trim()
+      })
+    });
+    closeLaunchDialog();
+    showToast("启动入口已保存");
+    await loadState();
+  } catch (error) {
+    errorElement.textContent = error.message;
+    errorElement.hidden = false;
+  } finally {
+    saveButton.disabled = false;
+    saveButton.textContent = "保存入口";
+  }
+}
+
+async function launchAction(action, id) {
+  const key = `launch:${id}`;
+  if (appState.busy.has(key)) return;
+  const entry = appState.launches.find((item) => item.id === id);
+  if (!entry) return;
+  if (action === "edit") { openLaunchDialog(id); return; }
+  if (action === "delete") {
+    const confirmed = await showConfirmModal({
+      kind: "删除入口",
+      title: "删除这个启动入口？",
+      message: `“${entry.name}”将从应用列表中移除。`,
+      details: "已创建的桌面快捷方式不会自动删除，双击后会提示入口已失效。",
+      confirmText: "删除入口",
+      danger: true
+    });
+    if (!confirmed) return;
+    try { await api(`/api/launches/${encodeURIComponent(id)}`, { method: "DELETE" }); showToast("启动入口已删除"); await loadState(); }
+    catch (error) { showToast(error.message, true); }
+    return;
+  }
+  appState.busy.add(key);
+  renderLaunches();
+  try {
+    const data = await api(`/api/launches/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+    if (action === "start") showToast(`正在启动 ${entry.name}（${data.listenAddress || entry.listenAddress || "本地代理"}）`);
+    if (action === "shortcut") showToast(`已创建桌面快捷方式：${data.path || ""}`);
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    appState.busy.delete(key);
+    await loadState(true);
+  }
 }
 
 function openProfileDialog(kind, id = "") {
@@ -524,6 +741,12 @@ function escapeHTML(value) {
 }
 
 document.addEventListener("click", (event) => {
+  const tabButton = event.target.closest("[data-tab]");
+  if (tabButton) { setTab(tabButton.dataset.tab); return; }
+  const addLaunchButton = event.target.closest("[data-add-launch]");
+  if (addLaunchButton) { openLaunchDialog(); return; }
+  const launchButton = event.target.closest("[data-launch-action]");
+  if (launchButton) { launchAction(launchButton.dataset.launchAction, launchButton.dataset.id); return; }
   const importButton = event.target.closest("[data-import]");
   if (importButton) { openImportDialog(); return; }
   const addButton = event.target.closest("[data-add]");
@@ -548,6 +771,17 @@ $("#cancel-import-dialog").addEventListener("click", closeImportDialog);
 $("#paste-share-code").addEventListener("click", pasteShareCode);
 importFormElement.addEventListener("submit", importProfile);
 formElement.addEventListener("submit", saveProfile);
+launchFormElement.addEventListener("submit", saveLaunch);
+$("#launch-mode").addEventListener("change", syncLaunchFields);
+$("#launch-wechat-existing").addEventListener("change", syncLaunchFields);
+$("#close-launch-dialog").addEventListener("click", closeLaunchDialog);
+$("#cancel-launch-dialog").addEventListener("click", closeLaunchDialog);
+launchDialogElement.addEventListener("click", (event) => { if (event.target === launchDialogElement) closeLaunchDialog(); });
+launchDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); closeLaunchDialog(); });
+window.addEventListener("hashchange", () => {
+  if (location.hash === "#apps") setTab("apps");
+  else if (appState.tab === "apps") setTab("proxies");
+});
 dialogElement.addEventListener("click", (event) => { if (event.target === dialogElement) dialogElement.close(); });
 actionDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); finishActionDialog(false); });
 actionDialogElement.addEventListener("close", () => {
@@ -565,4 +799,4 @@ importDialogElement.addEventListener("cancel", (event) => { event.preventDefault
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loadState(true); });
 
 loadState();
-appState.poll = setInterval(() => { if (!document.hidden && !dialogElement.open && !shareDialogElement.open && !importDialogElement.open) loadState(true); }, 2500);
+appState.poll = setInterval(() => { if (!document.hidden && !dialogElement.open && !shareDialogElement.open && !importDialogElement.open && !launchDialogElement.open) loadState(true); }, 2500);

@@ -7,6 +7,7 @@ const appState = {
   tab: location.hash === "#apps" ? "apps" : "proxies",
   token: "",
   busy: new Set(),
+  selectedProfiles: new Set(),
   editingId: "",
   editingLaunchId: "",
   kind: "websocket",
@@ -27,6 +28,10 @@ const shareDialogElement = $("#share-dialog");
 const importDialogElement = $("#import-dialog");
 const importFormElement = $("#import-form");
 let actionDialogResolver = null;
+
+function icon(name) {
+  return `<svg class="icon" aria-hidden="true"><use href="#icon-${name}"></use></svg>`;
+}
 
 class APIError extends Error {
   constructor(message, data, status) { super(message); this.data = data; this.status = status; }
@@ -57,24 +62,6 @@ function showConfirmModal({ kind = "确认操作", title = "请确认", message,
   return new Promise((resolve) => { actionDialogResolver = resolve; });
 }
 
-function showMessageModal({ kind = "操作结果", title, message, details = "", isError = false }) {
-	if (actionDialogResolver) finishActionDialog(false);
-	$("#action-dialog-kind").textContent = kind;
-	$("#action-dialog-title").textContent = title;
-	$("#action-dialog-message").textContent = message;
-	const detailsElement = $("#action-dialog-details");
-	detailsElement.textContent = details;
-	detailsElement.hidden = !details;
-	const confirmButton = $("#confirm-action-dialog");
-	confirmButton.textContent = "关闭";
-	confirmButton.classList.toggle("primary", !isError);
-	confirmButton.classList.toggle("danger-solid", isError);
-	$("#cancel-action-dialog").hidden = true;
-	actionDialogElement.showModal();
-	confirmButton.focus();
-	return new Promise((resolve) => { actionDialogResolver = resolve; });
-}
-
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
@@ -94,7 +81,10 @@ async function loadState(silent = false) {
     appState.launches = data.launches || [];
     appState.features = data.features || { appLaunches: false };
     appState.token = data.token;
-    $("#config-path").textContent = `Easy-Net Lite ${data.version || "dev"} · 配置文件：${data.configPath}`;
+	$("#app-version").textContent = `v${data.version || "dev"}`;
+	$("#config-path").textContent = `配置文件：${data.configPath}`;
+	const validIDs = new Set(appState.profiles.map((item) => item.profile.id));
+	for (const id of appState.selectedProfiles) if (!validIDs.has(id)) appState.selectedProfiles.delete(id);
     syncTabs();
     renderProfiles();
     renderLaunches();
@@ -142,10 +132,13 @@ function renderProfiles() {
   if (appState.tab !== "proxies") return;
   const running = appState.profiles.filter((item) => item.running).length;
   $("#summary").textContent = `${appState.profiles.length} 个配置 · ${running} 个本地监听`;
-  $("#overview-title").textContent = "本机代理";
-  $(".overview-note").textContent = "关闭此网页不会停止代理；程序仍在系统托盘运行。";
+  $("#page-eyebrow").textContent = "LOCAL PROXY";
+  $("#page-title").textContent = "本地代理管理";
+  $("#notice-title").textContent = "使用说明";
+  $("#overview-note").textContent = "配置并启动代理后，本机流量会通过加密通道传输。关闭此窗口不会停止代理运行，你可以在系统托盘中继续管理。";
   if (!appState.profiles.length) {
     profilesElement.innerHTML = `<div class="empty-state"><h2>还没有代理配置</h2><p>使用右上角按钮添加 WebSocket 或 SSH 代理。</p></div>`;
+    updateSelectionToolbar();
     return;
   }
   profilesElement.innerHTML = appState.profiles.map((item) => {
@@ -164,15 +157,17 @@ function renderProfiles() {
 		: item.connectionStatus === "error"
 			? `<span class="connection-health error-health">远端连接失败${connectionTime ? ` · ${escapeHTML(connectionTime)}` : ""}</span>`
 			: `<span class="connection-health untested">远端尚未验证</span>`;
-    return `<article class="profile-card">
+    const selected = appState.selectedProfiles.has(profile.id);
+    return `<article class="profile-card${selected ? " selected" : ""}">
       <div class="card-main">
-        <div>
+        <div class="card-content">
           <div class="card-title-row">
+            <label class="profile-selector" title="选择 ${escapeHTML(profile.name)}"><input class="profile-select" type="checkbox" data-profile-select="${escapeHTML(profile.id)}" aria-label="选择 ${escapeHTML(profile.name)}" ${selected ? "checked" : ""}></label>
             <h2 class="card-title">${escapeHTML(profile.name)}</h2>
             <span class="badge">${type}</span>
             <span class="status ${statusClass}">${statusText}</span>
-            ${profile.autoStart ? `<span class="badge">自动启动</span>` : ""}
-            ${profile.bypassPrivate ? `<span class="badge">内网直连</span>` : ""}
+            ${profile.autoStart ? `<span class="badge neutral">自动启动</span>` : ""}
+            ${profile.bypassPrivate ? `<span class="badge neutral">内网直连</span>` : ""}
           </div>
           <p class="endpoint">${localCapabilities} ${escapeHTML(profile.listenHost)}:${profile.listenPort} · ${escapeHTML(endpoint)}</p>
 		  <div class="connection-row">${connectionStatus}</div>
@@ -180,15 +175,25 @@ function renderProfiles() {
 		  ${item.connectionError ? `<p class="error connection-error">连接失败：${escapeHTML(item.connectionError)}</p>` : ""}
         </div>
         <div class="card-actions">
-          <button class="button ${item.running ? "secondary" : "start"}" data-profile-action="${primaryAction}" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${primaryText}</button>
-		  <button class="button secondary" data-profile-action="test" data-id="${escapeHTML(profile.id)}" ${busy || item.starting ? "disabled" : ""}>测试连接</button>
-          <button class="button secondary" data-profile-action="share" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>分享</button>
-          <button class="button secondary" data-profile-action="edit" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>编辑</button>
-          <button class="button danger" data-profile-action="delete" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>删除</button>
+          <button class="button ${item.running ? "secondary" : "start"}" data-profile-action="${primaryAction}" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon(item.running ? "stop" : "play")}${primaryText}</button>
+          <button class="button secondary" data-profile-action="share" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("share")}分享</button>
+          <button class="button secondary" data-profile-action="edit" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("edit")}编辑</button>
+          <button class="button danger" title="删除 ${escapeHTML(profile.name)}" aria-label="删除 ${escapeHTML(profile.name)}" data-profile-action="delete" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("trash")}</button>
         </div>
       </div>
     </article>`;
   }).join("");
+  updateSelectionToolbar();
+}
+
+function updateSelectionToolbar() {
+  const count = appState.selectedProfiles.size;
+  $("#selection-toolbar").hidden = appState.tab !== "proxies" || appState.profiles.length === 0;
+  $("#selection-count").textContent = `已选择 ${count} 项`;
+  $("#batch-export").disabled = count === 0;
+  const allSelected = appState.profiles.length > 0 && count === appState.profiles.length;
+  $("#select-all-profiles").checked = allSelected;
+  $("#select-all-profiles").indeterminate = count > 0 && !allSelected;
 }
 
 function syncTabs() {
@@ -205,6 +210,7 @@ function syncTabs() {
   });
   profilesElement.hidden = appState.tab !== "proxies";
   launchesElement.hidden = appState.tab !== "apps";
+  updateSelectionToolbar();
   if (appState.tab === "apps") {
     const hash = "#apps";
     if (location.hash !== hash) history.replaceState(null, "", hash);
@@ -215,9 +221,16 @@ function syncTabs() {
 
 function setTab(tab) {
   appState.tab = tab === "apps" && appState.features.appLaunches ? "apps" : "proxies";
+  setNavigationOpen(false);
   syncTabs();
   renderProfiles();
   renderLaunches();
+}
+
+function setNavigationOpen(open) {
+  document.body.classList.toggle("nav-open", open);
+  $("#mobile-menu").setAttribute("aria-expanded", open ? "true" : "false");
+  $("#sidebar-scrim").hidden = !open;
 }
 
 function launchModeLabel(mode) {
@@ -234,9 +247,11 @@ function launchModeLabel(mode) {
 
 function renderLaunches() {
   if (appState.tab !== "apps") return;
-  $("#overview-title").textContent = "应用启动";
+  $("#page-eyebrow").textContent = "APP LAUNCHER";
+  $("#page-title").textContent = "应用启动入口";
   $("#summary").textContent = `${appState.launches.length} 个启动入口`;
-  $(".overview-note").textContent = "启动前会先打开所选代理。桌面快捷方式始终使用最新入口设置。";
+  $("#notice-title").textContent = "入口说明";
+  $("#overview-note").textContent = "每个入口会先准备所选代理，再由 Easy-Net Hook 在后台启动应用。桌面快捷方式始终读取最新入口设置。";
   if (!appState.launches.length) {
     launchesElement.innerHTML = `<div class="empty-state"><h2>还没有启动入口</h2><p>添加 ChatGPT、Cursor、微信或通用程序，选择已有代理后即可启动。</p></div>`;
     return;
@@ -248,10 +263,11 @@ function renderLaunches() {
       : "尚未选择代理配置";
     const statusClass = busy ? "busy" : entry.profileRunning || entry.externalProxy ? "running" : "";
     const statusText = busy ? "正在处理" : entry.profileStarting ? "代理启动中" : entry.profileRunning ? "代理已就绪" : entry.externalProxy ? "外部代理" : "代理未启动";
-    return `<article class="profile-card">
+    return `<article class="profile-card app-card">
       <div class="card-main">
-        <div>
+        <div class="card-content">
           <div class="card-title-row">
+            <span class="app-avatar" aria-hidden="true">${icon(entry.mode === "wechat" || entry.mode === "wechat-windivert" ? "network" : "apps")}</span>
             <h2 class="card-title">${escapeHTML(entry.name)}</h2>
             <span class="badge">${escapeHTML(entry.modeLabel || launchModeLabel(entry.mode))}</span>
             <span class="status ${statusClass}">${statusText}</span>
@@ -259,10 +275,10 @@ function renderLaunches() {
           <p class="endpoint">${escapeHTML(profileText)}${entry.path ? ` · ${escapeHTML(entry.path)}` : ""}</p>
         </div>
         <div class="card-actions">
-          <button class="button start" data-launch-action="start" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>启动</button>
-          <button class="button secondary" data-launch-action="shortcut" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>桌面快捷方式</button>
-          <button class="button secondary" data-launch-action="edit" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>编辑</button>
-          <button class="button danger" data-launch-action="delete" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>删除</button>
+          <button class="button start" data-launch-action="start" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("play")}启动</button>
+          <button class="button secondary" data-launch-action="shortcut" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("shortcut")}桌面快捷方式</button>
+          <button class="button secondary" data-launch-action="edit" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("edit")}编辑</button>
+          <button class="button danger" title="删除 ${escapeHTML(entry.name)}" aria-label="删除 ${escapeHTML(entry.name)}" data-launch-action="delete" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("trash")}</button>
         </div>
       </div>
     </article>`;
@@ -413,8 +429,11 @@ function openProfileDialog(kind, id = "") {
   appState.kind = kind;
   formElement.reset();
   $("#form-error").hidden = true;
+  $("#form-error").classList.remove("success-result");
   $("#dialog-kind").textContent = kind === "ssh" ? "SSH 代理" : "WebSocket 代理";
   $("#dialog-title").textContent = id ? "编辑配置" : "添加配置";
+  $("#test-profile").hidden = !id;
+  $("#test-profile").disabled = false;
   $("#websocket-fields").hidden = kind !== "websocket";
   $("#ssh-fields").hidden = kind !== "ssh";
   document.querySelectorAll(".edit-secret-hint").forEach((element) => { element.hidden = !id; });
@@ -478,50 +497,15 @@ async function saveProfile(event) {
   const saveButton = $("#save-profile");
   const errorElement = $("#form-error");
   errorElement.hidden = true;
+  errorElement.classList.remove("success-result");
   if (!formElement.reportValidity()) return;
   saveButton.disabled = true;
   saveButton.textContent = "保存中…";
   try {
-    const existing = appState.editingId ? appState.profiles.find((entry) => entry.profile.id === appState.editingId)?.profile : null;
-    const profile = {
-      id: existing?.id || "",
-      name: $("#field-name").value.trim(),
-      type: appState.kind,
-      listenHost: "127.0.0.1",
-      listenPort: Number($("#field-local-port").value),
-      autoStart: $("#field-auto-start").checked,
-      bypassPrivate: $("#field-bypass-private").checked,
-      websocket: null,
-      ssh: null
-    };
-    const request = { profile, websocketSecret: "", sshPassword: "", sshPassphrase: "", sshPrivateKey: "" };
-    if (appState.kind === "websocket") {
-      profile.websocket = {
-        url: $("#field-ws-url").value.trim(),
-        allowInsecure: $("#field-ws-insecure").checked,
-        legacyQueryAuth: $("#field-ws-legacy-query").checked
-      };
-      request.websocketSecret = $("#field-ws-secret").value;
-    } else {
-      profile.ssh = {
-        host: $("#field-ssh-host").value.trim(),
-        port: Number($("#field-ssh-port").value),
-        username: $("#field-ssh-user").value.trim(),
-        authType: $("#field-ssh-auth").value
-      };
-      const keyFile = $("#field-ssh-key").files[0];
-      if (profile.ssh.authType === "private_key") {
-		request.sshPassphrase = $("#field-ssh-passphrase").value;
-        if (!keyFile && !existing?.ssh?.hasPrivateKey) throw new Error("请选择 SSH 私钥文件");
-        if (keyFile && keyFile.size > 64 * 1024) throw new Error("私钥文件不能超过 64 KiB");
-        if (keyFile) request.sshPrivateKey = await keyFile.text();
-	  } else {
-		request.sshPassword = $("#field-ssh-password").value;
-      }
-    }
+    const request = await profileRequestFromForm();
     await api("/api/profiles", { method: "POST", body: JSON.stringify(request) });
     dialogElement.close();
-    showToast(appState.kind === "websocket" ? "配置已保存，请使用“测试连接”确认地址和密钥" : "配置已保存");
+    showToast("代理配置已保存");
     await loadState();
   } catch (error) {
     errorElement.textContent = error.message;
@@ -529,6 +513,100 @@ async function saveProfile(event) {
   } finally {
     saveButton.disabled = false;
     saveButton.textContent = "保存配置";
+  }
+}
+
+async function profileRequestFromForm() {
+  const existing = appState.editingId ? appState.profiles.find((entry) => entry.profile.id === appState.editingId)?.profile : null;
+  const profile = {
+    id: existing?.id || "",
+    name: $("#field-name").value.trim(),
+    type: appState.kind,
+    listenHost: "127.0.0.1",
+    listenPort: Number($("#field-local-port").value),
+    autoStart: $("#field-auto-start").checked,
+    bypassPrivate: $("#field-bypass-private").checked,
+    websocket: null,
+    ssh: null
+  };
+  const request = { profile, websocketSecret: "", sshPassword: "", sshPassphrase: "", sshPrivateKey: "" };
+  if (appState.kind === "websocket") {
+    profile.websocket = {
+      url: $("#field-ws-url").value.trim(),
+      allowInsecure: $("#field-ws-insecure").checked,
+      legacyQueryAuth: $("#field-ws-legacy-query").checked
+    };
+    request.websocketSecret = $("#field-ws-secret").value;
+    return request;
+  }
+  profile.ssh = {
+    host: $("#field-ssh-host").value.trim(),
+    port: Number($("#field-ssh-port").value),
+    username: $("#field-ssh-user").value.trim(),
+    authType: $("#field-ssh-auth").value
+  };
+  const keyFile = $("#field-ssh-key").files[0];
+  if (profile.ssh.authType === "private_key") {
+    request.sshPassphrase = $("#field-ssh-passphrase").value;
+    if (!keyFile && !existing?.ssh?.hasPrivateKey) throw new Error("请选择 SSH 私钥文件");
+    if (keyFile && keyFile.size > 64 * 1024) throw new Error("私钥文件不能超过 64 KiB");
+    if (keyFile) request.sshPrivateKey = await keyFile.text();
+  } else {
+    request.sshPassword = $("#field-ssh-password").value;
+  }
+  return request;
+}
+
+async function testEditedProfile() {
+  const id = appState.editingId;
+  if (!id || appState.busy.has(id)) return;
+  const button = $("#test-profile");
+  const errorElement = $("#form-error");
+  errorElement.hidden = true;
+  errorElement.classList.remove("success-result");
+  if (!formElement.reportValidity()) return;
+  appState.busy.add(id);
+  button.disabled = true;
+  button.innerHTML = `${icon("bolt")}测试中…`;
+  try {
+    const request = await profileRequestFromForm();
+    await api("/api/profiles", { method: "POST", body: JSON.stringify(request) });
+    await api(`/api/profiles/${encodeURIComponent(id)}/test`, { method: "POST" });
+    errorElement.classList.add("success-result");
+    errorElement.textContent = appState.kind === "ssh" ? "连接成功：SSH 地址和认证信息验证通过。" : "连接成功：WebSocket 地址、密钥和隧道握手验证通过。";
+    errorElement.hidden = false;
+    await loadState(true);
+  } catch (error) {
+    errorElement.classList.remove("success-result");
+    if (error.data?.code === "ssh_host_unknown") {
+      const trusted = await showConfirmModal({
+        kind: "SSH 安全确认",
+        title: "确认服务器指纹",
+        message: `这是首次连接 ${error.data.address}。请与服务器管理员核对下面的 SHA-256 指纹。`,
+        details: error.data.fingerprint,
+        confirmText: "信任并重新测试"
+      });
+      if (trusted) {
+        try {
+          await api(`/api/profiles/${encodeURIComponent(id)}/trust`, { method: "POST", body: JSON.stringify({ fingerprint: error.data.fingerprint }) });
+          await api(`/api/profiles/${encodeURIComponent(id)}/test`, { method: "POST" });
+          errorElement.classList.add("success-result");
+          errorElement.textContent = "连接成功：SSH 指纹和认证信息验证通过。";
+        } catch (trustError) {
+          errorElement.textContent = `连接失败：${trustError.message}`;
+        }
+      } else {
+        errorElement.textContent = "未信任 SSH 服务器指纹，连接测试已取消。";
+      }
+    } else {
+      errorElement.textContent = `连接失败：${error.message}`;
+    }
+    errorElement.hidden = false;
+    await loadState(true);
+  } finally {
+    appState.busy.delete(id);
+    button.disabled = false;
+    button.innerHTML = `${icon("bolt")}测试连接`;
   }
 }
 
@@ -543,60 +621,14 @@ async function profileAction(action, id) {
     try {
       const data = await api(`/api/profiles/${encodeURIComponent(id)}/share`, { method: "POST" });
       $("#share-code").value = data.shareCode || "";
+      $("#share-dialog-title").textContent = `分享“${item.profile.name}”`;
+      $("#share-code-label").textContent = "1 个加密分享码";
       shareDialogElement.showModal();
       $("#copy-share-code").focus();
     } catch (error) { showToast(error.message, true); }
     finally { appState.busy.delete(id); await loadState(true); }
     return;
   }
-	if (action === "test") {
-		appState.busy.add(id);
-		renderProfiles();
-		try {
-			await api(`/api/profiles/${encodeURIComponent(id)}/test`, { method: "POST" });
-			await loadState(true);
-			await showMessageModal({
-				kind: "连接测试",
-				title: "连接测试成功",
-				message: item.profile.type === "ssh" ? "SSH 地址和认证信息验证通过。" : "WebSocket 地址、密钥和隧道握手验证通过。",
-				details: "配置卡片已更新最近连接状态，现在可以通过本地 SOCKS5/HTTP 混合端口使用代理。"
-			});
-		} catch (error) {
-			await loadState(true);
-			if (error.data?.code === "ssh_host_unknown") {
-				const trusted = await showConfirmModal({
-					kind: "SSH 安全确认",
-					title: "确认服务器指纹",
-					message: `这是首次连接 ${error.data.address}。请与服务器管理员核对下面的 SHA-256 指纹。`,
-					details: error.data.fingerprint,
-					confirmText: "信任并重新测试"
-				});
-				if (trusted) {
-					try {
-						await api(`/api/profiles/${encodeURIComponent(id)}/trust`, { method: "POST", body: JSON.stringify({ fingerprint: error.data.fingerprint }) });
-						await api(`/api/profiles/${encodeURIComponent(id)}/test`, { method: "POST" });
-						await loadState(true);
-						await showMessageModal({ kind: "连接测试", title: "连接测试成功", message: "SSH 指纹和认证信息验证通过。" });
-					} catch (trustError) {
-						await loadState(true);
-						await showMessageModal({ kind: "连接测试", title: "连接测试失败", message: "SSH 连接仍未建立。", details: trustError.message, isError: true });
-					}
-				}
-			} else {
-				await showMessageModal({
-					kind: "连接测试",
-					title: "连接测试失败",
-					message: "未能通过该配置建立远端连接，请按下面的提示修正后重试。",
-					details: error.message,
-					isError: true
-				});
-			}
-		} finally {
-			appState.busy.delete(id);
-			await loadState(true);
-		}
-		return;
-	}
   if (action === "delete") {
     const confirmed = await showConfirmModal({
       kind: "删除配置",
@@ -659,6 +691,32 @@ async function copyShareCode() {
   }
 }
 
+async function exportSelectedProfiles() {
+  const ids = [...appState.selectedProfiles];
+  if (!ids.length) return;
+  const button = $("#batch-export");
+  button.disabled = true;
+  try {
+    const data = await api("/api/export", { method: "POST", body: JSON.stringify({ ids }) });
+    $("#share-code").value = data.shareCode || (data.shareCodes || []).join("\n");
+    $("#share-dialog-title").textContent = "批量导出分享码";
+    $("#share-code-label").textContent = `${data.exported || ids.length} 个加密分享码（每行一个）`;
+    shareDialogElement.showModal();
+    $("#copy-share-code").focus();
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    button.disabled = false;
+    updateSelectionToolbar();
+  }
+}
+
+function setAllProfilesSelected(selected) {
+  appState.selectedProfiles.clear();
+  if (selected) for (const item of appState.profiles) appState.selectedProfiles.add(item.profile.id);
+  renderProfiles();
+}
+
 function openImportDialog() {
   importFormElement.reset();
   $("#import-error").hidden = true;
@@ -695,9 +753,9 @@ async function importProfile(event) {
   button.disabled = true;
   button.textContent = "导入中…";
   try {
-    await api("/api/import", { method: "POST", body: JSON.stringify({ shareCode: $("#import-share-code").value.trim() }) });
+    const data = await api("/api/import", { method: "POST", body: JSON.stringify({ shareCode: $("#import-share-code").value.trim() }) });
     closeImportDialog();
-    showToast("配置已导入，请检查后启动");
+    showToast(`已导入 ${data.imported || 1} 个配置，请检查后启动`);
     await loadState();
   } catch (error) {
     errorElement.textContent = error.message;
@@ -769,7 +827,21 @@ document.addEventListener("click", (event) => {
   if (commandButton) globalCommand(commandButton.dataset.command);
 });
 
+document.addEventListener("change", (event) => {
+  const checkbox = event.target.closest("[data-profile-select]");
+  if (!checkbox) return;
+  if (checkbox.checked) appState.selectedProfiles.add(checkbox.dataset.profileSelect);
+  else appState.selectedProfiles.delete(checkbox.dataset.profileSelect);
+  renderProfiles();
+});
+
 $("#field-ssh-auth").addEventListener("change", toggleSSHAuth);
+$("#test-profile").addEventListener("click", testEditedProfile);
+$("#batch-export").addEventListener("click", exportSelectedProfiles);
+$("#clear-selection").addEventListener("click", () => setAllProfilesSelected(false));
+$("#select-all-profiles").addEventListener("change", (event) => setAllProfilesSelected(event.target.checked));
+$("#mobile-menu").addEventListener("click", () => setNavigationOpen(!document.body.classList.contains("nav-open")));
+$("#sidebar-scrim").addEventListener("click", () => setNavigationOpen(false));
 $("#close-dialog").addEventListener("click", () => dialogElement.close());
 $("#cancel-dialog").addEventListener("click", () => dialogElement.close());
 $("#close-action-dialog").addEventListener("click", () => finishActionDialog(false));

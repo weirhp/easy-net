@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"easy-net/client-lite/internal/launch"
 	"easy-net/client-lite/internal/model"
@@ -172,6 +173,7 @@ func NewWithOptions(svc *service.Service, onQuit func(), options Options) (*Serv
 	mux.HandleFunc("/api/profiles/", s.handleProfileAction)
 	mux.HandleFunc("/api/launches", s.handleLaunches)
 	mux.HandleFunc("/api/launches/", s.handleLaunchAction)
+	mux.HandleFunc("/api/export", s.handleExport)
 	mux.HandleFunc("/api/import", s.handleImport)
 	mux.HandleFunc("/api/start-all", s.handleStartAll)
 	mux.HandleFunc("/api/stop-all", s.handleStopAll)
@@ -538,40 +540,129 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	payload, err := sharecode.Decode(body.ShareCode)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	codes := uniqueShareCodes(body.ShareCode)
+	if len(codes) == 0 {
+		writeError(w, http.StatusBadRequest, "请至少提供一个 Easy-Net Lite 分享码")
 		return
 	}
-	var id string
-	if body.Reuse {
-		id, err = s.service.ImportOrReuseShare(payload)
-	} else {
-		id, err = s.service.ImportShare(payload)
-	}
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if len(codes) > 50 {
+		writeError(w, http.StatusBadRequest, "一次最多导入 50 个分享码")
 		return
 	}
-	if body.AutoStart {
-		if startErr := s.service.Start(id); startErr != nil {
-			summary, ok := s.profileSummary(id)
-			if !ok {
-				summary = map[string]any{"id": id}
-			}
-			summary["ok"] = false
-			summary["error"] = startErr.Error()
-			writeJSON(w, http.StatusBadRequest, summary)
+	payloads := make([]sharecode.Payload, 0, len(codes))
+	for index, code := range codes {
+		payload, err := sharecode.Decode(code)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("第 %d 个分享码无效：%v", index+1, err))
 			return
 		}
+		payloads = append(payloads, payload)
 	}
-	summary, ok := s.profileSummary(id)
+
+	ids := make([]string, 0, len(payloads))
+	for index, payload := range payloads {
+		var id string
+		var err error
+		if body.Reuse {
+			id, err = s.service.ImportOrReuseShare(payload)
+		} else {
+			id, err = s.service.ImportShare(payload)
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("第 %d 个配置导入失败：%v", index+1, err))
+			return
+		}
+		ids = append(ids, id)
+		if body.AutoStart {
+			if startErr := s.service.Start(id); startErr != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{
+					"ok": false, "id": id, "ids": ids, "imported": len(ids),
+					"error": fmt.Sprintf("第 %d 个配置已导入，但启动失败：%v", index+1, startErr),
+				})
+				return
+			}
+		}
+	}
+	if len(ids) > 1 {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ids": ids, "imported": len(ids)})
+		return
+	}
+	summary, ok := s.profileSummary(ids[0])
 	if !ok {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": ids[0], "ids": ids, "imported": 1})
 		return
 	}
 	summary["ok"] = true
+	summary["ids"] = ids
+	summary["imported"] = 1
 	writeJSON(w, http.StatusOK, summary)
+}
+
+func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.authorized(r) {
+		writeError(w, http.StatusForbidden, "本地管理令牌无效，请刷新页面")
+		return
+	}
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ids := uniqueStrings(body.IDs)
+	if len(ids) == 0 {
+		writeError(w, http.StatusBadRequest, "请至少选择一个代理配置")
+		return
+	}
+	if len(ids) > 50 {
+		writeError(w, http.StatusBadRequest, "一次最多导出 50 个代理配置")
+		return
+	}
+	codes := make([]string, 0, len(ids))
+	for _, id := range ids {
+		payload, err := s.service.ExportShare(id)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		code, err := sharecode.Encode(payload)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		codes = append(codes, code)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "shareCodes": codes, "shareCode": strings.Join(codes, "\n"), "exported": len(codes),
+	})
+}
+
+func uniqueShareCodes(value string) []string {
+	return uniqueStrings(strings.FieldsFunc(value, func(r rune) bool {
+		return unicode.IsSpace(r) || r == ',' || r == ';' || r == '；'
+	}))
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func (s *Server) handleStartAll(w http.ResponseWriter, r *http.Request) {

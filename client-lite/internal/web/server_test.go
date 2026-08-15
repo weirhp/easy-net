@@ -77,6 +77,11 @@ func TestManagementPageAndProfileAPI(t *testing.T) {
 	if !strings.Contains(string(page), `data-tab="apps"`) || !strings.Contains(string(page), "添加启动入口") {
 		t.Fatal("management page is missing the apps tab markup")
 	}
+	for _, marker := range []string{`id="batch-export"`, `id="select-all-profiles"`, `id="test-profile"`, "粘贴一个或多个分享码"} {
+		if !strings.Contains(string(page), marker) {
+			t.Fatalf("management page is missing redesigned control %q", marker)
+		}
+	}
 	if !strings.Contains(response.Header.Get("Content-Security-Policy"), "default-src 'self'") {
 		t.Fatal("missing content security policy")
 	}
@@ -172,6 +177,76 @@ func TestManagementPageAndProfileAPI(t *testing.T) {
 	}
 	if strings.Contains(string(configData), "secret-value") {
 		t.Fatal("secret leaked into config")
+	}
+}
+
+func TestBatchExportAndMultiCodeImport(t *testing.T) {
+	secrets := &memorySecrets{values: map[string]string{}}
+	svc, err := service.New(config.NewStoreAt(filepath.Join(t.TempDir(), "config.json")), secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := []model.Profile{
+		{ID: "batch-a", Name: "批量 A", Type: model.ProxyTypeWebSocket, ListenHost: "127.0.0.1", ListenPort: 1180, WebSocket: &model.WebSocketConfig{URL: "wss://a.example/tunnel"}},
+		{ID: "batch-b", Name: "批量 B", Type: model.ProxyTypeWebSocket, ListenHost: "127.0.0.1", ListenPort: 1181, WebSocket: &model.WebSocketConfig{URL: "wss://b.example/tunnel"}},
+	}
+	for _, profile := range profiles {
+		if err := svc.Upsert(profile, service.SecretValues{WebSocketSecret: "secret-" + profile.ID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager, err := New(svc, func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(manager.Handler())
+	defer server.Close()
+	state := getState(t, server.URL)
+
+	exportBody, _ := json.Marshal(map[string]any{"ids": []string{"batch-a", "batch-b", "batch-a"}})
+	exportRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/api/export", bytes.NewReader(exportBody))
+	exportRequest.Header.Set("Content-Type", "application/json")
+	exportRequest.Header.Set("X-Easy-Net-Token", state.Token)
+	exportResponse, err := http.DefaultClient.Do(exportRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exported struct {
+		ShareCode  string   `json:"shareCode"`
+		ShareCodes []string `json:"shareCodes"`
+		Exported   int      `json:"exported"`
+	}
+	if err := json.NewDecoder(exportResponse.Body).Decode(&exported); err != nil {
+		t.Fatal(err)
+	}
+	_ = exportResponse.Body.Close()
+	if exportResponse.StatusCode != http.StatusOK || exported.Exported != 2 || len(exported.ShareCodes) != 2 || strings.Count(exported.ShareCode, "\n") != 1 {
+		t.Fatalf("unexpected batch export: status=%d body=%#v", exportResponse.StatusCode, exported)
+	}
+
+	importValue := exported.ShareCodes[0] + "\n" + exported.ShareCodes[1] + "\n" + exported.ShareCodes[0]
+	importBody, _ := json.Marshal(map[string]string{"shareCode": importValue})
+	importRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/api/import", bytes.NewReader(importBody))
+	importRequest.Header.Set("Content-Type", "application/json")
+	importRequest.Header.Set("X-Easy-Net-Token", state.Token)
+	importResponse, err := http.DefaultClient.Do(importRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var imported struct {
+		IDs      []string `json:"ids"`
+		Imported int      `json:"imported"`
+	}
+	if err := json.NewDecoder(importResponse.Body).Decode(&imported); err != nil {
+		t.Fatal(err)
+	}
+	_ = importResponse.Body.Close()
+	if importResponse.StatusCode != http.StatusOK || imported.Imported != 2 || len(imported.IDs) != 2 {
+		t.Fatalf("unexpected multi import: status=%d body=%#v", importResponse.StatusCode, imported)
+	}
+	state = getState(t, server.URL)
+	if len(state.Profiles) != 4 {
+		t.Fatalf("multi import should create two profiles, got %d", len(state.Profiles))
 	}
 }
 

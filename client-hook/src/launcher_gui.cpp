@@ -12,8 +12,10 @@
 #include <filesystem>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <unordered_map>
 #include <vector>
@@ -21,6 +23,7 @@
 #include "history_store.h"
 #include "chatgpt_package.h"
 #include "dns_resolver.h"
+#include "lite_engine.h"
 #include "resource.h"
 #include "socks5_health.h"
 #include "tun_config.h"
@@ -34,6 +37,7 @@ constexpr wchar_t kModeWeChat[] = L"wechat";
 constexpr wchar_t kModeWeChatWinDivert[] = L"wechat-windivert";
 constexpr wchar_t kModeHook[] = L"hook";
 constexpr UINT_PTR kLaunchTimer = 1;
+constexpr UINT kBuiltinProxyComplete = WM_APP + 1;
 constexpr std::size_t kMaximumLaunchOutput = 32 * 1024;
 
 bool IsWeChatMode(const std::wstring& mode) {
@@ -53,11 +57,18 @@ struct GuiState {
     bool updating = false;
     bool dirty = false;
     bool launching = false;
+    bool importing_proxy = false;
+    std::thread import_thread;
     HANDLE launch_process = nullptr;
     HANDLE launch_output = nullptr;
     std::string launch_output_bytes;
     easy_net::history::Entry pending_entry;
+    std::wstring engine_profile_id;
     ULONGLONG launch_started_tick = 0;
+};
+
+struct BuiltinProxyResult {
+    easy_net::lite_engine::ProxyInfo info;
 };
 
 GuiState* State(HWND dialog) {
@@ -486,7 +497,7 @@ void TestProxy(GuiState& state) {
                     ? L"SOCKS5 服务可连接并返回了有效握手响应。\r\n"
                       L"此测试不校验账号密码，也不代表所有目标网站都可访问。"
                     : L"无法连接该地址，或服务没有返回有效 SOCKS5 握手。\r\n"
-                      L"请确认 Easy-Net Lite 已运行、端口正确且防火墙未阻止。",
+                      L"请先导入分享码启动内置代理，或确认外部 SOCKS5 已运行。",
                 responsive ? L"代理测试成功" : L"代理测试失败",
                 MB_OK | (responsive ? MB_ICONINFORMATION : MB_ICONERROR));
 }
@@ -543,6 +554,7 @@ void LoadEntry(GuiState& state, std::size_t index) {
     SendDlgItemMessageW(state.dialog, IDC_MODE, CB_SETCURSEL, ModeIndex(entry.mode), 0);
     SetControlText(state.dialog, IDC_ENTRY_NAME, entry.name);
     SetControlText(state.dialog, IDC_PROXY, entry.proxy);
+    SetControlText(state.dialog, IDC_SHARE_CODE, L"");
     SetControlText(state.dialog, IDC_PATH, entry.path);
     SetControlText(state.dialog, IDC_ARGUMENTS, entry.arguments);
     SetControlText(state.dialog, IDC_DNS, entry.dns);
@@ -559,8 +571,12 @@ void LoadEntry(GuiState& state, std::size_t index) {
     if (entry.mode != kModeChatGpt) {
         SetControlText(state.dialog, IDC_PATH, entry.path);
     }
+    state.engine_profile_id = entry.engine_profile_id;
     SetControlText(state.dialog, IDC_ENTRY_STATE, L"正在编辑：" + entry.name);
-    SetControlText(state.dialog, IDC_STATUS, L"修改后可保存或直接启动");
+    SetControlText(state.dialog, IDC_STATUS,
+                   entry.engine_profile_id.empty()
+                       ? L"修改后可保存或直接启动"
+                       : L"已绑定内置代理，启动时会自动创建本地 SOCKS5");
     EnableWindow(GetDlgItem(state.dialog, IDC_REMOVE_ENTRY), TRUE);
     state.dirty = false;
     state.updating = false;
@@ -607,12 +623,14 @@ void NewEntry(GuiState& state) {
     SendDlgItemMessageW(state.dialog, IDC_UDP_MODE, CB_SETCURSEL, 0, 0);
     SetControlText(state.dialog, IDC_ENTRY_NAME, DefaultEntryName(0));
     SetControlText(state.dialog, IDC_PROXY, L"127.0.0.1:1082");
+    SetControlText(state.dialog, IDC_SHARE_CODE, L"");
     SetControlText(state.dialog, IDC_PATH, L"");
     SetControlText(state.dialog, IDC_ARGUMENTS, L"");
     SetControlText(state.dialog, IDC_DNS, L"");
     CheckDlgButton(state.dialog, IDC_ISOLATED, BST_UNCHECKED);
     CheckDlgButton(state.dialog, IDC_WECHAT_EXISTING, BST_UNCHECKED);
     EnableWindow(GetDlgItem(state.dialog, IDC_REMOVE_ENTRY), FALSE);
+    state.engine_profile_id.clear();
     SetControlText(state.dialog, IDC_ENTRY_STATE, L"新入口将在首次保存或启动后出现在左侧");
     SetControlText(state.dialog, IDC_STATUS, L"正在新建入口");
     UpdateModeUi(state);
@@ -660,6 +678,7 @@ easy_net::history::Entry CurrentEntry(GuiState& state) {
     entry.arguments = ControlText(state.dialog, IDC_ARGUMENTS);
     entry.proxy = ControlText(state.dialog, IDC_PROXY);
     entry.dns = ControlText(state.dialog, IDC_DNS);
+    entry.engine_profile_id = state.engine_profile_id;
     if (mode == 2 || mode == 4) {
         entry.dns.clear();
     }
@@ -689,7 +708,9 @@ easy_net::history::Entry CurrentEntry(GuiState& state) {
 
 bool ValidateEntry(HWND owner, const easy_net::history::Entry& entry) {
     if (entry.proxy.empty()) {
-        MessageBoxW(owner, L"请输入 SOCKS5 代理地址，例如 127.0.0.1:1082。", L"缺少代理地址",
+        MessageBoxW(owner,
+                    L"请输入 SOCKS5 代理地址，例如 127.0.0.1:1082；也可以粘贴 Easy-Net 分享码后点击“导入”。",
+                    L"缺少代理地址",
                     MB_OK | MB_ICONWARNING);
         return false;
     }
@@ -727,11 +748,92 @@ bool ValidateEntry(HWND owner, const easy_net::history::Entry& entry) {
     return true;
 }
 
+void SetImportingProxyUi(GuiState& state, bool importing) {
+    state.importing_proxy = importing;
+    for (const int identifier : {IDC_IMPORT_SHARE, IDC_SHARE_CODE, IDC_PROXY,
+                                 IDC_TEST_PROXY, IDC_LAUNCH, IDC_SAVE_ENTRY,
+                                 IDC_CREATE_SHORTCUT, IDC_NEW_ENTRY, IDC_REMOVE_ENTRY,
+                                 IDC_ENTRIES}) {
+        EnableWindow(GetDlgItem(state.dialog, identifier), !importing);
+    }
+    if (!importing && state.editing_index >= state.entries.size()) {
+        EnableWindow(GetDlgItem(state.dialog, IDC_REMOVE_ENTRY), FALSE);
+    }
+    SetWindowTextW(GetDlgItem(state.dialog, IDC_IMPORT_SHARE),
+                   importing ? L"导入中…" : L"导入");
+}
+
+bool StartBuiltinProxyImport(GuiState& state) {
+    if (state.importing_proxy || state.launching) {
+        return false;
+    }
+    const std::wstring share_code = ControlText(state.dialog, IDC_SHARE_CODE);
+    const bool has_share = easy_net::lite_engine::LooksLikeShareCode(share_code);
+    if (!has_share) {
+        MessageBoxW(state.dialog,
+                    L"请粘贴 Easy-Net Lite 分享码（以 ENL1. 开头），然后点击“导入”。",
+                    L"缺少分享码", MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    SetControlText(state.dialog, IDC_STATUS, L"正在创建并启动内置代理…");
+    SetImportingProxyUi(state, true);
+    try {
+        const HWND dialog = state.dialog;
+        const std::wstring launcher_path = state.launcher_path;
+        state.import_thread = std::thread([dialog, launcher_path, share_code] {
+            auto* result = new BuiltinProxyResult{
+                easy_net::lite_engine::EnsureProxy(launcher_path, share_code, L"")};
+            if (!PostMessageW(dialog, kBuiltinProxyComplete, 0,
+                              reinterpret_cast<LPARAM>(result))) {
+                delete result;
+            }
+        });
+    } catch (const std::system_error&) {
+        SetImportingProxyUi(state, false);
+        SetControlText(state.dialog, IDC_STATUS, L"无法创建内置代理后台任务");
+        MessageBoxW(state.dialog, L"无法创建内置代理后台任务，请稍后重试。",
+                    L"内置代理启动失败", MB_OK | MB_ICONERROR);
+        return false;
+    }
+    return true;
+}
+
+void FinishBuiltinProxyImport(GuiState& state, BuiltinProxyResult* raw_result) {
+    if (state.import_thread.joinable()) {
+        state.import_thread.join();
+    }
+    SetImportingProxyUi(state, false);
+    std::unique_ptr<BuiltinProxyResult> result(raw_result);
+    if (result == nullptr) {
+        SetControlText(state.dialog, IDC_STATUS, L"内置代理后台任务没有返回结果");
+        return;
+    }
+    const auto& info = result->info;
+    if (!info.ok) {
+        MessageBoxW(state.dialog,
+                    info.error.empty() ? L"无法启动内置代理。" : info.error.c_str(),
+                    L"内置代理启动失败", MB_OK | MB_ICONERROR);
+        SetControlText(state.dialog, IDC_STATUS, L"内置代理启动失败");
+        return;
+    }
+    state.updating = true;
+    state.engine_profile_id = info.id;
+    SetControlText(state.dialog, IDC_PROXY, info.listen_address);
+    SetControlText(state.dialog, IDC_SHARE_CODE, L"");
+    state.updating = false;
+    SetControlText(state.dialog, IDC_STATUS,
+                   L"已启动内置代理：" + info.name + L"（" + info.listen_address + L"）");
+    state.dirty = true;
+}
+
 std::wstring BuildLauncherCommand(const std::wstring& launcher_path,
                                   const easy_net::history::Entry& entry,
                                   bool gui_worker) {
     std::wstring command = QuoteArgument(launcher_path) + L" --proxy " +
                            QuoteArgument(entry.proxy) + L" --detach";
+    if (!entry.engine_profile_id.empty()) {
+        command += L" --engine-profile " + QuoteArgument(entry.engine_profile_id);
+    }
     if (gui_worker) {
         command += L" --gui-worker";
     }
@@ -838,6 +940,22 @@ std::filesystem::path ShortcutIconPath(const GuiState& state,
 
 bool SaveCurrentEntry(GuiState& state, bool show_feedback);
 
+bool ValidateImportedShareCode(GuiState& state) {
+    const std::wstring share_code = ControlText(state.dialog, IDC_SHARE_CODE);
+    if (share_code.empty()) {
+        return true;
+    }
+    if (!easy_net::lite_engine::LooksLikeShareCode(share_code)) {
+        MessageBoxW(state.dialog, L"分享码格式无效，应以 ENL1. 开头。",
+                    L"分享码无效", MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    MessageBoxW(state.dialog,
+                L"分享码尚未导入。请先点击分享码右侧的“导入”，确认内置代理启动成功后再保存或启动。",
+                L"请先导入分享码", MB_OK | MB_ICONINFORMATION);
+    return false;
+}
+
 bool CreateDesktopShortcut(GuiState& state) {
     if (!SaveCurrentEntry(state, false) || state.editing_index >= state.entries.size()) {
         return false;
@@ -921,14 +1039,17 @@ bool CreateDesktopShortcut(GuiState& state) {
                    L"以后双击桌面图标即可按此入口的最新设置启动");
     MessageBoxW(state.dialog,
                 (L"已创建桌面快捷方式：\r\n" + shortcut_path.wstring() +
-                 L"\r\n\r\n它会读取此入口的最新设置。使用时请保持 Easy-Net Hook "
-                 L"程序目录位置不变，并先启动 SOCKS5 服务。")
+                L"\r\n\r\n它会读取此入口的最新设置。使用时请保持 Easy-Net Hook "
+                L"程序目录位置不变。若入口绑定了内置代理，启动时会自动创建本地 SOCKS5。")
                     .c_str(),
                 L"快捷方式已创建", MB_OK | MB_ICONINFORMATION);
     return true;
 }
 
 bool SaveCurrentEntry(GuiState& state, bool show_feedback) {
+    if (!ValidateImportedShareCode(state)) {
+        return false;
+    }
     auto entry = CurrentEntry(state);
     if (!ValidateEntry(state.dialog, entry)) {
         return false;
@@ -998,7 +1119,8 @@ std::wstring LaunchSuccessText(const easy_net::history::Entry& entry) {
 void SetLaunchingUi(GuiState& state, bool launching) {
     state.launching = launching;
     for (const int identifier : {IDC_LAUNCH, IDC_SAVE_ENTRY, IDC_CREATE_SHORTCUT,
-                                 IDC_NEW_ENTRY, IDC_REMOVE_ENTRY, IDC_ENTRIES}) {
+                                 IDC_NEW_ENTRY, IDC_REMOVE_ENTRY, IDC_ENTRIES,
+                                 IDC_IMPORT_SHARE, IDC_SHARE_CODE}) {
         EnableWindow(GetDlgItem(state.dialog, identifier), !launching);
     }
     if (!launching && state.editing_index >= state.entries.size()) {
@@ -1100,6 +1222,9 @@ void FinishLaunch(GuiState& state, DWORD exit_code) {
 
 bool LaunchEntry(GuiState& state) {
     if (state.launching) {
+        return false;
+    }
+    if (!ValidateImportedShareCode(state)) {
         return false;
     }
     auto entry = CurrentEntry(state);
@@ -1278,7 +1403,9 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
         SendDlgItemMessageW(dialog, IDC_UDP_MODE, CB_SETCURSEL, 0, 0);
         CheckDlgButton(dialog, IDC_CLOSE_AFTER_LAUNCH, BST_CHECKED);
         SendDlgItemMessageW(dialog, IDC_PROXY, EM_SETCUEBANNER, TRUE,
-                            reinterpret_cast<LPARAM>(L"127.0.0.1:1082"));
+                            reinterpret_cast<LPARAM>(L"127.0.0.1:1082 或先导入分享码"));
+        SendDlgItemMessageW(dialog, IDC_SHARE_CODE, EM_SETCUEBANNER, TRUE,
+                            reinterpret_cast<LPARAM>(L"粘贴 ENL1. 分享码后点击导入"));
         SendDlgItemMessageW(dialog, IDC_DNS, EM_SETCUEBANNER, TRUE,
                             reinterpret_cast<LPARAM>(L"留空使用 Windows DNS"));
         SendDlgItemMessageW(dialog, IDC_PATH, EM_SETCUEBANNER, TRUE,
@@ -1311,6 +1438,10 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
         return FALSE;
     }
     switch (message) {
+        case kBuiltinProxyComplete:
+            FinishBuiltinProxyImport(*state,
+                                     reinterpret_cast<BuiltinProxyResult*>(long_parameter));
+            return TRUE;
         case WM_DPICHANGED: {
             const auto* suggested = reinterpret_cast<const RECT*>(long_parameter);
             SetWindowPos(dialog, nullptr, suggested->left, suggested->top,
@@ -1346,10 +1477,17 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
         case WM_COMMAND: {
             const int identifier = LOWORD(word_parameter);
             const int notification = HIWORD(word_parameter);
+            if (!state->updating && !state->importing_proxy && identifier == IDC_PROXY &&
+                notification == EN_CHANGE && !state->engine_profile_id.empty()) {
+                state->engine_profile_id.clear();
+                SetControlText(dialog, IDC_STATUS,
+                               L"已改用手动 SOCKS5 地址；内置代理绑定已解除");
+            }
             if (!state->updating &&
                 ((notification == EN_CHANGE &&
                   (identifier == IDC_ENTRY_NAME || identifier == IDC_PROXY ||
-                   identifier == IDC_PATH || identifier == IDC_ARGUMENTS ||
+                   identifier == IDC_SHARE_CODE || identifier == IDC_PATH ||
+                   identifier == IDC_ARGUMENTS ||
                    identifier == IDC_DNS)) ||
                  (notification == CBN_SELCHANGE &&
                   (identifier == IDC_MODE || identifier == IDC_UDP_MODE)) ||
@@ -1384,6 +1522,10 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
             }
             if (identifier == IDC_TEST_PROXY && notification == BN_CLICKED) {
                 TestProxy(*state);
+                return TRUE;
+            }
+            if (identifier == IDC_IMPORT_SHARE && notification == BN_CLICKED) {
+                StartBuiltinProxyImport(*state);
                 return TRUE;
             }
             if (identifier == IDC_OPEN_LOGS && notification == BN_CLICKED) {
@@ -1434,7 +1576,10 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
                 return TRUE;
             }
             if (identifier == IDCANCEL) {
-                if (state->launching) {
+                if (state->importing_proxy) {
+                    MessageBoxW(dialog, L"正在导入并启动内置代理，请等待操作完成。",
+                                L"正在导入", MB_OK | MB_ICONINFORMATION);
+                } else if (state->launching) {
                     if (MessageBoxW(dialog,
                                     L"程序仍在启动。关闭窗口只会停止显示启动结果，不会终止"
                                     L"已经创建或正在等待授权的进程。是否关闭？",
@@ -1498,7 +1643,10 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
             break;
         }
         case WM_CLOSE:
-            if (state->launching) {
+            if (state->importing_proxy) {
+                MessageBoxW(dialog, L"正在导入并启动内置代理，请等待操作完成。",
+                            L"正在导入", MB_OK | MB_ICONINFORMATION);
+            } else if (state->launching) {
                 if (MessageBoxW(dialog,
                                 L"程序仍在启动。关闭窗口只会停止显示启动结果，不会终止"
                                 L"已经创建或正在等待授权的进程。是否关闭？",
@@ -1512,6 +1660,14 @@ INT_PTR CALLBACK DialogProcedure(HWND dialog, UINT message, WPARAM word_paramete
             return TRUE;
         case WM_DESTROY:
             KillTimer(dialog, kLaunchTimer);
+            if (state->import_thread.joinable()) {
+                state->import_thread.join();
+            }
+            MSG pending_import{};
+            while (PeekMessageW(&pending_import, dialog, kBuiltinProxyComplete,
+                                kBuiltinProxyComplete, PM_REMOVE)) {
+                delete reinterpret_cast<BuiltinProxyResult*>(pending_import.lParam);
+            }
             if (state->launch_process != nullptr) {
                 CloseHandle(state->launch_process);
                 state->launch_process = nullptr;

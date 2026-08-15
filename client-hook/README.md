@@ -2,7 +2,7 @@
 
 Easy-Net Hook 是一个轻量 Windows 应用代理器。普通 Win32 程序通过 Microsoft Detours Hook Winsock API，把 TCP `connect`、`WSAConnect` 和 `ConnectEx` 改写为 SOCKS5 `CONNECT`；ChatGPT 和 Antigravity IDE 使用更稳定的原生代理模式；微信可选择按进程 TUN 或 WinDivert 模式覆盖 TCP、UDP/QUIC 和辅助进程。
 
-它直接复用 Easy-Net Lite、SSH `-D` 或其他客户端提供的 SOCKS5 端口，例如 `127.0.0.1:1080`。它既能通过图形界面保存常用程序并快捷启动，也能通过命令行启动普通新进程、激活打包桌面应用或附加到已运行进程；不会修改目标程序文件。仅 WinDivert 模式会在运行期间加载随包提供的签名驱动，其他模式不加载该驱动。
+它可以直接导入 Easy-Net 分享码并启动内置 SOCKS5（`easy-net-engine.exe`），也可以继续复用已经运行的 Easy-Net Lite、SSH `-D` 或其他客户端端口，例如 `127.0.0.1:1080`。它既能通过图形界面保存常用程序并快捷启动，也能通过命令行启动普通新进程、激活打包桌面应用或附加到已运行进程；不会修改目标程序文件。仅 WinDivert 模式会在运行期间加载随包提供的签名驱动，其他模式不加载该驱动。
 
 > 这仍不是 Proxifier 的完整替代品。请先阅读“当前边界”，尤其是运行中进程、UDP 和 DNS 部分。
 
@@ -14,8 +14,9 @@ Easy-Net Hook 是一个轻量 Windows 应用代理器。普通 Win32 程序通�
 - MSVC v143 工具集。
 - Windows 10/11 SDK。
 - CMake tools for Windows。
+- Go 1.26（用于编译内置代理引擎 `easy-net-engine.exe`；没有 Go 时仍可构建 Hook，但无法自行创建代理）。
 
-只安装命令行构建工具时，可以在管理员 PowerShell 中执行：
+构建 x64 或 Win32 时如果本机已安装 Go，还会同时编译对应架构的 `easy-net-engine.exe`。只安装命令行构建工具时，可以在管理员 PowerShell 中执行：
 
 ```powershell
 winget install --id Microsoft.VisualStudio.2022.BuildTools -e `
@@ -50,6 +51,7 @@ D:\work\me-pro\easy-net\client-hook\build-x64\Release
 ```text
 easy-net-hook.exe
 easy-net-hook.dll
+easy-net-engine.exe
 THIRD-PARTY-LICENSES\Detours-LICENSE.md
 windivert\easy-net-windivert.exe  （仅 x64）
 windivert\ProxyBridgeCore.dll     （仅 x64）
@@ -71,7 +73,21 @@ windivert\WinDivert64.sys         （仅 x64）
 
 界面左侧是图标形式的“快捷启动入口”，右侧是入口编辑器。选择 ChatGPT、Antigravity IDE、Cursor、微信 TUN、微信 WinDivert 或通用 Hook 场景，填写入口名称和代理设置后，可以只保存，也可以“保存并启动”。再次修改同一个入口会原位更新，不会产生重复的启动历史；单击入口进行编辑，双击则按保存的设置直接启动。
 
-“桌面快捷方式”会先保存当前入口，再在当前用户桌面创建“入口名称（代理）.lnk”。快捷方式只保存入口的稳定标识；每次双击都会从 `%LOCALAPPDATA%\EasyNetHook\launcher-entries.tsv` 读取最新的代理地址、程序路径和参数，因此修改入口后不需要重新创建快捷方式。快捷方式指向当前目录中的 `easy-net-hook.exe`，请不要移动或单独复制该 EXE；SOCKS5 客户端也必须先处于可用状态。
+### 内置代理
+
+不必再先单独打开 Easy-Net Lite。在入口的“分享码”框粘贴 `ENL1.` 开头的分享码，点击“导入”，Hook 会启动旁边的 `easy-net-engine.exe`，创建只监听回环地址的本地 SOCKS5，并自动填入地址。分享码本身不会写入入口文件，密钥保存在系统凭据库；入口只记住内置配置 ID 和本地端口。
+
+内置引擎是独立进程，托盘图标为“Easy-Net 代理”。关闭 Hook 窗口不会停止已经启动的代理；要完全退出请使用该托盘菜单。也可以直接修改 SOCKS5 框切换到外部地址（这会解除当前入口的内置代理绑定），例如已运行的 Lite 或 `ssh -D`。
+
+命令行同样可以创建代理后再启动应用：
+
+```powershell
+.\easy-net-hook.exe --share-code "ENL1...." --chatgpt-app --detach
+```
+
+分享码包含代理认证信息。图形界面不会保存原始分享码；若使用 `--share-code` 命令行，分享码会在该次启动期间出现在 Windows 进程命令行中，因此共享机器上优先使用图形界面的“导入”。
+
+“桌面快捷方式”会先保存当前入口，再在当前用户桌面创建“入口名称（代理）.lnk”。快捷方式只保存入口的稳定标识；每次双击都会从 `%LOCALAPPDATA%\EasyNetHook\launcher-entries.tsv` 读取最新的代理地址、程序路径和参数，因此修改入口后不需要重新创建快捷方式。快捷方式指向当前目录中的 `easy-net-hook.exe`，请不要移动或单独复制该 EXE。若入口绑定了内置代理，双击时会自动启动 `easy-net-engine.exe`；使用外部 SOCKS5 时仍需先让该服务处于可用状态。
 
 ChatGPT 入口会从本机安装的 `OpenAI.Codex` 包读取官方 `icon-chatgpt.ico`，并缓存到 `%LOCALAPPDATA%\EasyNetHook\Icons\chatgpt.ico` 供桌面快捷方式使用。这样 Microsoft Store 更新后清理旧的 WindowsApps 版本目录，也不会让已经创建的快捷方式丢失图标；重新点击“创建桌面快捷方式”可刷新缓存。
 
@@ -227,7 +243,7 @@ GitHub Actions 同时生成 `Easy-Net-Hook-x64`（轻量）、`Easy-Net-Hook-Win
 
 ### 通用程序
 
-先启动本地 SOCKS5 服务，再通过启动器打开目标程序：
+先启动本地 SOCKS5 服务，或先在图形界面导入分享码创建内置代理，再通过启动器打开目标程序：
 
 ```powershell
 .\easy-net-hook.exe --proxy 127.0.0.1:1080 -- "C:\Path\To\app.exe" --app-option
@@ -432,6 +448,8 @@ Chromium 的 SOCKS5 模式不支持用户名密码，因此网页模式只能连
 
 ```text
 --gui               打开图形启动器；不带参数运行时也是此行为
+--share-code CODE   导入 Easy-Net 分享码并启动内置 SOCKS5
+--engine-profile ID 启动已经导入的内置代理配置
 --no-children       不向子进程加载 Hook
 --pid PID           附加到一个已运行的同架构进程
 --appx AUMID        正式激活打包桌面应用，然后附加返回的进程
@@ -516,6 +534,7 @@ DNS 查询是目标进程到指定 DNS 服务的普通 UDP/TCP 流量，会绕�
 ```text
 easy-net-hook.exe
   ├─ GUI + 本地历史记录（快捷启动常用配置）
+  ├─ easy-net-engine.exe（导入分享码、创建本地 SOCKS5，可脱离启动器运行）
   ├─ --chatgpt-app（原生 SOCKS5 参数 + 后端代理环境）
   ├─ --antigravity（默认配置/可选隔离配置 + IDE 原生代理 + LS 兜底 Hook）
   ├─ --cursor（原生 SOCKS5 + Node service 定向 Hook + 同代理多窗口识别）

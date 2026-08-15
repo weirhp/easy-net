@@ -13,6 +13,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -27,12 +29,23 @@ const listenAddress = "127.0.0.1:18081"
 //go:embed web/index.html web/app.css web/app.js
 var assets embed.FS
 
+type Options struct {
+	ListenAddress string
+	StatusFile    string
+	Application   string
+	DisableAssets bool
+}
+
 type Server struct {
-	service  *service.Service
-	http     *http.Server
-	listener net.Listener
-	token    string
-	onQuit   func()
+	service       *service.Service
+	http          *http.Server
+	listener      net.Listener
+	token         string
+	onQuit        func()
+	listenAddress string
+	statusFile    string
+	application   string
+	serveAssets   bool
 }
 
 type stateResponse struct {
@@ -120,15 +133,32 @@ type AlreadyRunningError struct{ URL string }
 func (e *AlreadyRunningError) Error() string { return "Easy-Net Lite 已经在运行" }
 
 func New(svc *service.Service, onQuit func()) (*Server, error) {
+	return NewWithOptions(svc, onQuit, Options{})
+}
+
+func NewWithOptions(svc *service.Service, onQuit func(), options Options) (*Server, error) {
 	tokenBytes := make([]byte, 24)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return nil, fmt.Errorf("生成本地管理令牌：%w", err)
 	}
-	s := &Server{service: svc, token: hex.EncodeToString(tokenBytes), onQuit: onQuit}
+	application := strings.TrimSpace(options.Application)
+	if application == "" {
+		application = "easy-net-lite"
+	}
+	listen := strings.TrimSpace(options.ListenAddress)
+	if listen == "" {
+		listen = listenAddress
+	}
+	s := &Server{
+		service: svc, token: hex.EncodeToString(tokenBytes), onQuit: onQuit,
+		listenAddress: listen, statusFile: strings.TrimSpace(options.StatusFile),
+		application: application, serveAssets: !options.DisableAssets,
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleAsset)
 	mux.HandleFunc("/api/ping", s.handlePing)
 	mux.HandleFunc("/api/state", s.handleState)
+	mux.HandleFunc("/api/proxy", s.handleProxy)
 	mux.HandleFunc("/api/profiles", s.handleProfiles)
 	mux.HandleFunc("/api/profiles/", s.handleProfileAction)
 	mux.HandleFunc("/api/import", s.handleImport)
@@ -147,12 +177,14 @@ func New(svc *service.Service, onQuit func()) (*Server, error) {
 }
 
 func (s *Server) Start() error {
-	listener, err := net.Listen("tcp", listenAddress)
+	listener, err := net.Listen("tcp", s.listenAddress)
 	if err != nil {
-		if existingURL, ok := probeExistingServer(); ok {
+		if existingURL, ok := probeApplicationServerAt(
+			"http://"+s.listenAddress, s.application, s.application == "easy-net-lite",
+		); ok {
 			return &AlreadyRunningError{URL: existingURL}
 		}
-		log.Printf("[Easy-Net Lite] 管理端口 %s 被占用，将使用随机本地端口：%v", listenAddress, err)
+		log.Printf("[Easy-Net Lite] 管理端口 %s 被占用，将使用随机本地端口：%v", s.listenAddress, err)
 		listener, err = net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			return fmt.Errorf("启动本地管理服务：%w", err)
@@ -160,6 +192,10 @@ func (s *Server) Start() error {
 	}
 	s.listener = listener
 	s.http.Addr = listener.Addr().String()
+	if err := s.writeStatusFile(); err != nil {
+		_ = listener.Close()
+		return err
+	}
 	go func() {
 		if err := s.http.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("[Easy-Net Lite] 管理服务异常退出：%v", err)
@@ -182,6 +218,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) Handler() http.Handler { return s.http.Handler }
 
 func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
+	if !s.serveAssets {
+		http.NotFound(w, r)
+		return
+	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -228,7 +268,21 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"application": "easy-net-lite", "version": version.Value})
+	writeJSON(w, http.StatusOK, map[string]string{"application": s.application, "version": version.Value})
+}
+
+func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	summary, ok := s.profileSummary(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "代理配置不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
 }
 
 func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
@@ -286,6 +340,12 @@ func (s *Server) handleProfileAction(w http.ResponseWriter, r *http.Request) {
 	switch parts[1] {
 	case "start":
 		err = s.service.Start(id)
+		if err == nil {
+			if summary, ok := s.profileSummary(id); ok {
+				summary["ok"] = true
+				result = summary
+			}
+		}
 	case "stop":
 		s.service.Stop(id)
 	case "test":
@@ -339,6 +399,8 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		ShareCode string `json:"shareCode"`
+		AutoStart bool   `json:"autoStart"`
+		Reuse     bool   `json:"reuse"`
 	}
 	if err := decodeJSON(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -349,12 +411,35 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	id, err := s.service.ImportShare(payload)
+	var id string
+	if body.Reuse {
+		id, err = s.service.ImportOrReuseShare(payload)
+	} else {
+		id, err = s.service.ImportShare(payload)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
+	if body.AutoStart {
+		if startErr := s.service.Start(id); startErr != nil {
+			summary, ok := s.profileSummary(id)
+			if !ok {
+				summary = map[string]any{"id": id}
+			}
+			summary["ok"] = false
+			summary["error"] = startErr.Error()
+			writeJSON(w, http.StatusBadRequest, summary)
+			return
+		}
+	}
+	summary, ok := s.profileSummary(id)
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
+		return
+	}
+	summary["ok"] = true
+	writeJSON(w, http.StatusOK, summary)
 }
 
 func (s *Server) handleStartAll(w http.ResponseWriter, r *http.Request) {
@@ -487,11 +572,56 @@ func sameOrigin(rawOrigin, requestHost string) bool {
 	return originPort == requestPort
 }
 
-func probeExistingServer() (string, bool) {
-	return probeServerAt("http://" + listenAddress)
+func (s *Server) writeStatusFile() error {
+	if s.statusFile == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(s.statusFile), 0700); err != nil {
+		return fmt.Errorf("创建引擎状态目录：%w", err)
+	}
+	data, err := json.MarshalIndent(map[string]any{
+		"application": s.application,
+		"pid":         os.Getpid(),
+		"control":     s.URL(),
+		"version":     version.Value,
+	}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("序列化引擎状态：%w", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(s.statusFile, data, 0600); err != nil {
+		return fmt.Errorf("写入引擎状态：%w", err)
+	}
+	return nil
+}
+
+func (s *Server) profileSummary(id string) (map[string]any, bool) {
+	if id == "" {
+		return nil, false
+	}
+	for _, state := range s.service.States() {
+		if state.Profile.ID != id {
+			continue
+		}
+		return map[string]any{
+			"id":            state.Profile.ID,
+			"name":          state.Profile.Name,
+			"listenHost":    state.Profile.ListenHost,
+			"listenPort":    state.Profile.ListenPort,
+			"listenAddress": state.Profile.ListenAddress(),
+			"running":       state.Running,
+			"starting":      state.Starting,
+			"error":         state.Error,
+		}, true
+	}
+	return nil, false
 }
 
 func probeServerAt(baseURL string) (string, bool) {
+	return probeApplicationServerAt(baseURL, "easy-net-lite", true)
+}
+
+func probeApplicationServerAt(baseURL, expectedApplication string, allowLegacy bool) (string, bool) {
 	client := &http.Client{
 		Timeout:   750 * time.Millisecond,
 		Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 500 * time.Millisecond}).DialContext},
@@ -499,10 +629,22 @@ func probeServerAt(baseURL string) (string, bool) {
 	response, err := client.Get(baseURL + "/api/ping")
 	if err == nil {
 		isCurrent := response.StatusCode == http.StatusOK && response.Header.Get("X-Easy-Net-Lite") == "1"
-		_ = response.Body.Close()
+		var ping struct {
+			Application string `json:"application"`
+		}
 		if isCurrent {
+			_ = json.NewDecoder(io.LimitReader(response.Body, 16*1024)).Decode(&ping)
+		}
+		_ = response.Body.Close()
+		if isCurrent && ping.Application == expectedApplication {
 			return baseURL, true
 		}
+		if isCurrent && ping.Application != "" {
+			return "", false
+		}
+	}
+	if !allowLegacy {
+		return "", false
 	}
 
 	// 0.1.1 之前没有 /api/ping 标记；使用旧管理接口的稳定特征识别，避免升级时启动两个实例。

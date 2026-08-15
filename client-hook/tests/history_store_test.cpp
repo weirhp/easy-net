@@ -38,6 +38,12 @@ int wmain() {
     assert(existing_round_trip.size() == 1);
     assert(existing_round_trip[0].wechat_existing);
 
+    existing_wechat.engine_profile_id = L"engine-profile-1";
+    const auto engine_round_trip = easy_net::history::Parse(
+        easy_net::history::Serialize({existing_wechat}));
+    assert(engine_round_trip.size() == 1);
+    assert(engine_round_trip[0].engine_profile_id == L"engine-profile-1");
+
     const auto legacy = easy_net::history::Parse(
         L"antigravity\tAntigravity IDE\tD:\\\\IDE.exe\t\t127.0.0.1:1082\t\t98\n");
     assert(legacy.size() == 1);

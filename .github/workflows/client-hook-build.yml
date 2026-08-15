@@ -7,10 +7,12 @@ on:
       - main
     paths:
       - client-hook/**
+      - client-lite/**
       - .github/workflows/client-hook-build.yml
   pull_request:
     paths:
       - client-hook/**
+      - client-lite/**
       - .github/workflows/client-hook-build.yml
 
 permissions:
@@ -30,6 +32,12 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: client-lite/go.mod
+          cache-dependency-path: client-lite/go.sum
 
       - name: Configure
         shell: pwsh
@@ -63,6 +71,7 @@ jobs:
           New-Item -ItemType Directory -Force $package | Out-Null
           Copy-Item client-hook/build/Release/easy-net-hook.exe -Destination $package
           Copy-Item client-hook/build/Release/easy-net-hook.dll -Destination $package
+          Copy-Item client-hook/build/Release/easy-net-engine.exe -Destination $package
           Copy-Item client-hook/build/Release/THIRD-PARTY-LICENSES -Destination $package -Recurse
           Copy-Item client-hook/README.md -Destination $package
 
@@ -74,6 +83,7 @@ jobs:
           New-Item -ItemType Directory -Force $package | Out-Null
           Copy-Item client-hook/build/Release/easy-net-hook.exe -Destination $package
           Copy-Item client-hook/build/Release/easy-net-hook.dll -Destination $package
+          Copy-Item client-hook/build/Release/easy-net-engine.exe -Destination $package
           Copy-Item client-hook/build/Release/THIRD-PARTY-LICENSES -Destination $package -Recurse
           Copy-Item client-hook/README.md -Destination $package
           Copy-Item client-hook/build/Release/windivert -Destination $package -Recurse

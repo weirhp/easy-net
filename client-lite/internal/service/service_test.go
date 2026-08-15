@@ -159,6 +159,122 @@ func TestShareExportImportRoundTripAvoidsPortConflict(t *testing.T) {
 	}
 }
 
+func TestImportOrReuseShareUpdatesExistingEndpoint(t *testing.T) {
+	secrets := &memorySecrets{values: map[string]string{}}
+	svc, err := New(config.NewStoreAt(filepath.Join(t.TempDir(), "config.json")), secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := svc.ImportShare(sharecode.Payload{
+		Version: sharecode.CurrentVersion, Name: "原配置", Type: model.ProxyTypeWebSocket, PreferredPort: 1082,
+		WebSocket: &sharecode.WebSocketConfig{URL: "wss://example.com/tunnel", Secret: "old-secret"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, ok := svc.Profile(first)
+	if !ok {
+		t.Fatal("original profile is missing")
+	}
+	reused, err := svc.ImportOrReuseShare(sharecode.Payload{
+		Version: sharecode.CurrentVersion, Name: "新名称", Type: model.ProxyTypeWebSocket, PreferredPort: 1090, BypassPrivate: true,
+		WebSocket: &sharecode.WebSocketConfig{URL: "wss://example.com/tunnel", Secret: "new-secret", LegacyQueryAuth: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused != first {
+		t.Fatalf("expected reused profile %s, got %s", first, reused)
+	}
+	if len(svc.States()) != 1 {
+		t.Fatalf("reuse created an extra profile: %#v", svc.States())
+	}
+	profile, ok := svc.Profile(first)
+	if !ok || profile.ListenPort != original.ListenPort || profile.Name != "原配置" || !profile.BypassPrivate ||
+		profile.WebSocket == nil || !profile.WebSocket.LegacyQueryAuth {
+		t.Fatalf("unexpected reused profile: %#v", profile)
+	}
+	if secrets.values[first+"/websocket"] != "new-secret" {
+		t.Fatal("reused profile secret was not updated")
+	}
+	created, err := svc.ImportOrReuseShare(sharecode.Payload{
+		Version: sharecode.CurrentVersion, Name: "另一个", Type: model.ProxyTypeWebSocket, PreferredPort: 1082,
+		WebSocket: &sharecode.WebSocketConfig{URL: "wss://other.example/tunnel", Secret: "other-secret"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created == first {
+		t.Fatal("different websocket URL reused the original profile")
+	}
+	if len(svc.States()) != 2 {
+		t.Fatalf("expected a second profile, got %#v", svc.States())
+	}
+}
+
+func TestImportOrReuseShareStoresSSHFingerprintTransactionally(t *testing.T) {
+	secrets := &memorySecrets{values: map[string]string{}}
+	svc, err := New(config.NewStoreAt(filepath.Join(t.TempDir(), "config.json")), secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := sharecode.Payload{
+		Version: sharecode.CurrentVersion, Name: "SSH", Type: model.ProxyTypeSSH, PreferredPort: 1090,
+		SSH: &sharecode.SSHConfig{
+			Host: "ssh.example.com", Port: 22, Username: "user", AuthType: model.AuthTypePassword,
+			Password: "secret", HostKeyFingerprint: "SHA256:firstFingerprint",
+		},
+	}
+	id, err := svc.ImportShare(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, ok := svc.Profile(id)
+	if !ok || profile.SSH == nil || profile.SSH.HostKeyFingerprint != "SHA256:firstFingerprint" {
+		t.Fatalf("imported SSH fingerprint was not stored: %#v", profile)
+	}
+
+	payload.SSH.HostKeyFingerprint = "SHA256:updatedFingerprint"
+	reused, err := svc.ImportOrReuseShare(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused != id {
+		t.Fatalf("expected profile %s to be reused, got %s", id, reused)
+	}
+	profile, ok = svc.Profile(id)
+	if !ok || profile.SSH == nil || profile.SSH.HostKeyFingerprint != "SHA256:updatedFingerprint" {
+		t.Fatalf("reused SSH fingerprint was not updated: %#v", profile)
+	}
+}
+
+func TestImportShareSkipsPortOccupiedByAnotherProcess(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	port := occupied.Addr().(*net.TCPAddr).Port
+
+	secrets := &memorySecrets{values: map[string]string{}}
+	svc, err := New(config.NewStoreAt(filepath.Join(t.TempDir(), "config.json")), secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := svc.ImportShare(sharecode.Payload{
+		Version: sharecode.CurrentVersion, Name: "occupied", Type: model.ProxyTypeWebSocket,
+		PreferredPort: port,
+		WebSocket:     &sharecode.WebSocketConfig{URL: "wss://example.com/tunnel", Secret: "secret"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, ok := svc.Profile(id)
+	if !ok || profile.ListenPort == port {
+		t.Fatalf("import selected an occupied port: %#v", profile)
+	}
+}
+
 func TestUpsertRollsBackSecretWhenConfigSaveFails(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "config.json")

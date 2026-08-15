@@ -180,7 +180,10 @@ func (s *Service) ImportShare(payload sharecode.Payload) (string, error) {
 		values.WebSocketSecret = payload.WebSocket.Secret
 	}
 	if payload.SSH != nil {
-		profile.SSH = &model.SSHConfig{Host: payload.SSH.Host, Port: payload.SSH.Port, Username: payload.SSH.Username, AuthType: payload.SSH.AuthType}
+		profile.SSH = &model.SSHConfig{
+			Host: payload.SSH.Host, Port: payload.SSH.Port, Username: payload.SSH.Username,
+			AuthType: payload.SSH.AuthType, HostKeyFingerprint: payload.SSH.HostKeyFingerprint,
+		}
 		values.SSHPassword = payload.SSH.Password
 		values.SSHPrivateKey = []byte(payload.SSH.PrivateKey)
 		values.SSHPassphrase = payload.SSH.Passphrase
@@ -188,15 +191,58 @@ func (s *Service) ImportShare(payload sharecode.Payload) (string, error) {
 	if err := s.Upsert(profile, values); err != nil {
 		return "", err
 	}
-	if payload.SSH != nil && payload.SSH.HostKeyFingerprint != "" {
-		if err := s.TrustSSHHost(id, payload.SSH.HostKeyFingerprint); err != nil {
-			if rollbackErr := s.Delete(id); rollbackErr != nil {
-				return "", fmt.Errorf("导入 SSH 指纹失败：%v；回滚导入配置也失败：%w", err, rollbackErr)
+	return id, nil
+}
+
+func (s *Service) ImportOrReuseShare(payload sharecode.Payload) (string, error) {
+	if err := sharecode.Validate(payload); err != nil {
+		return "", err
+	}
+	if existing, ok := s.matchingShareProfile(payload); ok {
+		existing.BypassPrivate = payload.BypassPrivate
+		values := SecretValues{}
+		if payload.WebSocket != nil {
+			existing.WebSocket = &model.WebSocketConfig{
+				URL: payload.WebSocket.URL, AllowInsecure: payload.WebSocket.AllowInsecure, LegacyQueryAuth: payload.WebSocket.LegacyQueryAuth,
 			}
-			return "", fmt.Errorf("导入 SSH 指纹失败：%w", err)
+			values.WebSocketSecret = payload.WebSocket.Secret
+		}
+		if payload.SSH != nil {
+			existing.SSH = &model.SSHConfig{
+				Host: payload.SSH.Host, Port: payload.SSH.Port, Username: payload.SSH.Username,
+				AuthType: payload.SSH.AuthType, HostKeyFingerprint: payload.SSH.HostKeyFingerprint,
+			}
+			values.SSHPassword = payload.SSH.Password
+			values.SSHPrivateKey = []byte(payload.SSH.PrivateKey)
+			values.SSHPassphrase = payload.SSH.Passphrase
+		}
+		if err := s.Upsert(existing, values); err != nil {
+			return "", err
+		}
+		return existing.ID, nil
+	}
+	return s.ImportShare(payload)
+}
+
+func (s *Service) matchingShareProfile(payload sharecode.Payload) (model.Profile, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, profile := range s.cfg.Profiles {
+		if profile.Type != payload.Type {
+			continue
+		}
+		if payload.Type == model.ProxyTypeWebSocket && profile.WebSocket != nil && payload.WebSocket != nil &&
+			strings.TrimSpace(profile.WebSocket.URL) == strings.TrimSpace(payload.WebSocket.URL) {
+			return profile.Clone(), true
+		}
+		if payload.Type == model.ProxyTypeSSH && profile.SSH != nil && payload.SSH != nil &&
+			strings.EqualFold(strings.TrimSpace(profile.SSH.Host), strings.TrimSpace(payload.SSH.Host)) &&
+			profile.SSH.Port == payload.SSH.Port &&
+			profile.SSH.Username == payload.SSH.Username {
+			return profile.Clone(), true
 		}
 	}
-	return id, nil
+	return model.Profile{}, false
 }
 
 func payloadWithVersion(payload sharecode.Payload) sharecode.Payload {
@@ -215,16 +261,25 @@ func (s *Service) nextAvailablePort(preferred int) int {
 		preferred = 1080
 	}
 	for port := preferred; port <= 65535; port++ {
-		if _, exists := used[port]; !exists {
+		if _, exists := used[port]; !exists && localTCPPortAvailable(port) {
 			return port
 		}
 	}
 	for port := 1080; port < preferred; port++ {
-		if _, exists := used[port]; !exists {
+		if _, exists := used[port]; !exists && localTCPPortAvailable(port) {
 			return port
 		}
 	}
 	return preferred
+}
+
+func localTCPPortAvailable(port int) bool {
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		return false
+	}
+	_ = listener.Close()
+	return true
 }
 
 func (s *Service) Upsert(incoming model.Profile, values SecretValues) error {
@@ -363,12 +418,18 @@ func (s *Service) prepareProfile(incoming model.Profile, old *model.Profile, val
 		} else if profile.SSH.AuthType == model.AuthTypePrivateKey {
 			profile.SSH.PassphraseRef = profile.ID + "/passphrase"
 		}
+		incomingFingerprint := strings.TrimSpace(profile.SSH.HostKeyFingerprint)
 		profile.SSH.PrivateKeyPath = ""
 		profile.SSH.HostKeyFingerprint = ""
-		if old != nil && old.SSH != nil {
-			if profile.SSH.Host == old.SSH.Host && profile.SSH.Port == old.SSH.Port {
+		if incomingFingerprint != "" {
+			profile.SSH.HostKeyFingerprint = incomingFingerprint
+		} else if old != nil && old.SSH != nil {
+			if strings.EqualFold(profile.SSH.Host, old.SSH.Host) &&
+				profile.SSH.Port == old.SSH.Port {
 				profile.SSH.HostKeyFingerprint = old.SSH.HostKeyFingerprint
 			}
+		}
+		if old != nil && old.SSH != nil {
 			if profile.SSH.AuthType == model.AuthTypePrivateKey && old.SSH.AuthType == model.AuthTypePrivateKey {
 				profile.SSH.PrivateKeyPath = old.SSH.PrivateKeyPath
 			}

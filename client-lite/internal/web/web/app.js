@@ -62,6 +62,24 @@ function showConfirmModal({ kind = "确认操作", title = "请确认", message,
   return new Promise((resolve) => { actionDialogResolver = resolve; });
 }
 
+function showAlertModal({ kind = "启动失败", title = "无法启动应用", message, details = "", confirmText = "知道了" }) {
+  if (actionDialogResolver) finishActionDialog(false);
+  $("#action-dialog-kind").textContent = kind;
+  $("#action-dialog-title").textContent = title;
+  $("#action-dialog-message").textContent = message;
+  const detailsElement = $("#action-dialog-details");
+  detailsElement.textContent = details;
+  detailsElement.hidden = !details;
+  $("#cancel-action-dialog").hidden = true;
+  const confirmButton = $("#confirm-action-dialog");
+  confirmButton.textContent = confirmText;
+  confirmButton.classList.remove("danger-solid");
+  confirmButton.classList.add("primary");
+  actionDialogElement.showModal();
+  confirmButton.focus();
+  return new Promise((resolve) => { actionDialogResolver = resolve; });
+}
+
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
@@ -315,7 +333,7 @@ function syncLaunchFields() {
   $("#launch-proxy").required = manualProxy;
   const notes = {
     hook: "通用 Hook 通过 DLL 注入代理 TCP；目标程序必须与 Hook 架构一致，UDP 不会走 SOCKS5。",
-    windivert: "通用 WinDivert 支持 TCP+UDP，需要 x64-TUN 完整包和管理员授权。规则会影响所有同名进程，代理断开时默认阻断匹配流量。"
+    windivert: "通用 WinDivert 支持 TCP+UDP，需要 x64-TUN 完整包和管理员授权。Lite 会把所有通用 WinDivert 应用合并到一套共享引擎中；规则会影响所有同名进程，代理断开时默认阻断匹配流量。"
   };
   $("#launch-mode-note").textContent = notes[mode] || "启动由 Easy-Net Hook 在后台完成。请把 easy-net-hook.exe 和 Lite 放在同一目录。";
   if (!wechat) $("#launch-wechat-existing").checked = false;
@@ -411,11 +429,40 @@ async function launchAction(action, id) {
   appState.busy.add(key);
   renderLaunches();
   try {
-    const data = await api(`/api/launches/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+    let data;
+    try {
+      data = await api(`/api/launches/${encodeURIComponent(id)}/${action}`, {
+        method: "POST",
+        body: action === "start" ? JSON.stringify({ confirmRunning: false }) : undefined
+      });
+    } catch (error) {
+      if (action !== "start" || error.data?.code !== "application_already_running") throw error;
+      const confirmed = await showConfirmModal({
+        kind: "应用正在运行",
+        title: `再次启动 ${entry.name}？`,
+        message: `检测到“${entry.name}”已经在运行。再次启动可能打开新窗口，也可能由现有进程接管。`,
+        details: "只有确认后才会继续；当前正在运行的应用不会被关闭。",
+        confirmText: "仍然启动"
+      });
+      if (!confirmed) return;
+      data = await api(`/api/launches/${encodeURIComponent(id)}/${action}`, {
+        method: "POST",
+        body: JSON.stringify({ confirmRunning: true })
+      });
+    }
     if (action === "start") showToast(`正在启动 ${entry.name}（${data.listenAddress || entry.listenAddress || "本地代理"}）`);
     if (action === "shortcut") showToast(`已创建桌面快捷方式：${data.path || ""}`);
   } catch (error) {
-    showToast(error.message, true);
+    if (action === "start" && error.data?.code === "proxy_unavailable") {
+      await showAlertModal({
+        kind: "代理检查失败",
+        title: "代理不可用，已停止启动",
+        message: error.message,
+        details: "请先在“网络代理”中检查或启动该代理，确认连接正常后再试。"
+      });
+    } else {
+      showToast(error.message, true);
+    }
   } finally {
     appState.busy.delete(key);
     await loadState(true);

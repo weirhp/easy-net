@@ -1,5 +1,7 @@
 package launch
 
+import "easy-net/client-lite/internal/model"
+
 type ShortcutOptions struct {
 	Name             string
 	Target           string
@@ -12,6 +14,8 @@ type ShortcutOptions struct {
 
 type Runner interface {
 	Start(args []string) error
+	IsRunning(entry model.LaunchEntry) (bool, error)
+	CheckProxy(address string) error
 	Executable() (string, error)
 	CreateShortcut(options ShortcutOptions) (string, error)
 }

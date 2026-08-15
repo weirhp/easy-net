@@ -1,6 +1,7 @@
 package launch
 
 import (
+	"errors"
 	"net"
 	"path/filepath"
 	"strconv"
@@ -17,6 +18,8 @@ type fakeRunner struct {
 	mu        sync.Mutex
 	args      [][]string
 	startErr  error
+	checkErr  error
+	running   bool
 	shortcuts []ShortcutOptions
 }
 
@@ -29,6 +32,10 @@ func (f *fakeRunner) Start(args []string) error {
 	f.args = append(f.args, append([]string(nil), args...))
 	return nil
 }
+
+func (f *fakeRunner) IsRunning(model.LaunchEntry) (bool, error) { return f.running, nil }
+
+func (f *fakeRunner) CheckProxy(string) error { return f.checkErr }
 
 func (f *fakeRunner) Executable() (string, error) { return "easy-net-hook.exe", nil }
 
@@ -223,5 +230,94 @@ func TestStartWithManualProxyDoesNotStartLiteProfile(t *testing.T) {
 	}
 	if got := runner.lastArgs(); len(got) < 2 || got[1] != "127.0.0.1:10808" {
 		t.Fatalf("unexpected hook args: %#v", got)
+	}
+}
+
+func TestStartRequiresConfirmationWhenApplicationIsRunning(t *testing.T) {
+	dir := t.TempDir()
+	runner := &fakeRunner{running: true}
+	launches, err := New(dir, testService(t, dir), runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := launches.Upsert(model.LaunchEntry{
+		Name: "Cursor", Mode: model.LaunchModeCursor, Proxy: "127.0.0.1:1082",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = launches.Start(saved.ID)
+	var running *AlreadyRunningError
+	if !errors.As(err, &running) || running.Entry.ID != saved.ID {
+		t.Fatalf("expected AlreadyRunningError, got %v", err)
+	}
+	if runner.lastArgs() != nil {
+		t.Fatal("hook started before duplicate launch was confirmed")
+	}
+	if _, err := launches.StartWithOptions(saved.ID, StartOptions{ConfirmRunning: true}); err != nil {
+		t.Fatal(err)
+	}
+	if runner.lastArgs() == nil {
+		t.Fatal("hook did not start after confirmation")
+	}
+}
+
+func TestStartAbortsWhenProxyPreflightFails(t *testing.T) {
+	dir := t.TempDir()
+	runner := &fakeRunner{checkErr: errors.New("SOCKS5 测试失败")}
+	launches, err := New(dir, testService(t, dir), runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := launches.Upsert(model.LaunchEntry{
+		Name: "应用", Mode: model.LaunchModeHook, Proxy: "127.0.0.1:1082", Path: `D:\app.exe`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := launches.Start(saved.ID); err == nil || !strings.Contains(err.Error(), "已中止启动") {
+		t.Fatalf("expected proxy preflight error, got %v", err)
+	}
+	if runner.lastArgs() != nil {
+		t.Fatal("hook started after proxy preflight failed")
+	}
+}
+
+func TestStartWinDivertUsesLiteSharedProfile(t *testing.T) {
+	dir := t.TempDir()
+	runner := &fakeRunner{}
+	launches, err := New(dir, testService(t, dir), runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := launches.Upsert(model.LaunchEntry{
+		Name: "共享应用", Mode: model.LaunchModeWinDivert, Proxy: "127.0.0.1:1082",
+		Path: `D:\Apps\shared.exe`, UDPMode: "proxy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := launches.Start(saved.ID); err != nil {
+		t.Fatal(err)
+	}
+	args := runner.lastArgs()
+	joined := strings.Join(args, "\n")
+	if !strings.Contains(joined, "--windivert-shared-profile") ||
+		!strings.Contains(joined, filepath.Join(dir, "shared-windivert.pbprofile")) ||
+		!strings.Contains(joined, "--windivert-shared-root") {
+		t.Fatalf("shared WinDivert arguments missing: %#v", args)
+	}
+	separator := -1
+	sharedOption := -1
+	for index, argument := range args {
+		if argument == "--" {
+			separator = index
+		}
+		if argument == "--windivert-shared-profile" {
+			sharedOption = index
+		}
+	}
+	if separator < 0 || sharedOption < 0 || sharedOption > separator {
+		t.Fatalf("shared options must be placed before target command: %#v", args)
 	}
 }

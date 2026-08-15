@@ -84,7 +84,18 @@ func main() {
 	go svc.StartAuto()
 	if launchID != "" {
 		go func() {
-			if _, startErr := launches.Start(launchID); startErr != nil {
+			_, startErr := launches.Start(launchID)
+			var running *launch.AlreadyRunningError
+			if errors.As(startErr, &running) && launch.ConfirmRunningApplication(running.Entry.Name) {
+				_, startErr = launches.StartWithOptions(launchID, launch.StartOptions{ConfirmRunning: true})
+			} else if errors.As(startErr, &running) {
+				startErr = nil
+			}
+			if startErr != nil {
+				var unavailable *launch.ProxyUnavailableError
+				if errors.As(startErr, &unavailable) {
+					launch.ShowLaunchError("代理不可用", startErr.Error())
+				}
 				log.Printf("[Easy-Net Lite] 启动入口失败：%v", startErr)
 			}
 		}()

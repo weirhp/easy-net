@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -14,8 +15,33 @@ import (
 
 var ErrNotFound = fmt.Errorf("启动入口不存在")
 
+type StartOptions struct {
+	ConfirmRunning bool
+}
+
+type AlreadyRunningError struct {
+	Entry model.LaunchEntry
+}
+
+type ProxyUnavailableError struct {
+	ProfileName string
+	Address     string
+	Cause       error
+}
+
+func (e *ProxyUnavailableError) Error() string {
+	return fmt.Sprintf("代理“%s”（%s）不可用，已中止启动：%v", e.ProfileName, e.Address, e.Cause)
+}
+
+func (e *ProxyUnavailableError) Unwrap() error { return e.Cause }
+
+func (e *AlreadyRunningError) Error() string {
+	return fmt.Sprintf("%s 已经在运行", e.Entry.Name)
+}
+
 type Service struct {
 	mu      sync.Mutex
+	startMu sync.Mutex
 	store   *store
 	file    *model.LaunchFile
 	proxies *service.Service
@@ -145,12 +171,27 @@ func (s *Service) Delete(id string) error {
 }
 
 func (s *Service) Start(id string) (View, error) {
+	return s.StartWithOptions(id, StartOptions{})
+}
+
+func (s *Service) StartWithOptions(id string, options StartOptions) (View, error) {
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
 	entry, ok := s.Get(id)
 	if !ok {
 		return View{}, ErrNotFound
 	}
 	if err := entry.ValidateForStart(); err != nil {
 		return View{}, err
+	}
+	if !options.ConfirmRunning {
+		running, err := s.runner.IsRunning(entry)
+		if err != nil {
+			return View{}, err
+		}
+		if running {
+			return View{}, &AlreadyRunningError{Entry: entry}
+		}
 	}
 	proxyAddress := entry.Proxy
 	profileName := "手动 SOCKS5"
@@ -170,9 +211,21 @@ func (s *Service) Start(id string) (View, error) {
 		profileName = profile.Name
 		profileRunning = true
 	}
+	if err := s.runner.CheckProxy(proxyAddress); err != nil {
+		return View{}, &ProxyUnavailableError{ProfileName: profileName, Address: proxyAddress, Cause: err}
+	}
 	args, err := HookArgs(entry, proxyAddress)
 	if err != nil {
 		return View{}, err
+	}
+	if entry.Mode == model.LaunchModeWinDivert {
+		profilePath, profileErr := s.writeSharedWinDivertProfile()
+		if profileErr != nil {
+			return View{}, profileErr
+		}
+		args = insertHookOptions(args,
+			"--windivert-shared-profile", profilePath,
+			"--windivert-shared-root", strconv.Itoa(os.Getpid()))
 	}
 	if err := s.runner.Start(args); err != nil {
 		return View{}, err
@@ -186,6 +239,21 @@ func (s *Service) Start(id string) (View, error) {
 		ExternalProxy:  entry.Proxy != "",
 	}
 	return view, nil
+}
+
+func insertHookOptions(args []string, values ...string) []string {
+	separator := len(args)
+	for index, argument := range args {
+		if argument == "--" {
+			separator = index
+			break
+		}
+	}
+	result := make([]string, 0, len(args)+len(values))
+	result = append(result, args[:separator]...)
+	result = append(result, values...)
+	result = append(result, args[separator:]...)
+	return result
 }
 
 func (s *Service) CreateShortcut(id string) (string, error) {

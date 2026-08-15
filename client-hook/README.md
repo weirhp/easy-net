@@ -105,7 +105,7 @@ ChatGPT、Cursor、微信等场景的行为与以前相同：ChatGPT 使用隔�
 Lite 应用页提供两种通用场景：
 
 - 通用 Hook：将 `easy-net-hook.dll` 注入新进程，覆盖 Winsock TCP，可按需继承到子进程。它较轻量，但不能绕过 AppContainer/CIG，也不代理 UDP。
-- 通用 WinDivert：无需 DLL 注入，按 EXE 进程名代理 TCP+UDP。它只在 x64-TUN 包可用，需要 UAC 管理员授权。引擎退出会自动重启；SOCKS5 失联时保持 fail-closed，阻止匹配流量直连泄漏。
+- 通用 WinDivert：无需 DLL 注入，按 EXE 进程名代理 TCP+UDP。它只在 x64-TUN 包可用，首次创建引擎时需要 UAC 管理员授权。从 Easy-Net Lite 启动时，所有通用 WinDivert 入口会合并为一份多应用、多代理规则并共用一个引擎；后续应用以普通权限启动，不再重复请求 UAC。应用退出不会停止共享引擎，退出 Lite 后才会释放。引擎异常退出会自动重启，入口配置变化时自动重载；SOCKS5 失联时保持 fail-closed，阻止匹配流量直连泄漏。
 
 通用 WinDivert 命令行示例：
 

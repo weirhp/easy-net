@@ -13,7 +13,9 @@ import (
 	"strings"
 	"syscall"
 	"unicode/utf16"
+	"unsafe"
 
+	"easy-net/client-lite/internal/model"
 	"golang.org/x/sys/windows"
 )
 
@@ -70,6 +72,62 @@ func (runner windowsRunner) Start(args []string) error {
 		}
 	}()
 	return nil
+}
+
+func (windowsRunner) CheckProxy(address string) error { return checkSOCKS5Proxy(address) }
+
+func (windowsRunner) IsRunning(entry model.LaunchEntry) (bool, error) {
+	if entry.WeChatExisting {
+		return false, nil
+	}
+	names := launchProcessNames(entry)
+	if len(names) == 0 {
+		return false, nil
+	}
+	wanted := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		wanted[strings.ToLower(name)] = struct{}{}
+	}
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return false, fmt.Errorf("检查运行中的应用：%w", err)
+	}
+	defer windows.CloseHandle(snapshot)
+	var process windows.ProcessEntry32
+	process.Size = uint32(unsafe.Sizeof(process))
+	if err := windows.Process32First(snapshot, &process); err != nil {
+		return false, fmt.Errorf("读取运行中的应用：%w", err)
+	}
+	for {
+		name := strings.ToLower(windows.UTF16ToString(process.ExeFile[:]))
+		if _, ok := wanted[name]; ok {
+			return true, nil
+		}
+		if err := windows.Process32Next(snapshot, &process); err != nil {
+			if err == windows.ERROR_NO_MORE_FILES {
+				return false, nil
+			}
+			return false, fmt.Errorf("读取运行中的应用：%w", err)
+		}
+	}
+}
+
+func launchProcessNames(entry model.LaunchEntry) []string {
+	if entry.Path != "" {
+		return []string{filepath.Base(entry.Path)}
+	}
+	switch entry.Mode {
+	case model.LaunchModeChatGPT:
+		return []string{"ChatGPT.exe"}
+	case model.LaunchModeAntigravity:
+		return []string{"Antigravity IDE.exe"}
+	case model.LaunchModeCursor:
+		return []string{"Cursor.exe"}
+	case model.LaunchModeWeChat, model.LaunchModeWeChatWinDivert:
+		return []string{"Weixin.exe", "WeChat.exe", "xwechat.exe"}
+	default:
+		return nil
+	}
 }
 
 func (windowsRunner) CreateShortcut(options ShortcutOptions) (string, error) {

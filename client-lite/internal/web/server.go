@@ -500,11 +500,33 @@ func (s *Server) handleLaunchAction(w http.ResponseWriter, r *http.Request) {
 	}
 	switch parts[1] {
 	case "start":
-		view, err := s.launches.Start(id)
+		var body struct {
+			ConfirmRunning bool `json:"confirmRunning"`
+		}
+		if err := decodeJSON(w, r, &body); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		view, err := s.launches.StartWithOptions(id, launch.StartOptions{ConfirmRunning: body.ConfirmRunning})
 		if err != nil {
 			status := http.StatusBadRequest
 			if errors.Is(err, launch.ErrNotFound) {
 				status = http.StatusNotFound
+			}
+			var running *launch.AlreadyRunningError
+			if errors.As(err, &running) {
+				writeJSON(w, http.StatusConflict, map[string]string{
+					"error": err.Error(), "code": "application_already_running", "name": running.Entry.Name,
+				})
+				return
+			}
+			var unavailable *launch.ProxyUnavailableError
+			if errors.As(err, &unavailable) {
+				writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
+					"error": err.Error(), "code": "proxy_unavailable",
+					"profileName": unavailable.ProfileName, "address": unavailable.Address,
+				})
+				return
 			}
 			writeError(w, status, err.Error())
 			return

@@ -637,8 +637,9 @@ func TestEngineImportStartsLocalProxy(t *testing.T) {
 }
 
 type recordingHookRunner struct {
-	mu   sync.Mutex
-	args [][]string
+	mu      sync.Mutex
+	args    [][]string
+	running bool
 }
 
 func (r *recordingHookRunner) Start(args []string) error {
@@ -647,6 +648,12 @@ func (r *recordingHookRunner) Start(args []string) error {
 	r.args = append(r.args, append([]string(nil), args...))
 	return nil
 }
+func (r *recordingHookRunner) IsRunning(model.LaunchEntry) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.running, nil
+}
+func (r *recordingHookRunner) CheckProxy(string) error     { return nil }
 func (r *recordingHookRunner) Executable() (string, error) { return "easy-net-hook.exe", nil }
 func (r *recordingHookRunner) CreateShortcut(options launch.ShortcutOptions) (string, error) {
 	return `C:\Users\test\Desktop\` + options.Name + `.lnk`, nil
@@ -725,6 +732,33 @@ func TestLaunchAPIStartsHookAfterProxy(t *testing.T) {
 	defer svc.Stop("p1")
 	if len(runner.args) != 1 || strings.Join(runner.args[0], " ") != "--proxy 127.0.0.1:"+portText+" --detach --gui-worker --chatgpt-app" {
 		t.Fatalf("unexpected hook args: %#v", runner.args)
+	}
+
+	runner.running = true
+	repeatRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/api/launches/"+saved.Entry.ID+"/start", bytes.NewReader([]byte(`{"confirmRunning":false}`)))
+	repeatRequest.Header.Set("Content-Type", "application/json")
+	repeatRequest.Header.Set("X-Easy-Net-Token", state.Token)
+	repeatResponse, err := http.DefaultClient.Do(repeatRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var repeatPayload map[string]any
+	_ = json.NewDecoder(repeatResponse.Body).Decode(&repeatPayload)
+	_ = repeatResponse.Body.Close()
+	if repeatResponse.StatusCode != http.StatusConflict || repeatPayload["code"] != "application_already_running" {
+		t.Fatalf("repeat launch should require confirmation: %d %#v", repeatResponse.StatusCode, repeatPayload)
+	}
+
+	confirmRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/api/launches/"+saved.Entry.ID+"/start", bytes.NewReader([]byte(`{"confirmRunning":true}`)))
+	confirmRequest.Header.Set("Content-Type", "application/json")
+	confirmRequest.Header.Set("X-Easy-Net-Token", state.Token)
+	confirmResponse, err := http.DefaultClient.Do(confirmRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = confirmResponse.Body.Close()
+	if confirmResponse.StatusCode != http.StatusOK || len(runner.args) != 2 {
+		t.Fatalf("confirmed repeat launch failed: %d %#v", confirmResponse.StatusCode, runner.args)
 	}
 
 	missingRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/api/launches/missing-id/start", bytes.NewReader([]byte("{}")))

@@ -87,6 +87,8 @@ struct Options {
     std::wstring tun_engine_path;
     std::wstring windivert_engine_path;
     std::wstring windivert_processes;
+    std::wstring windivert_shared_profile;
+    std::optional<DWORD> windivert_shared_root;
     easy_net::windivert::Backend wechat_backend = easy_net::windivert::Backend::tun;
     easy_net::tun::UdpMode tun_udp_mode = easy_net::tun::UdpMode::automatic;
     easy_net::tun::Stack tun_stack = easy_net::tun::Stack::system;
@@ -140,6 +142,7 @@ void PrintUsage() {
         << L"  --windivert-engine P   easy-net-windivert.exe path (optional)\n"
         << L"  --windivert            Route a general application with WinDivert (x64/admin)\n"
         << L"  --windivert-processes N Semicolon-separated executable names (default: target exe)\n"
+        << L"  --windivert-shared-profile P Reuse one Lite-managed engine and shared rule profile\n"
         << L"  --tun-udp MODE         auto, proxy, block, or direct (default: auto)\n"
         << L"  --tun-stack MODE       system, mixed, or gvisor (default: system)\n"
         << L"  --tun-bypass CIDR      Bypass TUN for a CIDR; repeat or comma-separate values\n"
@@ -168,6 +171,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
                    argument == L"--wechat-path" ||
                    argument == L"--tun-engine" || argument == L"--windivert-engine" ||
                    argument == L"--windivert-processes" ||
+                   argument == L"--windivert-shared-profile" ||
+                   argument == L"--windivert-shared-root" ||
                    argument == L"--wechat-backend" || argument == L"--tun-udp" ||
                    argument == L"--tun-stack" || argument == L"--tun-bypass" ||
                    argument == L"--appx") {
@@ -197,6 +202,16 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
                 options.windivert_engine_path = argv[index];
             } else if (argument == L"--windivert-processes") {
                 options.windivert_processes = argv[index];
+            } else if (argument == L"--windivert-shared-profile") {
+                options.windivert_shared_profile = argv[index];
+            } else if (argument == L"--windivert-shared-root") {
+                wchar_t* end = nullptr;
+                const unsigned long value = std::wcstoul(argv[index], &end, 10);
+                if (value == 0 || end == argv[index] || end == nullptr || *end != L'\0') {
+                    std::wcerr << L"Invalid shared WinDivert root process ID.\n";
+                    return false;
+                }
+                options.windivert_shared_root = static_cast<DWORD>(value);
             } else if (argument == L"--wechat-backend") {
                 const auto value = ToUtf8(argv[index]);
                 if (!value || !easy_net::windivert::ParseBackend(*value, options.wechat_backend)) {
@@ -345,6 +360,17 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
     }
     if (!options.windivert_processes.empty() && !options.windivert) {
         std::wcerr << L"--windivert-processes can only be used with --windivert.\n";
+        return false;
+    }
+    if ((!options.windivert_shared_profile.empty() ||
+         options.windivert_shared_root.has_value()) && !options.windivert) {
+        std::wcerr << L"Shared WinDivert options require --windivert.\n";
+        return false;
+    }
+    if (options.windivert &&
+        (options.windivert_shared_profile.empty() !=
+         !options.windivert_shared_root.has_value())) {
+        std::wcerr << L"--windivert-shared-profile and --windivert-shared-root must be used together.\n";
         return false;
     }
     if (options.windivert && !options.dns.empty()) {
@@ -1358,6 +1384,194 @@ int WatchWeChat(DWORD root_process_id, DWORD engine_process_id, HANDLE log_pipe 
     }
 }
 
+constexpr wchar_t kSharedWinDivertMutex[] =
+    L"Local\\EasyNetHook_SharedWinDivertSupervisor_v1";
+
+std::optional<std::string> SharedProfileRevision(const std::filesystem::path& path) {
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) {
+        return std::nullopt;
+    }
+    std::ostringstream revision;
+    revision << data.ftLastWriteTime.dwHighDateTime << ':'
+             << data.ftLastWriteTime.dwLowDateTime << ':'
+             << data.nFileSizeHigh << ':' << data.nFileSizeLow;
+    return revision.str();
+}
+
+int WatchSharedWinDivert(DWORD root_process_id,
+                         const std::filesystem::path& engine_path,
+                         const std::filesystem::path& config_path,
+                         const std::filesystem::path& log_path) {
+    ScopedHandle singleton(CreateMutexW(nullptr, TRUE, kSharedWinDivertMutex));
+    if (singleton.get() == nullptr) {
+        return 5;
+    }
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        return 0;
+    }
+    ScopedHandle root(OpenProcess(SYNCHRONIZE, FALSE, root_process_id));
+    if (root.get() == nullptr || !std::filesystem::is_regular_file(engine_path)) {
+        return 2;
+    }
+    const std::filesystem::path ready_path = config_path.wstring() + L".ready";
+    std::error_code ignored;
+    std::filesystem::remove(ready_path, ignored);
+
+    ScopedHandle engine;
+    std::thread log_relay;
+    std::optional<std::string> active_revision;
+    unsigned int restart_failures = 0;
+    const auto finish_engine = [&]() {
+        if (engine.get() != nullptr && WaitForSingleObject(engine.get(), 0) == WAIT_TIMEOUT) {
+            TerminateProcess(engine.get(), 0);
+            WaitForSingleObject(engine.get(), 5000);
+        }
+        if (log_relay.joinable()) {
+            CancelSynchronousIo(log_relay.native_handle());
+            log_relay.join();
+        }
+        engine = ScopedHandle();
+    };
+    const auto start_engine = [&]() -> bool {
+        const auto revision = SharedProfileRevision(config_path);
+        if (!revision) {
+            return false;
+        }
+        SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+        HANDLE raw_read = nullptr;
+        HANDLE raw_write = nullptr;
+        if (!CreatePipe(&raw_read, &raw_write, &security, 64 * 1024)) {
+            return false;
+        }
+        ScopedHandle read_pipe(raw_read);
+        ScopedHandle write_pipe(raw_write);
+        SetHandleInformation(read_pipe.get(), HANDLE_FLAG_INHERIT, 0);
+        PROCESS_INFORMATION process{};
+        const std::vector<std::wstring> arguments{
+            L"--profile", config_path.wstring(), L"--verbose", L"1",
+        };
+        if (!StartHiddenProcess(engine_path, arguments, write_pipe.get(), process)) {
+            return false;
+        }
+        CloseHandle(process.hThread);
+        CloseHandle(write_pipe.release());
+        engine = ScopedHandle(process.hProcess);
+        log_relay = std::thread(RelayBoundedTunLog, read_pipe.release(), log_path);
+        if (WaitForSingleObject(engine.get(), 1500) == WAIT_OBJECT_0) {
+            finish_engine();
+            return false;
+        }
+        active_revision = revision;
+        if (!WriteUtf8File(ready_path, *revision)) {
+            finish_engine();
+            active_revision.reset();
+            return false;
+        }
+        return true;
+    };
+
+    for (;;) {
+        if (WaitForSingleObject(root.get(), 0) == WAIT_OBJECT_0) {
+            finish_engine();
+            std::filesystem::remove(ready_path, ignored);
+            return 0;
+        }
+        const auto current_revision = SharedProfileRevision(config_path);
+        const bool configuration_changed =
+            active_revision && current_revision && *active_revision != *current_revision;
+        const bool engine_stopped =
+            engine.get() == nullptr || WaitForSingleObject(engine.get(), 0) != WAIT_TIMEOUT;
+        if (configuration_changed || engine_stopped) {
+            finish_engine();
+            active_revision.reset();
+            std::filesystem::remove(ready_path, ignored);
+            if (!start_engine()) {
+                const unsigned int delay = 250U << std::min(restart_failures, 5U);
+                ++restart_failures;
+                for (unsigned int waited = 0; waited < delay; waited += 250) {
+                    if (WaitForSingleObject(root.get(), 250) == WAIT_OBJECT_0) {
+                        break;
+                    }
+                }
+                continue;
+            }
+            restart_failures = 0;
+        }
+        Sleep(250);
+    }
+}
+
+bool EnsureSharedWinDivert(const std::filesystem::path& launcher,
+                           DWORD root_process_id,
+                           const std::filesystem::path& engine_path,
+                           const std::filesystem::path& config_path) {
+    if (!std::filesystem::is_regular_file(launcher) ||
+        !std::filesystem::is_regular_file(engine_path) ||
+        !std::filesystem::is_regular_file(config_path)) {
+        return false;
+    }
+    const std::filesystem::path log_path =
+        config_path.parent_path() / L"shared-windivert.log";
+    const std::filesystem::path ready_path = config_path.wstring() + L".ready";
+    std::error_code ignored;
+    std::filesystem::remove(ready_path, ignored);
+    const std::vector<std::wstring> arguments{
+        L"--windivert-shared-watch", std::to_wstring(root_process_id),
+        engine_path.wstring(), config_path.wstring(), log_path.wstring(),
+    };
+    const auto expected_revision = SharedProfileRevision(config_path);
+    if (!expected_revision) {
+        return false;
+    }
+    const auto wait_ready = [&](unsigned int timeout_ms) {
+        for (unsigned int waited = 0; waited < timeout_ms; waited += 100) {
+            const auto ready = ReadUtf8File(ready_path, 256);
+            if (ready && *ready == *expected_revision) {
+                return true;
+            }
+            Sleep(100);
+        }
+        return false;
+    };
+
+    // A running elevated supervisor can reload the new profile by observing its
+    // revision. Waiting for it first avoids a new UAC prompt for every app.
+    ScopedHandle existing(OpenMutexW(SYNCHRONIZE, FALSE, kSharedWinDivertMutex));
+    if (existing.get() != nullptr && wait_ready(5000)) {
+        return true;
+    }
+
+    bool supervisor_started = false;
+    if (IsProcessElevated()) {
+        PROCESS_INFORMATION supervisor{};
+        supervisor_started = StartHiddenProcess(launcher, arguments, nullptr, supervisor);
+        if (supervisor_started) {
+            CloseHandle(supervisor.hThread);
+            CloseHandle(supervisor.hProcess);
+        }
+    } else {
+        const std::wstring parameters = BuildCommandLine(arguments);
+        const std::wstring working_directory = launcher.parent_path().wstring();
+        SHELLEXECUTEINFOW execute{};
+        execute.cbSize = sizeof(execute);
+        execute.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
+        execute.lpVerb = L"runas";
+        execute.lpFile = launcher.c_str();
+        execute.lpParameters = parameters.c_str();
+        execute.lpDirectory = working_directory.c_str();
+        execute.nShow = SW_HIDE;
+        supervisor_started = ShellExecuteExW(&execute) != FALSE;
+        if (execute.hProcess != nullptr) {
+            CloseHandle(execute.hProcess);
+        }
+    }
+    if (!supervisor_started) {
+        return false;
+    }
+    return wait_ready(15000);
+}
+
 int LaunchWeChat(const Options& options) {
 #if !defined(_WIN64)
     std::wcerr << L"--wechat TUN/WinDivert modes are available only in the x64 package.\n";
@@ -1700,6 +1914,55 @@ int LaunchWinDivertApplication(const Options& options) {
                       L"specify --windivert-engine PATH.\n";
         return 3;
     }
+    if (!options.windivert_shared_profile.empty()) {
+        const std::filesystem::path config_path(options.windivert_shared_profile);
+        const auto launcher_directory = CurrentModuleDirectory();
+        const std::filesystem::path launcher = launcher_directory
+            ? std::filesystem::path(*launcher_directory) / L"easy-net-hook.exe"
+            : std::filesystem::path{};
+        if (!options.windivert_shared_root ||
+            !std::filesystem::is_regular_file(config_path)) {
+            std::wcerr << L"The shared WinDivert profile or Lite root process is invalid.\n";
+            return 4;
+        }
+        if (!EnsureSharedWinDivert(launcher, *options.windivert_shared_root, *engine,
+                                   config_path)) {
+            std::wcerr << L"The shared WinDivert engine did not become ready. See "
+                       << (config_path.parent_path() / L"shared-windivert.log").wstring()
+                       << L".\n";
+            return 5;
+        }
+
+        std::vector<std::wstring> target_command = options.command;
+        target_command.front() = executable.wstring();
+        std::wstring command_line = BuildCommandLine(target_command);
+        std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
+        mutable_command.push_back(L'\0');
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION target{};
+        if (!CreateProcessW(executable.c_str(), mutable_command.data(), nullptr, nullptr, FALSE,
+                            CREATE_DEFAULT_ERROR_MODE, nullptr,
+                            executable.parent_path().c_str(), &startup, &target)) {
+            std::wcerr << L"Cannot start the WinDivert target (error " << GetLastError()
+                       << L").\n";
+            return 5;
+        }
+        CloseHandle(target.hThread);
+        std::wcout << L"Opened " << executable.filename().wstring()
+                   << L" through the shared WinDivert engine (PID "
+                   << target.dwProcessId << L").\n";
+        if (options.detach) {
+            CloseHandle(target.hProcess);
+            return 0;
+        }
+        WaitForSingleObject(target.hProcess, INFINITE);
+        DWORD target_exit = 1;
+        GetExitCodeProcess(target.hProcess, &target_exit);
+        CloseHandle(target.hProcess);
+        return static_cast<int>(target_exit);
+    }
+
     if (!IsProcessElevated()) {
         return RelaunchElevated();
     }
@@ -2886,6 +3149,14 @@ int ActivatePackagedApplication(const Options& options,
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 6 && std::wstring_view(argv[1]) == L"--windivert-shared-watch") {
+        wchar_t* end = nullptr;
+        const unsigned long root_id = std::wcstoul(argv[2], &end, 10);
+        if (root_id == 0 || end == argv[2] || end == nullptr || *end != L'\0') {
+            return 2;
+        }
+        return WatchSharedWinDivert(static_cast<DWORD>(root_id), argv[3], argv[4], argv[5]);
+    }
     if (argc == 2 && std::wstring_view(argv[1]) == L"--wechat-status") {
         const auto local_app_data = EnvironmentValue(L"LOCALAPPDATA");
         if (!local_app_data) {

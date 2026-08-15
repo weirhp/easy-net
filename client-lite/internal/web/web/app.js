@@ -227,7 +227,8 @@ function launchModeLabel(mode) {
     cursor: "Cursor",
     wechat: "微信 TUN",
     "wechat-windivert": "微信 WinDivert",
-    hook: "通用程序"
+    hook: "通用 Hook",
+    windivert: "通用 WinDivert"
   })[mode] || mode;
 }
 
@@ -245,8 +246,8 @@ function renderLaunches() {
     const profileText = entry.profileName
       ? `${entry.profileName} · ${entry.listenAddress || "未监听"}`
       : "尚未选择代理配置";
-    const statusClass = busy ? "busy" : entry.profileRunning ? "running" : "";
-    const statusText = busy ? "正在处理" : entry.profileStarting ? "代理启动中" : entry.profileRunning ? "代理已就绪" : "代理未启动";
+    const statusClass = busy ? "busy" : entry.profileRunning || entry.externalProxy ? "running" : "";
+    const statusText = busy ? "正在处理" : entry.profileStarting ? "代理启动中" : entry.profileRunning ? "代理已就绪" : entry.externalProxy ? "外部代理" : "代理未启动";
     return `<article class="profile-card">
       <div class="card-main">
         <div>
@@ -275,21 +276,32 @@ function fillLaunchProfiles(selectedId) {
     const selected = profile.id === selectedId ? "selected" : "";
     return `<option value="${escapeHTML(profile.id)}" ${selected}>${escapeHTML(profile.name)}（${escapeHTML(profile.listenHost)}:${profile.listenPort}）</option>`;
   });
-  select.innerHTML = options.length ? options.join("") : `<option value="">请先添加代理配置</option>`;
+  options.push(`<option value="__manual__" ${selectedId === "__manual__" ? "selected" : ""}>手动输入其他 SOCKS5</option>`);
+  select.innerHTML = options.join("");
 }
 
 function syncLaunchFields() {
   const mode = $("#launch-mode").value;
   const wechat = mode === "wechat" || mode === "wechat-windivert";
+  const windivert = mode === "windivert";
   const existing = wechat && $("#launch-wechat-existing").checked;
   $("#launch-path-row").hidden = mode === "chatgpt" || existing;
   $("#launch-args-row").hidden = mode === "chatgpt" || existing;
   $("#launch-isolated-row").hidden = mode !== "antigravity" && mode !== "cursor";
   $("#launch-wechat-existing-row").hidden = !wechat;
-  $("#launch-udp-row").hidden = !wechat;
-  $("#launch-dns-row").hidden = mode === "chatgpt";
-  $("#launch-path-label").textContent = mode === "hook" ? "程序路径" : "程序路径（可留空自动查找）";
-  $("#launch-path").required = mode === "hook" && !existing;
+  $("#launch-udp-row").hidden = !wechat && !windivert;
+  $("#launch-dns-row").hidden = mode === "chatgpt" || windivert;
+  $("#launch-processes-row").hidden = !windivert;
+  $("#launch-path-label").textContent = mode === "hook" || windivert ? "程序路径" : "程序路径（可留空自动查找）";
+  $("#launch-path").required = (mode === "hook" || windivert) && !existing;
+  const manualProxy = $("#launch-profile").value === "__manual__";
+  $("#launch-proxy-row").hidden = !manualProxy;
+  $("#launch-proxy").required = manualProxy;
+  const notes = {
+    hook: "通用 Hook 通过 DLL 注入代理 TCP；目标程序必须与 Hook 架构一致，UDP 不会走 SOCKS5。",
+    windivert: "通用 WinDivert 支持 TCP+UDP，需要 x64-TUN 完整包和管理员授权。规则会影响所有同名进程，代理断开时默认阻断匹配流量。"
+  };
+  $("#launch-mode-note").textContent = notes[mode] || "启动由 Easy-Net Hook 在后台完成。请把 easy-net-hook.exe 和 Lite 放在同一目录。";
   if (!wechat) $("#launch-wechat-existing").checked = false;
 }
 
@@ -305,9 +317,11 @@ function openLaunchDialog(id = "") {
   $("#launch-args").value = entry?.arguments || "";
   $("#launch-udp").value = entry?.udpMode || "auto";
   $("#launch-dns").value = entry?.dns || "";
+  $("#launch-processes").value = entry?.processNames || "";
   $("#launch-isolated").checked = Boolean(entry?.isolated);
   $("#launch-wechat-existing").checked = Boolean(entry?.wechatExisting);
-  fillLaunchProfiles(entry?.profileId || appState.profiles[0]?.profile?.id || "");
+  fillLaunchProfiles(entry?.proxy ? "__manual__" : entry?.profileId || appState.profiles[0]?.profile?.id || "__manual__");
+  $("#launch-proxy").value = entry?.proxy || "";
   syncLaunchFields();
   launchDialogElement.showModal();
   $("#launch-name").focus();
@@ -325,11 +339,7 @@ async function saveLaunch(event) {
   errorElement.hidden = true;
   syncLaunchFields();
   if (!launchFormElement.reportValidity()) return;
-  if (!$("#launch-profile").value) {
-    errorElement.textContent = "请选择要使用的代理配置";
-    errorElement.hidden = false;
-    return;
-  }
+  const manualProxy = $("#launch-profile").value === "__manual__";
   saveButton.disabled = true;
   saveButton.textContent = "保存中…";
   try {
@@ -339,13 +349,15 @@ async function saveLaunch(event) {
         id: appState.editingLaunchId || "",
         name: $("#launch-name").value.trim(),
         mode: $("#launch-mode").value,
-        profileId: $("#launch-profile").value,
+        profileId: manualProxy ? "" : $("#launch-profile").value,
+        proxy: manualProxy ? $("#launch-proxy").value.trim() : "",
         path: $("#launch-path-row").hidden ? "" : $("#launch-path").value.trim(),
         arguments: $("#launch-args-row").hidden ? "" : $("#launch-args").value.trim(),
         isolated: !$("#launch-isolated-row").hidden && $("#launch-isolated").checked,
         wechatExisting: !$("#launch-wechat-existing-row").hidden && $("#launch-wechat-existing").checked,
         udpMode: $("#launch-udp-row").hidden ? "" : $("#launch-udp").value,
-        dns: $("#launch-dns-row").hidden ? "" : $("#launch-dns").value.trim()
+        dns: $("#launch-dns-row").hidden ? "" : $("#launch-dns").value.trim(),
+        processNames: $("#launch-processes-row").hidden ? "" : $("#launch-processes").value.trim()
       })
     });
     closeLaunchDialog();
@@ -773,6 +785,7 @@ importFormElement.addEventListener("submit", importProfile);
 formElement.addEventListener("submit", saveProfile);
 launchFormElement.addEventListener("submit", saveLaunch);
 $("#launch-mode").addEventListener("change", syncLaunchFields);
+$("#launch-profile").addEventListener("change", syncLaunchFields);
 $("#launch-wechat-existing").addEventListener("change", syncLaunchFields);
 $("#close-launch-dialog").addEventListener("click", closeLaunchDialog);
 $("#cancel-launch-dialog").addEventListener("click", closeLaunchDialog);

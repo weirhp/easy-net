@@ -79,6 +79,15 @@ func HookArgs(entry model.LaunchEntry, proxy string) ([]string, error) {
 		if entry.Arguments != "" {
 			args = append(args, splitArguments(entry.Arguments)...)
 		}
+	case model.LaunchModeWinDivert:
+		args = append(args, "--windivert", "--tun-udp", entry.UDPMode)
+		if entry.ProcessNames != "" {
+			args = append(args, "--windivert-processes", entry.ProcessNames)
+		}
+		args = append(args, "--", entry.Path)
+		if entry.Arguments != "" {
+			args = append(args, splitArguments(entry.Arguments)...)
+		}
 	default:
 		return nil, fmt.Errorf("不支持的启动场景：%s", entry.Mode)
 	}

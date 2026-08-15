@@ -249,13 +249,19 @@
               <option value="cursor">Cursor</option>
               <option value="wechat">微信 TUN</option>
               <option value="wechat-windivert">微信 WinDivert</option>
-              <option value="hook">通用程序</option>
+              <option value="hook">通用 Hook</option>
+              <option value="windivert">通用 WinDivert</option>
             </select>
           </label>
           <label class="field full">
             <span>使用的代理配置</span>
             <select id="launch-profile" required></select>
-            <small>请先在“代理”页添加并确认配置。启动应用前会自动打开对应的本地 SOCKS5。</small>
+            <small>可以选择 Lite 配置，也可以使用其他客户端已经提供的 SOCKS5。</small>
+          </label>
+          <label class="field full" id="launch-proxy-row" hidden>
+            <span>手动 SOCKS5 地址</span>
+            <input id="launch-proxy" placeholder="例如 127.0.0.1:10808">
+            <small>必须填写字面 IP 和端口；Lite 不会启动或管理这个外部代理。</small>
           </label>
           <label class="field full" id="launch-path-row">
             <span id="launch-path-label">程序路径（可留空自动查找）</span>
@@ -278,6 +284,11 @@
             <span>DNS（可选）</span>
             <input id="launch-dns" placeholder="例如 1.1.1.1">
           </label>
+          <label class="field full" id="launch-processes-row" hidden>
+            <span>辅助进程名（可选）</span>
+            <input id="launch-processes" placeholder="例如 app.exe;helper.exe">
+            <small>留空只匹配主程序。若网络由其他 EXE 发起，用分号添加进程名。</small>
+          </label>
           <label class="check-field full" id="launch-isolated-row" hidden>
             <input id="launch-isolated" type="checkbox">
             <span>使用隔离配置（不影响日常登录状态）</span>
@@ -287,7 +298,7 @@
             <span>接管已运行的微信</span>
           </label>
         </div>
-        <p class="share-note">启动由 Easy-Net Hook 在后台完成。网页本身不能注入进程；请把 easy-net-hook.exe 和 Lite 放在同一目录。</p>
+        <p class="share-note" id="launch-mode-note">启动由 Easy-Net Hook 在后台完成。请把 easy-net-hook.exe 和 Lite 放在同一目录。</p>
         <p class="form-error" id="launch-error" role="alert" hidden></p>
       </div>
       <div class="dialog-actions">

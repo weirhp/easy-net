@@ -97,3 +97,22 @@ func TestSplitArgumentsHandlesBackslashesBeforeQuote(t *testing.T) {
 		t.Fatalf("got %#v want %#v", got, want)
 	}
 }
+
+func TestHookArgsGenericWinDivert(t *testing.T) {
+	args, err := HookArgs(model.LaunchEntry{
+		ID: "5", Name: "App", Mode: model.LaunchModeWinDivert, Proxy: "127.0.0.1:10808",
+		Path: `D:\App\app.exe`, Arguments: `--flag "quoted value"`, UDPMode: "proxy",
+		ProcessNames: "app.exe;helper.exe",
+	}, "127.0.0.1:10808")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"--proxy", "127.0.0.1:10808", "--detach", "--gui-worker", "--windivert",
+		"--tun-udp", "proxy", "--windivert-processes", "app.exe;helper.exe", "--",
+		`D:\App\app.exe`, "--flag", "quoted value",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("got %#v want %#v", args, want)
+	}
+}

@@ -38,5 +38,11 @@ int main() {
     profile.udp_mode = UdpMode::block;
     assert(easy_net::windivert::BuildProfile(profile).find("\"Action\": \"BLOCK\"") !=
            std::string::npos);
+
+    assert(easy_net::windivert::ParseProcessNames("app.exe; helper.exe", profile.process_names));
+    const std::string app_json = easy_net::windivert::BuildProfile(profile);
+    assert(app_json.find("app.exe;helper.exe") != std::string::npos);
+    assert(app_json.find("WeChatApp.exe") == std::string::npos);
+    assert(!easy_net::windivert::ParseProcessNames("C:\\bad\\app.exe", profile.process_names));
     return 0;
 }

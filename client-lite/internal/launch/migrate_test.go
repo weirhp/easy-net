@@ -36,8 +36,8 @@ func TestParseHistoryMatchesListenAddress(t *testing.T) {
 	if entries[0].ProfileID != "ws-1" || entries[0].Mode != model.LaunchModeChatGPT || entries[0].ID != "old-chatgpt" {
 		t.Fatalf("chatgpt entry: %#v", entries[0])
 	}
-	if entries[1].ProfileID != "" || entries[1].Path != `C:\app.exe` {
-		t.Fatalf("unmatched hook should keep empty profile: %#v", entries[1])
+	if entries[1].ProfileID != "" || entries[1].Proxy != "10.0.0.1:1080" || entries[1].Path != `C:\app.exe` {
+		t.Fatalf("unmatched hook should become a manual proxy entry: %#v", entries[1])
 	}
 	if !entries[2].WeChatExisting || entries[2].Mode != model.LaunchModeWeChatWinDivert || entries[2].ProfileID != "ws-1" {
 		t.Fatalf("wechat entry: %#v", entries[2])

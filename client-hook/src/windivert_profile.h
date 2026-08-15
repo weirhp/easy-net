@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <sstream>
@@ -34,6 +35,7 @@ struct Profile {
     std::string password;
     tun::UdpMode udp_mode = tun::UdpMode::block;
     bool traffic_logging = false;
+    std::vector<std::string> process_names;
     std::vector<std::string> bypass_prefixes{
         "10.0.0.0/8",
         "100.64.0.0/10",
@@ -45,15 +47,46 @@ struct Profile {
     };
 };
 
-inline std::string ProcessNames() {
+inline std::string ProcessNames(const Profile& profile) {
     std::string output;
-    for (const auto& name : tun::WeChatProcessNames()) {
+    const auto& names = profile.process_names.empty() ? tun::WeChatProcessNames()
+                                                      : profile.process_names;
+    for (const auto& name : names) {
         if (!output.empty()) {
             output.push_back(';');
         }
         output += name;
     }
     return output;
+}
+
+inline bool ParseProcessNames(std::string_view value, std::vector<std::string>& names) {
+    names.clear();
+    std::size_t start = 0;
+    while (start <= value.size()) {
+        const std::size_t separator = value.find_first_of(",;", start);
+        const std::size_t end = separator == std::string_view::npos ? value.size() : separator;
+        std::string_view item = value.substr(start, end - start);
+        while (!item.empty() && (item.front() == ' ' || item.front() == '\t')) {
+            item.remove_prefix(1);
+        }
+        while (!item.empty() && (item.back() == ' ' || item.back() == '\t')) {
+            item.remove_suffix(1);
+        }
+        if (item.empty() || item.size() > 260 || item.find_first_of("\\/:*?\"<>|") != std::string_view::npos) {
+            names.clear();
+            return false;
+        }
+        const std::string name(item);
+        if (std::find(names.begin(), names.end(), name) == names.end()) {
+            names.push_back(name);
+        }
+        if (separator == std::string_view::npos) {
+            break;
+        }
+        start = separator + 1;
+    }
+    return !names.empty();
 }
 
 inline bool ParseIpv4(std::string_view value, std::uint32_t& address) {
@@ -140,7 +173,7 @@ inline void AddRule(std::ostringstream& json, bool& first_rule,
 }
 
 inline std::string BuildProfile(const Profile& profile) {
-    const std::string processes = ProcessNames();
+    const std::string processes = ProcessNames(profile);
     std::ostringstream json;
     json << "{\n"
          << "  \"Version\": \"1.0\",\n"

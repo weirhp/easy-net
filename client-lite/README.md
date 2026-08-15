@@ -38,7 +38,9 @@ SSH 首次连接会显示服务器 SHA-256 指纹。请与服务器管理员确�
 
 Windows 管理页有「代理」和「应用」两个标签。代理页继续管理 SOCKS5/HTTP 配置；应用页保存启动入口，并在启动前自动打开所选配置的本地端口，然后拉起同目录中的 `easy-net-hook.exe`。
 
-- 分享码仍然只在「代理」页导入，应用入口只选择已有配置，不填写原始 SOCKS5 地址。
+- 分享码仍然只在「代理」页导入。应用入口可以选择 Lite 配置，也可手动填写另一个已运行的 SOCKS5（例如 `127.0.0.1:10808`）。手动代理不由 Lite 启停或保存认证口令。
+- 「通用 Hook」通过 DLL 注入代理 TCP，资源占用低，但不覆盖 UDP，并受进程架构和保护策略限制。
+- 「通用 WinDivert」按进程名覆盖 TCP+UDP，需要 x64-TUN 完整包和管理员授权。如果程序由辅助 EXE 发起网络，需在入口中补充这些进程名。
 - 「桌面快捷方式」指向 `Easy-Net-Lite.exe --launch-entry <ID>`。Lite 已在运行时会直接启动该入口；否则会先启动 Lite。
 - 请把 `easy-net-hook.exe`（以及微信场景需要的 DLL / WinDivert / TUN 文件）和 Lite 放在同一目录，或设置环境变量 `EASY_NET_HOOK`。
 - macOS 不显示「应用」标签。首次在 Windows 上打开 Lite 时，如果存在旧的 `%LOCALAPPDATA%\EasyNetHook\launcher-entries.tsv`，会按本地监听地址匹配并导入到 `%AppData%\Easy-Net Lite\launches.json`。

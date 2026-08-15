@@ -87,6 +87,8 @@ func parseHistoryTSV(text string, proxies *service.Service) []model.LaunchEntry 
 		proxy := strings.TrimSpace(fields[4])
 		if profileID, ok := listenByAddress[normalizeListen(proxy)]; ok {
 			entry.ProfileID = profileID
+		} else {
+			entry.Proxy = proxy
 		}
 		if entry.ID == "" {
 			entry.ID = newID()

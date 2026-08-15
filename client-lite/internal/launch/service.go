@@ -29,6 +29,7 @@ type View struct {
 	ListenAddress   string `json:"listenAddress,omitempty"`
 	ProfileRunning  bool   `json:"profileRunning"`
 	ProfileStarting bool   `json:"profileStarting"`
+	ExternalProxy   bool   `json:"externalProxy"`
 }
 
 func New(dir string, proxies *service.Service, runner Runner) (*Service, error) {
@@ -82,6 +83,10 @@ func (s *Service) Views() []View {
 			view.ListenAddress = state.Profile.ListenAddress()
 			view.ProfileRunning = state.Running
 			view.ProfileStarting = state.Starting
+		} else if entry.Proxy != "" {
+			view.ProfileName = "手动 SOCKS5"
+			view.ListenAddress = entry.Proxy
+			view.ExternalProxy = true
 		}
 		views = append(views, view)
 	}
@@ -147,17 +152,25 @@ func (s *Service) Start(id string) (View, error) {
 	if err := entry.ValidateForStart(); err != nil {
 		return View{}, err
 	}
-	if s.proxies == nil {
-		return View{}, fmt.Errorf("代理服务不可用")
+	proxyAddress := entry.Proxy
+	profileName := "手动 SOCKS5"
+	profileRunning := false
+	if entry.ProfileID != "" {
+		if s.proxies == nil {
+			return View{}, fmt.Errorf("代理服务不可用")
+		}
+		if err := s.proxies.Start(entry.ProfileID); err != nil {
+			return View{}, fmt.Errorf("启动本地代理失败：%w", err)
+		}
+		profile, ok := s.proxies.Profile(entry.ProfileID)
+		if !ok {
+			return View{}, fmt.Errorf("代理配置不存在")
+		}
+		proxyAddress = profile.ListenAddress()
+		profileName = profile.Name
+		profileRunning = true
 	}
-	if err := s.proxies.Start(entry.ProfileID); err != nil {
-		return View{}, fmt.Errorf("启动本地代理失败：%w", err)
-	}
-	profile, ok := s.proxies.Profile(entry.ProfileID)
-	if !ok {
-		return View{}, fmt.Errorf("代理配置不存在")
-	}
-	args, err := HookArgs(entry, profile.ListenAddress())
+	args, err := HookArgs(entry, proxyAddress)
 	if err != nil {
 		return View{}, err
 	}
@@ -167,9 +180,10 @@ func (s *Service) Start(id string) (View, error) {
 	view := View{
 		LaunchEntry:    entry,
 		ModeLabel:      entry.Mode.Label(),
-		ProfileName:    profile.Name,
-		ListenAddress:  profile.ListenAddress(),
-		ProfileRunning: true,
+		ProfileName:    profileName,
+		ListenAddress:  proxyAddress,
+		ProfileRunning: profileRunning,
+		ExternalProxy:  entry.Proxy != "",
 	}
 	return view, nil
 }

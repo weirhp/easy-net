@@ -100,6 +100,23 @@ windivert\WinDivert64.sys         （仅 x64）
 
 ChatGPT、Cursor、微信等场景的行为与以前相同：ChatGPT 使用隔离用户目录；Antigravity 默认复用桌面登录状态，也可使用独立配置；微信可接管已运行进程。旧 Win32 窗口里的入口文件仍是 `%LOCALAPPDATA%\EasyNetHook\launcher-entries.tsv`，仅作为迁移来源和 `--legacy-gui` / 旧快捷方式回退。
 
+### 通用 Hook 与通用 WinDivert
+
+Lite 应用页提供两种通用场景：
+
+- 通用 Hook：将 `easy-net-hook.dll` 注入新进程，覆盖 Winsock TCP，可按需继承到子进程。它较轻量，但不能绕过 AppContainer/CIG，也不代理 UDP。
+- 通用 WinDivert：无需 DLL 注入，按 EXE 进程名代理 TCP+UDP。它只在 x64-TUN 包可用，需要 UAC 管理员授权。引擎退出会自动重启；SOCKS5 失联时保持 fail-closed，阻止匹配流量直连泄漏。
+
+通用 WinDivert 命令行示例：
+
+```powershell
+.\easy-net-hook.exe --proxy 127.0.0.1:10808 --windivert `
+  --windivert-processes "app.exe;helper.exe" --tun-udp auto --detach `
+  -- "D:\Apps\app.exe"
+```
+
+规则会影响当前系统上所有同名进程。单实例程序可能把新启动请求交给旧进程；监视器会按配置的主/辅助进程名继续跟踪，直到这些进程全部退出。
+
 ### 微信（TUN）
 
 微信同时使用 TCP、UDP/QUIC 和多个辅助进程，推荐使用 x64 构建产物中的 `Easy-Net-Hook-x64-TUN` 包。它额外包含独立的 sing-box TUN 引擎；基础 x64/Win32 包仍保持轻量，不捆绑约 55 MB 的可选组件。

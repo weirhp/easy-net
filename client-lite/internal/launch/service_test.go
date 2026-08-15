@@ -198,3 +198,30 @@ func TestCreateShortcutPointsAtLiteLaunchEntry(t *testing.T) {
 		t.Fatalf("unexpected Cursor shortcut icon options: %#v", runner.shortcuts[0])
 	}
 }
+
+func TestStartWithManualProxyDoesNotStartLiteProfile(t *testing.T) {
+	dir := t.TempDir()
+	svc := testService(t, dir)
+	runner := &fakeRunner{}
+	launches, err := New(dir, svc, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := launches.Upsert(model.LaunchEntry{
+		Name: "Manual", Mode: model.LaunchModeHook, Proxy: "127.0.0.1:10808",
+		Path: `D:\app.exe`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := launches.Start(saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !view.ExternalProxy || view.ListenAddress != "127.0.0.1:10808" {
+		t.Fatalf("unexpected manual proxy view: %#v", view)
+	}
+	if got := runner.lastArgs(); len(got) < 2 || got[1] != "127.0.0.1:10808" {
+		t.Fatalf("unexpected hook args: %#v", got)
+	}
+}

@@ -558,6 +558,13 @@ func (s *Server) handleLaunchAction(w http.ResponseWriter, r *http.Request) {
 				})
 				return
 			}
+			var winDivert *launch.WinDivertStartError
+			if errors.As(err, &winDivert) {
+				writeJSON(w, http.StatusFailedDependency, map[string]string{
+					"error": err.Error(), "code": "windivert_start_failed",
+				})
+				return
+			}
 			writeError(w, status, err.Error())
 			return
 		}

@@ -1,6 +1,7 @@
 package launch
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,6 +33,16 @@ type ProxyUnavailableError struct {
 type ApplicationNotRunningError struct {
 	Entry model.LaunchEntry
 }
+
+type WinDivertStartError struct {
+	Cause error
+}
+
+func (e *WinDivertStartError) Error() string {
+	return fmt.Sprintf("WinDivert 接管未启动：%v", e.Cause)
+}
+
+func (e *WinDivertStartError) Unwrap() error { return e.Cause }
 
 func (e *ApplicationNotRunningError) Error() string {
 	return fmt.Sprintf("没有检测到正在运行的 %s，已中止接管", e.Entry.Name)
@@ -244,6 +255,10 @@ func (s *Service) StartWithOptions(id string, options StartOptions) (View, error
 			"--windivert-shared-root", strconv.Itoa(os.Getpid()))
 	}
 	if err := s.runner.Start(args); err != nil {
+		var hookError *HookStartError
+		if usesSharedWinDivert(entry) && errors.As(err, &hookError) && hookError.ExitCode == 5 {
+			return View{}, &WinDivertStartError{Cause: err}
+		}
 		return View{}, err
 	}
 	view := View{

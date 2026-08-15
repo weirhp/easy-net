@@ -18,7 +18,7 @@ func StartOnExisting(baseURL, id string) error {
 		return fmt.Errorf("启动入口参数不完整")
 	}
 	client := &http.Client{
-		Timeout:   8 * time.Second,
+		Timeout:   2 * time.Minute,
 		Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 2 * time.Second}).DialContext},
 	}
 	stateResponse, err := client.Get(baseURL + "/api/state")
@@ -66,6 +66,8 @@ func StartOnExisting(baseURL, id string) error {
 				title = "代理不可用"
 			} else if payload.Code == "application_not_running" {
 				title = "接管失败"
+			} else if payload.Code == "windivert_start_failed" {
+				title = "需要管理员授权"
 			}
 			ShowLaunchError(title, payload.Error)
 			return nil

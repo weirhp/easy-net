@@ -637,16 +637,17 @@ func TestEngineImportStartsLocalProxy(t *testing.T) {
 }
 
 type recordingHookRunner struct {
-	mu      sync.Mutex
-	args    [][]string
-	running bool
+	mu       sync.Mutex
+	args     [][]string
+	running  bool
+	startErr error
 }
 
 func (r *recordingHookRunner) Start(args []string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.args = append(r.args, append([]string(nil), args...))
-	return nil
+	return r.startErr
 }
 func (r *recordingHookRunner) IsRunning(model.LaunchEntry) (bool, error) {
 	r.mu.Lock()
@@ -798,6 +799,53 @@ func TestLaunchAPIStartsHookAfterProxy(t *testing.T) {
 	_ = deleteResponse.Body.Close()
 	if deleteResponse.StatusCode != http.StatusOK {
 		t.Fatalf("delete launch: %d", deleteResponse.StatusCode)
+	}
+}
+
+func TestLaunchAPIReportsWinDivertStartupFailure(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := service.New(config.NewStoreAt(filepath.Join(dir, "config.json")), &memorySecrets{values: map[string]string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingHookRunner{
+		running: true,
+		startErr: &launch.HookStartError{
+			ExitCode: 5, Diagnostics: "The shared WinDivert engine did not become ready.",
+		},
+	}
+	launches, err := launch.New(dir, svc, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := launches.Upsert(model.LaunchEntry{
+		Name: "接管应用", Mode: model.LaunchModeWinDivert, Proxy: "127.0.0.1:1082",
+		Path: `D:\App\app.exe`, ProcessNames: "app.exe", AttachExisting: true, UDPMode: "auto",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewWithOptions(svc, func() {}, Options{Launches: launches})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(manager.Handler())
+	defer server.Close()
+	state := getState(t, server.URL)
+	request, _ := http.NewRequest(http.MethodPost, server.URL+"/api/launches/"+entry.ID+"/start", bytes.NewReader([]byte(`{}`)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Easy-Net-Token", state.Token)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var payload map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusFailedDependency || payload["code"] != "windivert_start_failed" {
+		t.Fatalf("unexpected response: %d %#v", response.StatusCode, payload)
 	}
 }
 

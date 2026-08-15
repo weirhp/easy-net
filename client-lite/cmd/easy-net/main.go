@@ -97,6 +97,10 @@ func main() {
 				if errors.As(startErr, &unavailable) {
 					title = "代理不可用"
 				}
+				var winDivert *launch.WinDivertStartError
+				if errors.As(startErr, &winDivert) {
+					title = "需要管理员授权"
+				}
 				launch.ShowLaunchError(title, startErr.Error())
 				log.Printf("[Easy-Net Lite] 启动入口失败：%v", startErr)
 			}

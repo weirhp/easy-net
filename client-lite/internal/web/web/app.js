@@ -194,13 +194,15 @@ function renderProfiles() {
 		  ${item.error ? `<p class="error">启动错误：${escapeHTML(item.error)}</p>` : ""}
 		  ${item.connectionError ? `<p class="error connection-error">连接失败：${escapeHTML(item.connectionError)}</p>` : ""}
         </div>
-        <div class="card-actions">
-          <button class="button ${item.running ? "stop" : "start"}" data-profile-action="${primaryAction}" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon(item.running ? "stop" : "play")}${primaryText}</button>
-          <button class="button secondary" data-profile-action="share" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("share")}分享</button>
-          <button class="button secondary" data-profile-action="edit" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("edit")}编辑</button>
-        </div>
       </div>
-      <button class="card-delete" title="删除 ${escapeHTML(profile.name)}" aria-label="删除 ${escapeHTML(profile.name)}" data-profile-action="delete" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("close")}</button>
+      <div class="card-top-actions">
+        <div class="card-actions">
+          <button class="button compact ${item.running ? "stop" : "start"}" data-profile-action="${primaryAction}" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon(item.running ? "stop" : "play")}${primaryText}</button>
+          <button class="button compact secondary icon-only" aria-label="分享 ${escapeHTML(profile.name)}" data-tooltip="分享配置" data-profile-action="share" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("share")}</button>
+          <button class="button compact secondary icon-only" aria-label="编辑 ${escapeHTML(profile.name)}" data-tooltip="编辑配置" data-profile-action="edit" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("edit")}</button>
+        </div>
+        <button class="card-delete" aria-label="删除 ${escapeHTML(profile.name)}" data-tooltip="删除配置" data-profile-action="delete" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("close")}</button>
+      </div>
     </article>`;
   }).join("");
   updateSelectionToolbar();
@@ -343,9 +345,9 @@ function syncLaunchFields() {
   $("#launch-proxy").required = manualProxy;
   const notes = {
     hook: "通用 Hook 通过 DLL 注入代理 TCP；目标程序必须与 Hook 架构一致，UDP 不会走 SOCKS5。",
-    windivert: attachExisting ? "保存后点击“接管”，Lite 会把所选进程加入共享 WinDivert 规则。只影响新建连接，不会重新启动或关闭原程序。" : "通用 WinDivert 支持 TCP+UDP，需要 x64-TUN 完整包和管理员授权。Lite 会把所有通用 WinDivert 应用合并到一套共享引擎中；规则会影响所有同名进程，代理断开时默认阻断匹配流量。",
-    chrome: attachExisting ? "接管已运行的 Chrome：使用共享 WinDivert，只影响新建连接；所有 chrome.exe 窗口都会匹配。" : "使用 Chromium 原生 SOCKS5 启动 Chrome。推荐使用独立配置目录，避免已有 Chrome 进程忽略代理参数。",
-    edge: attachExisting ? "接管已运行的 Edge：使用共享 WinDivert，只影响新建连接；所有 msedge.exe 窗口都会匹配。" : "使用 Chromium 原生 SOCKS5 启动 Edge。推荐使用独立配置目录，避免已有 Edge 进程忽略代理参数。"
+    windivert: attachExisting ? "保存后点击“接管”，Lite 会把所选进程加入共享 WinDivert 规则。只影响新建连接；接管成功后，本次 Lite 运行期间以后启动的同名程序也会自动生效。" : "通用 WinDivert 支持 TCP+UDP，需要 x64-TUN 完整包和管理员授权。Lite 会把所有通用 WinDivert 应用合并到一套共享引擎中；规则会影响所有同名进程，代理断开时默认阻断匹配流量。",
+    chrome: attachExisting ? "接管 Chrome 使用共享 WinDivert，只影响新建连接；成功后，本次 Lite 运行期间以后启动的 chrome.exe 也会自动生效。" : "使用 Chromium 原生 SOCKS5 启动 Chrome。推荐使用独立配置目录，避免已有 Chrome 进程忽略代理参数。",
+    edge: attachExisting ? "接管 Edge 使用共享 WinDivert，只影响新建连接；成功后，本次 Lite 运行期间以后启动的 msedge.exe 也会自动生效。" : "使用 Chromium 原生 SOCKS5 启动 Edge。推荐使用独立配置目录，避免已有 Edge 进程忽略代理参数。"
   };
   $("#launch-mode-note").textContent = notes[mode] || "启动由 Easy-Net Hook 在后台完成。请把 easy-net-hook.exe 和 Lite 放在同一目录。";
   if (!wechat) $("#launch-wechat-existing").checked = false;
@@ -500,7 +502,11 @@ async function launchAction(action, id) {
         body: JSON.stringify({ confirmRunning: true })
       });
     }
-    if (action === "start") showToast(`正在启动 ${entry.name}（${data.listenAddress || entry.listenAddress || "本地代理"}）`);
+    if (action === "start") {
+      showToast(entry.attachExisting
+        ? `已接管 ${entry.name}；本次 Lite 运行期间以后启动的同名程序也会生效`
+        : `正在启动 ${entry.name}（${data.listenAddress || entry.listenAddress || "本地代理"}）`);
+    }
     if (action === "shortcut") showToast(`已创建桌面快捷方式：${data.path || ""}`);
   } catch (error) {
     if (action === "start" && error.data?.code === "proxy_unavailable") {
@@ -516,6 +522,20 @@ async function launchAction(action, id) {
         title: "没有找到正在运行的程序",
         message: error.message,
         details: "请先启动目标程序，或编辑入口后重新选择当前运行的进程。"
+      });
+    } else if (action === "start" && error.data?.code === "windivert_start_failed") {
+      await showAlertModal({
+        kind: "WinDivert 权限",
+        title: "需要管理员授权",
+        message: error.message,
+        details: "首次启用接管时会弹出 Windows UAC。请点击“是”允许启动共享 WinDivert 引擎；不需要把 Easy-Net Lite 整体改成管理员运行。如果已经允许仍然失败，请确认使用的是 x64-TUN 完整包。"
+      });
+    } else if (action === "start") {
+      await showAlertModal({
+        kind: "启动失败",
+        title: `未能启动 ${entry.name}`,
+        message: error.message,
+        details: "应用没有被静默标记为成功。请根据上面的错误检查程序路径、代理配置和运行权限。"
       });
     } else {
       showToast(error.message, true);
@@ -545,7 +565,7 @@ function openProfileDialog(kind, id = "") {
   $("#field-local-port").value = profile?.listenPort || nextPort();
   $("#field-auto-start").checked = profile ? profile.autoStart : true;
   $("#field-bypass-private").checked = profile ? Boolean(profile.bypassPrivate) : true;
-  $("#field-bypass-china").checked = profile ? Boolean(profile.bypassChina) : false;
+  $("#field-bypass-china").checked = profile ? Boolean(profile.bypassChina) : true;
   if (kind === "websocket") {
     $("#field-ws-url").value = profile?.websocket?.url || "";
 	$("#field-ws-secret").placeholder = id ? "已保存；如需更换请重新输入" : "请输入连接密钥";

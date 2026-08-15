@@ -5,8 +5,8 @@ package launch
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,22 +56,18 @@ func (runner windowsRunner) Start(args []string) error {
 	var diagnostics bytes.Buffer
 	cmd.Stdout = &diagnostics
 	cmd.Stderr = &diagnostics
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("启动 Easy-Net Hook：%w", err)
-	}
-	go func() {
-		if waitErr := cmd.Wait(); waitErr != nil {
-			message := strings.TrimSpace(diagnostics.String())
-			if len(message) > 4096 {
-				message = message[:4096] + "…"
-			}
-			if message == "" {
-				log.Printf("[Easy-Net Lite] Easy-Net Hook 后台启动失败：%v", waitErr)
-			} else {
-				log.Printf("[Easy-Net Lite] Easy-Net Hook 后台启动失败：%v：%s", waitErr, message)
-			}
+	if err := cmd.Run(); err != nil {
+		message := strings.TrimSpace(diagnostics.String())
+		if len(message) > 4096 {
+			message = message[:4096] + "…"
 		}
-	}()
+		exitCode := -1
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			exitCode = exitError.ExitCode()
+		}
+		return &HookStartError{ExitCode: exitCode, Diagnostics: message, Cause: err}
+	}
 	return nil
 }
 

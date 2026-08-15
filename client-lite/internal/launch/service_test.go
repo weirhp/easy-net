@@ -198,6 +198,35 @@ func TestAttachExistingRequiresRunningApplication(t *testing.T) {
 	}
 }
 
+func TestAttachExistingReportsWinDivertPermissionFailure(t *testing.T) {
+	dir := t.TempDir()
+	runner := &fakeRunner{
+		running: true,
+		startErr: &HookStartError{
+			ExitCode: 5, Diagnostics: "The shared WinDivert engine did not become ready.",
+		},
+	}
+	launches, err := New(dir, testService(t, dir), runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := launches.Upsert(model.LaunchEntry{
+		Name: "运行中的应用", Mode: model.LaunchModeWinDivert, Proxy: "127.0.0.1:1082",
+		Path: `D:\App\app.exe`, ProcessNames: "app.exe", AttachExisting: true, UDPMode: "auto",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := launches.Start(saved.ID); err == nil {
+		t.Fatal("expected a WinDivert startup error")
+	} else {
+		var permission *WinDivertStartError
+		if !errors.As(err, &permission) {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+}
+
 func TestCreateShortcutPointsAtLiteLaunchEntry(t *testing.T) {
 	dir := t.TempDir()
 	svc := testService(t, dir)

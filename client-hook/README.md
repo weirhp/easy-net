@@ -107,6 +107,8 @@ Lite 应用页提供两种通用场景：
 - 通用 Hook：将 `easy-net-hook.dll` 注入新进程，覆盖 Winsock TCP，可按需继承到子进程。它较轻量，但不能绕过 AppContainer/CIG，也不代理 UDP。
 - 通用 WinDivert：无需 DLL 注入，按 EXE 进程名代理 TCP+UDP。它只在 x64-TUN 包可用，首次创建引擎时需要 UAC 管理员授权。从 Easy-Net Lite 启动时，所有通用 WinDivert 入口会合并为一份多应用、多代理规则并共用一个引擎；后续应用以普通权限启动，不再重复请求 UAC。应用退出不会停止共享引擎，退出 Lite 后才会释放。引擎异常退出会自动重启，入口配置变化时自动重载；SOCKS5 失联时保持 fail-closed，阻止匹配流量直连泄漏。
 
+Lite 的“接管运行中的应用”会读取当前用户可访问的进程，自动填写 EXE 路径和进程名，并使用 `--windivert-existing` 只加载共享规则、不再启动一个新实例。规则只影响之后创建的 TCP/UDP 流；浏览器需要新开页面或关闭旧连接。WinDivert 按 EXE 名匹配，因此同名的所有实例都会使用同一条规则。
+
 通用 WinDivert 命令行示例：
 
 ```powershell
@@ -479,15 +481,19 @@ Chromium 的 SOCKS5 模式不支持用户名密码，因此网页模式只能连
 --cursor            原生 SOCKS5 启动 Cursor，并支持同代理多窗口
 --cursor-path PATH  指定 Cursor.exe；通常可以自动查找
 --cursor-isolated   使用独立 Cursor 用户目录，可与桌面实例并行
+--chrome            使用 Chromium 原生 SOCKS5 参数启动 Google Chrome
+--edge              使用 Chromium 原生 SOCKS5 参数启动 Microsoft Edge
+--browser-isolated  为 Chrome/Edge 使用单独的代理配置目录
 --chatgpt-app       不注入，使用独立配置启动 ChatGPT 客户端的原生 SOCKS5 模式
 --chatgpt-web       不注入，使用独立 Edge/Chrome SOCKS5 会话打开 ChatGPT
---browser-path PATH 为网页模式指定 Edge/Chrome 可执行文件
+--browser-path PATH 为浏览器模式指定 Edge/Chrome 可执行文件
 --wechat            使用可选 TUN/WinDivert 后端启动微信
 --wechat-existing   为已经运行的微信启动按进程路由，不创建新实例
 --wechat-path PATH  指定 WeChat.exe/Weixin.exe；通常可以自动查找
 --wechat-backend M  微信后端：tun/windivert；默认 tun
 --tun-engine PATH   指定 sing-box.exe；默认查找 tun 子目录和 PATH
 --windivert-engine  指定 easy-net-windivert.exe
+--windivert-existing 仅加载 Lite 共享 WinDivert 规则，不启动新程序
 --wechat-status     查询 WinDivert 守护器状态；健康返回 0，否则返回 7
 --tun-udp MODE      微信 UDP 策略：auto/proxy/block/direct
 --tun-stack MODE    TUN 栈：system/mixed/gvisor；默认 system

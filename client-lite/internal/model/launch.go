@@ -13,6 +13,8 @@ const (
 	LaunchModeChatGPT         LaunchMode = "chatgpt"
 	LaunchModeAntigravity     LaunchMode = "antigravity"
 	LaunchModeCursor          LaunchMode = "cursor"
+	LaunchModeChrome          LaunchMode = "chrome"
+	LaunchModeEdge            LaunchMode = "edge"
 	LaunchModeWeChat          LaunchMode = "wechat"
 	LaunchModeWeChatWinDivert LaunchMode = "wechat-windivert"
 	LaunchModeHook            LaunchMode = "hook"
@@ -39,6 +41,7 @@ type LaunchEntry struct {
 	UDPMode        string     `json:"udpMode,omitempty"`
 	DNS            string     `json:"dns,omitempty"`
 	ProcessNames   string     `json:"processNames,omitempty"`
+	AttachExisting bool       `json:"attachExisting,omitempty"`
 }
 
 func (e LaunchEntry) Clone() LaunchEntry { return e }
@@ -54,17 +57,25 @@ func (e *LaunchEntry) Normalize() {
 	e.UDPMode = strings.ToLower(strings.TrimSpace(e.UDPMode))
 	e.DNS = strings.TrimSpace(e.DNS)
 	e.ProcessNames = strings.TrimSpace(e.ProcessNames)
-	if e.Mode != LaunchModeAntigravity && e.Mode != LaunchModeCursor {
+	if e.Mode != LaunchModeAntigravity && e.Mode != LaunchModeCursor && e.Mode != LaunchModeChrome && e.Mode != LaunchModeEdge {
 		e.Isolated = false
 	}
-	if e.Mode != LaunchModeWeChat && e.Mode != LaunchModeWeChatWinDivert && e.Mode != LaunchModeWinDivert {
+	if e.Mode != LaunchModeWeChat && e.Mode != LaunchModeWeChatWinDivert && e.Mode != LaunchModeWinDivert && !e.AttachExisting {
 		e.WeChatExisting = false
 		e.UDPMode = ""
 	} else if e.UDPMode == "" {
 		e.UDPMode = "auto"
 	}
-	if e.Mode != LaunchModeWinDivert {
+	if e.Mode != LaunchModeWinDivert && !e.AttachExisting {
 		e.ProcessNames = ""
+	}
+	if e.Mode != LaunchModeWinDivert && e.Mode != LaunchModeChrome && e.Mode != LaunchModeEdge {
+		e.AttachExisting = false
+	}
+	if e.AttachExisting {
+		e.Arguments = ""
+		e.DNS = ""
+		e.Isolated = false
 	}
 	if e.WeChatExisting {
 		e.Path = ""
@@ -83,7 +94,7 @@ func (e LaunchEntry) Validate() error {
 		return fmt.Errorf("启动入口名称无效")
 	}
 	switch e.Mode {
-	case LaunchModeChatGPT, LaunchModeAntigravity, LaunchModeCursor, LaunchModeWeChat, LaunchModeWeChatWinDivert:
+	case LaunchModeChatGPT, LaunchModeAntigravity, LaunchModeCursor, LaunchModeChrome, LaunchModeEdge, LaunchModeWeChat, LaunchModeWeChatWinDivert:
 	case LaunchModeHook, LaunchModeWinDivert:
 		if e.Path == "" {
 			return fmt.Errorf("通用场景需要填写可执行文件路径")
@@ -96,6 +107,9 @@ func (e LaunchEntry) Validate() error {
 	}
 	if e.ProfileID != "" && e.Proxy != "" {
 		return fmt.Errorf("代理配置和手动 SOCKS5 地址只能选择一种")
+	}
+	if e.AttachExisting && e.Mode != LaunchModeWinDivert && e.Mode != LaunchModeChrome && e.Mode != LaunchModeEdge {
+		return fmt.Errorf("当前场景不支持接管已运行程序")
 	}
 	if e.Proxy != "" {
 		if err := validateLiteralProxy(e.Proxy); err != nil {
@@ -160,6 +174,10 @@ func (e LaunchMode) Label() string {
 		return "Antigravity IDE"
 	case LaunchModeCursor:
 		return "Cursor"
+	case LaunchModeChrome:
+		return "Google Chrome"
+	case LaunchModeEdge:
+		return "Microsoft Edge"
 	case LaunchModeWeChat:
 		return "微信 TUN"
 	case LaunchModeWeChatWinDivert:

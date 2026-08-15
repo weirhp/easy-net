@@ -36,3 +36,29 @@ func TestLaunchEntryRejectsHostnameProxy(t *testing.T) {
 		t.Fatal("expected non-literal proxy address to be rejected")
 	}
 }
+
+func TestLaunchEntryNormalizesBrowserAttach(t *testing.T) {
+	entry := LaunchEntry{
+		ID: "edge", Name: "Edge", Mode: LaunchModeEdge, ProfileID: "p1",
+		AttachExisting: true, Isolated: true, Arguments: "https://example.com", DNS: "1.1.1.1",
+	}
+	entry.Normalize()
+	if !entry.AttachExisting || entry.Isolated || entry.Arguments != "" || entry.DNS != "" || entry.UDPMode != "auto" {
+		t.Fatalf("unexpected normalized entry: %#v", entry)
+	}
+	if err := entry.ValidateForStart(); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+}
+
+func TestLaunchEntryRejectsAttachForHook(t *testing.T) {
+	entry := LaunchEntry{
+		ID: "hook", Name: "Hook", Mode: LaunchModeHook, ProfileID: "p1",
+		Path: `D:\app.exe`, AttachExisting: true,
+	}
+	// Normalize deliberately clears an unsupported persisted flag. Direct
+	// validation still protects callers that skip normalization.
+	if err := entry.Validate(); err == nil {
+		t.Fatal("expected attach-existing hook entry to be rejected")
+	}
+}

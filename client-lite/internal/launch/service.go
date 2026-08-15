@@ -29,6 +29,14 @@ type ProxyUnavailableError struct {
 	Cause       error
 }
 
+type ApplicationNotRunningError struct {
+	Entry model.LaunchEntry
+}
+
+func (e *ApplicationNotRunningError) Error() string {
+	return fmt.Sprintf("没有检测到正在运行的 %s，已中止接管", e.Entry.Name)
+}
+
 func (e *ProxyUnavailableError) Error() string {
 	return fmt.Sprintf("代理“%s”（%s）不可用，已中止启动：%v", e.ProfileName, e.Address, e.Cause)
 }
@@ -129,6 +137,10 @@ func (s *Service) Get(id string) (model.LaunchEntry, bool) {
 	return s.file.Entries[index].Clone(), true
 }
 
+func (s *Service) Processes() ([]ProcessInfo, error) {
+	return s.runner.Processes()
+}
+
 func (s *Service) Upsert(entry model.LaunchEntry) (model.LaunchEntry, error) {
 	entry.Normalize()
 	if entry.ID == "" {
@@ -184,11 +196,15 @@ func (s *Service) StartWithOptions(id string, options StartOptions) (View, error
 	if err := entry.ValidateForStart(); err != nil {
 		return View{}, err
 	}
-	if !options.ConfirmRunning {
-		running, err := s.runner.IsRunning(entry)
-		if err != nil {
-			return View{}, err
+	running, err := s.runner.IsRunning(entry)
+	if err != nil {
+		return View{}, err
+	}
+	if entry.AttachExisting {
+		if !running {
+			return View{}, &ApplicationNotRunningError{Entry: entry}
 		}
+	} else if !options.ConfirmRunning {
 		if running {
 			return View{}, &AlreadyRunningError{Entry: entry}
 		}
@@ -218,7 +234,7 @@ func (s *Service) StartWithOptions(id string, options StartOptions) (View, error
 	if err != nil {
 		return View{}, err
 	}
-	if entry.Mode == model.LaunchModeWinDivert {
+	if usesSharedWinDivert(entry) {
 		profilePath, profileErr := s.writeSharedWinDivertProfile()
 		if profileErr != nil {
 			return View{}, profileErr

@@ -92,10 +92,12 @@ func main() {
 				startErr = nil
 			}
 			if startErr != nil {
+				title := "启动失败"
 				var unavailable *launch.ProxyUnavailableError
 				if errors.As(startErr, &unavailable) {
-					launch.ShowLaunchError("代理不可用", startErr.Error())
+					title = "代理不可用"
 				}
+				launch.ShowLaunchError(title, startErr.Error())
 				log.Printf("[Easy-Net Lite] 启动入口失败：%v", startErr)
 			}
 		}()

@@ -122,7 +122,7 @@ func (s *Service) ExportShare(id string) (sharecode.Payload, error) {
 	if !ok {
 		return sharecode.Payload{}, fmt.Errorf("代理配置不存在")
 	}
-	payload := sharecode.Payload{Name: profile.Name, Type: profile.Type, PreferredPort: profile.ListenPort, BypassPrivate: profile.BypassPrivate}
+	payload := sharecode.Payload{Name: profile.Name, Type: profile.Type, PreferredPort: profile.ListenPort, BypassPrivate: profile.BypassPrivate, BypassChina: profile.BypassChina}
 	switch profile.Type {
 	case model.ProxyTypeWebSocket:
 		secret, err := s.getSecret(profile.WebSocket.SecretRef, "WebSocket 密钥")
@@ -172,7 +172,7 @@ func (s *Service) ImportShare(payload sharecode.Payload) (string, error) {
 	id := newID()
 	profile := model.Profile{
 		ID: id, Name: strings.TrimSpace(payload.Name), Type: payload.Type, ListenHost: "127.0.0.1",
-		ListenPort: s.nextAvailablePort(payload.PreferredPort), AutoStart: false, BypassPrivate: payload.BypassPrivate,
+		ListenPort: s.nextAvailablePort(payload.PreferredPort), AutoStart: false, BypassPrivate: payload.BypassPrivate, BypassChina: payload.BypassChina,
 	}
 	values := SecretValues{}
 	if payload.WebSocket != nil {
@@ -200,6 +200,7 @@ func (s *Service) ImportOrReuseShare(payload sharecode.Payload) (string, error) 
 	}
 	if existing, ok := s.matchingShareProfile(payload); ok {
 		existing.BypassPrivate = payload.BypassPrivate
+		existing.BypassChina = payload.BypassChina
 		values := SecretValues{}
 		if payload.WebSocket != nil {
 			existing.WebSocket = &model.WebSocketConfig{
@@ -524,6 +525,7 @@ func (s *Service) Start(id string) error {
 			s.recordConnectionResult(id, revision, profile, dialErr)
 		})
 		server.SetBypassPrivate(profile.BypassPrivate)
+		server.SetBypassChina(profile.BypassChina)
 		err = server.Start(ctx)
 	}
 	canceled := ctx.Err() != nil

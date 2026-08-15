@@ -37,6 +37,8 @@ func (f *fakeRunner) IsRunning(model.LaunchEntry) (bool, error) { return f.runni
 
 func (f *fakeRunner) CheckProxy(string) error { return f.checkErr }
 
+func (f *fakeRunner) Processes() ([]ProcessInfo, error) { return nil, nil }
+
 func (f *fakeRunner) Executable() (string, error) { return "easy-net-hook.exe", nil }
 
 func (f *fakeRunner) CreateShortcut(options ShortcutOptions) (string, error) {
@@ -166,6 +168,33 @@ func TestStartSpawnsHookAfterLocalProxy(t *testing.T) {
 	want := []string{"--proxy", "127.0.0.1:" + portText, "--detach", "--gui-worker", "--chatgpt-app"}
 	if strings.Join(args, " ") != strings.Join(want, " ") {
 		t.Fatalf("hook args: %#v", args)
+	}
+}
+
+func TestAttachExistingRequiresRunningApplication(t *testing.T) {
+	dir := t.TempDir()
+	runner := &fakeRunner{running: false}
+	launches, err := New(dir, testService(t, dir), runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := launches.Upsert(model.LaunchEntry{
+		Name: "运行中的应用", Mode: model.LaunchModeWinDivert, Proxy: "127.0.0.1:1082",
+		Path: `D:\App\app.exe`, ProcessNames: "app.exe", AttachExisting: true, UDPMode: "auto",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := launches.Start(saved.ID); err == nil {
+		t.Fatal("expected an application-not-running error")
+	} else {
+		var notRunning *ApplicationNotRunningError
+		if !errors.As(err, &notRunning) {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	if got := runner.lastArgs(); got != nil {
+		t.Fatalf("hook should not start without the target application: %#v", got)
 	}
 }
 

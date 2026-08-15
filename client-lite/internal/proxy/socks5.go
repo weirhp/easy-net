@@ -52,6 +52,7 @@ type Server struct {
 	cancel        context.CancelFunc
 	running       atomic.Bool
 	bypassPrivate atomic.Bool
+	bypassChina   atomic.Bool
 	mu            sync.Mutex
 	clients       map[net.Conn]struct{}
 	wg            sync.WaitGroup
@@ -69,6 +70,12 @@ func NewServer(address string, outbound transport.Transport, handlers ...DialRes
 // normal route instead of the configured outbound transport.
 func (s *Server) SetBypassPrivate(enabled bool) {
 	s.bypassPrivate.Store(enabled)
+}
+
+// SetBypassChina controls whether APNIC CN destinations use the machine's
+// normal route instead of the configured outbound transport.
+func (s *Server) SetBypassChina(enabled bool) {
+	s.bypassChina.Store(enabled)
 }
 
 func (s *Server) Start(ctx context.Context) error {
@@ -171,12 +178,11 @@ func (s *Server) handle(ctx context.Context, local net.Conn) {
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	dialTarget, direct := request.target, false
-	if s.bypassPrivate.Load() {
-		dialTarget, direct = resolvePrivateTarget(dialCtx, request.target)
+	if s.bypassPrivate.Load() || s.bypassChina.Load() {
+		dialTarget, direct = resolveBypassTarget(dialCtx, request.target, s.bypassPrivate.Load(), s.bypassChina.Load())
 	}
 	var remote net.Conn
 	if direct {
-		log.Printf("内网目标 %s 使用本机直连", request.target)
 		remote, err = (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext(dialCtx, "tcp", dialTarget)
 	} else {
 		remote, err = s.transport.DialContext(dialCtx, "tcp", request.target)
@@ -306,8 +312,9 @@ func (s *Server) handleUDPAssociate(ctx context.Context, control net.Conn, reade
 	associationCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	bypassPrivate := s.bypassPrivate.Load()
+	bypassChina := s.bypassChina.Load()
 	remote, remoteErr := transport.OpenPacketContext(associationCtx, s.transport)
-	if remoteErr != nil && !bypassPrivate {
+	if remoteErr != nil && !bypassPrivate && !bypassChina {
 		if s.onDialResult != nil {
 			s.onDialResult("UDP ASSOCIATE", remoteErr)
 		}
@@ -320,7 +327,7 @@ func (s *Server) handleUDPAssociate(ctx context.Context, control net.Conn, reade
 		}
 		defer remote.Close()
 	} else {
-		log.Printf("远端传输不支持 UDP；当前关联仅允许内网目标本机直连：%v", remoteErr)
+		log.Printf("远端传输不支持 UDP；当前关联仅允许直连规则目标：%v", remoteErr)
 	}
 
 	controlHost, _, err := net.SplitHostPort(control.RemoteAddr().String())
@@ -373,7 +380,7 @@ func (s *Server) handleUDPAssociate(ctx context.Context, control net.Conn, reade
 	}
 
 	var direct4, direct6 *net.UDPConn
-	if bypassPrivate {
+	if bypassPrivate || bypassChina {
 		direct4, _ = net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero})
 		direct6, _ = net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6unspecified})
 		if direct4 != nil {
@@ -433,8 +440,8 @@ func (s *Server) handleUDPAssociate(ctx context.Context, control net.Conn, reade
 			if decodeErr != nil {
 				continue
 			}
-			if bypassPrivate {
-				if directTarget, direct := resolvePrivateTarget(associationCtx, destination); direct {
+			if bypassPrivate || bypassChina {
+				if directTarget, direct := resolveBypassTarget(associationCtx, destination, bypassPrivate, bypassChina); direct {
 					destinationAddress, resolveErr := net.ResolveUDPAddr("udp", directTarget)
 					if resolveErr != nil {
 						continue

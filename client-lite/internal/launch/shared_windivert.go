@@ -55,7 +55,7 @@ func (s *Service) writeSharedWinDivertProfile() (string, error) {
 	proxyIDs := make(map[string]int)
 	processOwners := make(map[string]string)
 	for _, entry := range entries {
-		if entry.Mode != model.LaunchModeWinDivert {
+		if !usesSharedWinDivert(entry) {
 			continue
 		}
 		proxyAddress, err := s.entryProxyAddress(entry)
@@ -145,6 +145,14 @@ func splitProxyAddress(address string) (string, string, error) {
 
 func winDivertProcessNames(entry model.LaunchEntry) ([]string, error) {
 	names := []string{windowsExecutableBase(entry.Path)}
+	if names[0] == "" {
+		switch entry.Mode {
+		case model.LaunchModeChrome:
+			names[0] = "chrome.exe"
+		case model.LaunchModeEdge:
+			names[0] = "msedge.exe"
+		}
+	}
 	for _, name := range strings.FieldsFunc(entry.ProcessNames, func(r rune) bool { return r == ';' || r == ',' }) {
 		name = strings.TrimSpace(name)
 		if name != "" {
@@ -165,6 +173,10 @@ func winDivertProcessNames(entry model.LaunchEntry) ([]string, error) {
 		unique = append(unique, name)
 	}
 	return unique, nil
+}
+
+func usesSharedWinDivert(entry model.LaunchEntry) bool {
+	return entry.Mode == model.LaunchModeWinDivert || entry.AttachExisting
 }
 
 func windowsExecutableBase(path string) string {

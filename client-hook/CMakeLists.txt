@@ -152,6 +152,9 @@ set_tests_properties(launcher_help_test PROPERTIES
 add_test(NAME launcher_cursor_help_test COMMAND easy_net_hook_launcher --help)
 set_tests_properties(launcher_cursor_help_test PROPERTIES
     PASS_REGULAR_EXPRESSION "cursor-isolated")
+add_test(NAME launcher_browser_help_test COMMAND easy_net_hook_launcher --help)
+set_tests_properties(launcher_browser_help_test PROPERTIES
+    PASS_REGULAR_EXPRESSION "browser-isolated")
 add_test(NAME launcher_share_code_help_test COMMAND easy_net_hook_launcher --help)
 set_tests_properties(launcher_share_code_help_test PROPERTIES
     PASS_REGULAR_EXPRESSION "share-code")

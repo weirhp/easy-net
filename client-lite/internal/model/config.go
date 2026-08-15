@@ -37,9 +37,11 @@ type Profile struct {
 	AutoStart  bool      `json:"autoStart"`
 	// BypassPrivate sends private, loopback, and link-local destinations through
 	// the machine's normal network stack instead of the configured transport.
-	BypassPrivate bool             `json:"bypassPrivate,omitempty"`
-	WebSocket     *WebSocketConfig `json:"websocket,omitempty"`
-	SSH           *SSHConfig       `json:"ssh,omitempty"`
+	BypassPrivate bool `json:"bypassPrivate,omitempty"`
+	// BypassChina sends APNIC CN destinations through the local network stack.
+	BypassChina bool             `json:"bypassChina,omitempty"`
+	WebSocket   *WebSocketConfig `json:"websocket,omitempty"`
+	SSH         *SSHConfig       `json:"ssh,omitempty"`
 }
 
 type WebSocketConfig struct {

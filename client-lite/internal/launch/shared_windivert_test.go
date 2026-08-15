@@ -73,3 +73,28 @@ func TestSharedWinDivertProfileRejectsDuplicateProcessOwnership(t *testing.T) {
 		t.Fatalf("expected duplicate process error, got %v", err)
 	}
 }
+
+func TestSharedWinDivertProfileIncludesRunningBrowser(t *testing.T) {
+	dir := t.TempDir()
+	launches, err := New(dir, testService(t, dir), &fakeRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := launches.Upsert(model.LaunchEntry{
+		Name: "Chrome", Mode: model.LaunchModeChrome, Proxy: "127.0.0.1:1082",
+		AttachExisting: true, UDPMode: "block",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path, err := launches.writeSharedWinDivertProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"ProcessName": "chrome.exe"`) {
+		t.Fatalf("shared profile does not contain Chrome: %s", data)
+	}
+}

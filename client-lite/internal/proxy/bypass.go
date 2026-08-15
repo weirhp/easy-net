@@ -14,6 +14,10 @@ const privateLookupTimeout = 2 * time.Second
 // private, so split-horizon names work without accidentally bypassing a public
 // endpoint returned by the same lookup.
 func resolvePrivateTarget(ctx context.Context, address string) (string, bool) {
+	return resolveBypassTarget(ctx, address, true, false)
+}
+
+func resolveBypassTarget(ctx context.Context, address string, bypassPrivate, bypassChina bool) (string, bool) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil || host == "" || port == "" {
 		return "", false
@@ -21,7 +25,7 @@ func resolvePrivateTarget(ctx context.Context, address string) (string, bool) {
 
 	bareHost, zone := splitZone(host)
 	if ip := net.ParseIP(bareHost); ip != nil {
-		if !isPrivateDestination(ip) {
+		if !matchesDirectRule(ip, bypassPrivate, bypassChina) {
 			return "", false
 		}
 		if zone != "" {
@@ -37,11 +41,15 @@ func resolvePrivateTarget(ctx context.Context, address string) (string, bool) {
 		return "", false
 	}
 	for _, resolved := range addresses {
-		if !isPrivateDestination(resolved.IP) {
+		if !matchesDirectRule(resolved.IP, bypassPrivate, bypassChina) {
 			return "", false
 		}
 	}
 	return net.JoinHostPort(addresses[0].String(), port), true
+}
+
+func matchesDirectRule(ip net.IP, bypassPrivate, bypassChina bool) bool {
+	return bypassPrivate && isPrivateDestination(ip) || bypassChina && isChinaDestination(ip)
 }
 
 func splitZone(host string) (string, string) {

@@ -47,6 +47,34 @@ func HookArgs(entry model.LaunchEntry, proxy string) ([]string, error) {
 			args = append(args, "--")
 			args = append(args, splitArguments(entry.Arguments)...)
 		}
+	case model.LaunchModeChrome, model.LaunchModeEdge:
+		if entry.AttachExisting {
+			args = append(args, "--windivert", "--windivert-existing", "--tun-udp", entry.UDPMode)
+			processName := "chrome.exe"
+			if entry.Mode == model.LaunchModeEdge {
+				processName = "msedge.exe"
+			}
+			if entry.ProcessNames != "" {
+				processName += ";" + entry.ProcessNames
+			}
+			args = append(args, "--windivert-processes", processName)
+			break
+		}
+		if entry.Mode == model.LaunchModeChrome {
+			args = append(args, "--chrome")
+		} else {
+			args = append(args, "--edge")
+		}
+		if entry.Path != "" {
+			args = append(args, "--browser-path", entry.Path)
+		}
+		if entry.Isolated {
+			args = append(args, "--browser-isolated")
+		}
+		if entry.Arguments != "" {
+			args = append(args, "--")
+			args = append(args, splitArguments(entry.Arguments)...)
+		}
 	case model.LaunchModeWeChat, model.LaunchModeWeChatWinDivert:
 		if entry.WeChatExisting {
 			args = append(args, "--wechat-existing")
@@ -81,12 +109,17 @@ func HookArgs(entry model.LaunchEntry, proxy string) ([]string, error) {
 		}
 	case model.LaunchModeWinDivert:
 		args = append(args, "--windivert", "--tun-udp", entry.UDPMode)
+		if entry.AttachExisting {
+			args = append(args, "--windivert-existing")
+		}
 		if entry.ProcessNames != "" {
 			args = append(args, "--windivert-processes", entry.ProcessNames)
 		}
-		args = append(args, "--", entry.Path)
-		if entry.Arguments != "" {
-			args = append(args, splitArguments(entry.Arguments)...)
+		if !entry.AttachExisting {
+			args = append(args, "--", entry.Path)
+			if entry.Arguments != "" {
+				args = append(args, splitArguments(entry.Arguments)...)
+			}
 		}
 	default:
 		return nil, fmt.Errorf("不支持的启动场景：%s", entry.Mode)

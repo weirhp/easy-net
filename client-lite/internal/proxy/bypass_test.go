@@ -38,3 +38,31 @@ func TestResolvePrivateTargetUsesLocalDNSForPrivateHost(t *testing.T) {
 		t.Fatalf("localhost should resolve as a private target, got %q private=%v", resolved, private)
 	}
 }
+
+func TestResolveChinaTarget(t *testing.T) {
+	tests := []struct {
+		address string
+		direct  bool
+	}{
+		{address: "1.0.1.1:443", direct: true},
+		{address: "[2001:250::1]:443", direct: true},
+		{address: "8.8.8.8:53", direct: false},
+		{address: "[2606:4700:4700::1111]:53", direct: false},
+	}
+	for _, test := range tests {
+		t.Run(test.address, func(t *testing.T) {
+			_, direct := resolveBypassTarget(context.Background(), test.address, false, true)
+			if direct != test.direct {
+				t.Fatalf("resolveBypassTarget(%q) direct=%v, want %v", test.address, direct, test.direct)
+			}
+		})
+	}
+}
+
+func TestChinaRuleCanCombineWithPrivateRule(t *testing.T) {
+	for _, address := range []string{"192.168.1.1:80", "1.0.1.1:80"} {
+		if _, direct := resolveBypassTarget(context.Background(), address, true, true); !direct {
+			t.Fatalf("%s should match the combined direct rules", address)
+		}
+	}
+}

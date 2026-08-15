@@ -74,11 +74,15 @@ struct Options {
     bool antigravity_isolated = false;
     bool cursor = false;
     bool cursor_isolated = false;
+    bool chrome = false;
+    bool edge = false;
+    bool browser_isolated = false;
     bool chatgpt_app = false;
     bool chatgpt_web = false;
     bool wechat = false;
     bool wechat_existing = false;
     bool windivert = false;
+    bool windivert_existing = false;
     bool tun_debug_log = false;
     std::wstring antigravity_path;
     std::wstring cursor_path;
@@ -108,6 +112,8 @@ void PrintUsage() {
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 [--dns DNS] [options] --appx AUMID\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --antigravity [options] [-- app-args...]\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --cursor [options] [-- app-args...]\n"
+        << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --chrome [options] [-- browser-args...]\n"
+        << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --edge [options] [-- browser-args...]\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --chatgpt-app [options]\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --chatgpt-web [options]\n\n"
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --wechat [options] [-- app-args...]\n"
@@ -133,7 +139,10 @@ void PrintUsage() {
         << L"  --cursor-isolated      Use a separate Cursor profile instead of normal login state\n"
         << L"  --chatgpt-app          Open the installed ChatGPT app with native Chromium SOCKS5\n"
         << L"  --chatgpt-web          Open ChatGPT in an isolated Edge/Chrome SOCKS5 session\n"
-        << L"  --browser-path PATH    Browser executable for --chatgpt-web (optional)\n"
+        << L"  --chrome               Open Google Chrome through native Chromium SOCKS5\n"
+        << L"  --edge                 Open Microsoft Edge through native Chromium SOCKS5\n"
+        << L"  --browser-path PATH    Browser executable for browser modes (optional)\n"
+        << L"  --browser-isolated     Use a separate browser profile (recommended)\n"
         << L"  --wechat               Open WeChat/Weixin through per-process routing\n"
         << L"  --wechat-existing      Attach routing to running WeChat/Weixin\n"
         << L"  --wechat-path PATH     WeChat.exe or Weixin.exe (optional, auto-detected)\n"
@@ -141,6 +150,7 @@ void PrintUsage() {
         << L"  --tun-engine PATH      sing-box.exe used by WeChat TUN modes (optional)\n"
         << L"  --windivert-engine P   easy-net-windivert.exe path (optional)\n"
         << L"  --windivert            Route a general application with WinDivert (x64/admin)\n"
+        << L"  --windivert-existing   Apply shared rules without starting another application\n"
         << L"  --windivert-processes N Semicolon-separated executable names (default: target exe)\n"
         << L"  --windivert-shared-profile P Reuse one Lite-managed engine and shared rule profile\n"
         << L"  --tun-udp MODE         auto, proxy, block, or direct (default: auto)\n"
@@ -265,6 +275,12 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
             options.cursor = true;
         } else if (argument == L"--cursor-isolated") {
             options.cursor_isolated = true;
+        } else if (argument == L"--chrome") {
+            options.chrome = true;
+        } else if (argument == L"--edge") {
+            options.edge = true;
+        } else if (argument == L"--browser-isolated") {
+            options.browser_isolated = true;
         } else if (argument == L"--chatgpt-app") {
             options.chatgpt_app = true;
         } else if (argument == L"--chatgpt-web") {
@@ -276,6 +292,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
             options.wechat_existing = true;
         } else if (argument == L"--windivert") {
             options.windivert = true;
+        } else if (argument == L"--windivert-existing") {
+            options.windivert_existing = true;
         } else if (argument == L"--tun-debug-log") {
             options.tun_debug_log = true;
         } else if (argument == L"--detach") {
@@ -307,11 +325,13 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
         std::wcerr << L"--username and --password apply only to an external SOCKS5 proxy.\n";
         return false;
     }
-    const int target_count = ((!options.command.empty() && !options.antigravity && !options.cursor && !options.wechat && !options.windivert) ? 1 : 0) +
+    const int target_count = ((!options.command.empty() && !options.antigravity && !options.cursor && !options.chrome && !options.edge && !options.wechat && !options.windivert) ? 1 : 0) +
                               (options.process_id.has_value() ? 1 : 0) +
                               (!options.app_user_model_id.empty() ? 1 : 0) +
                               (options.antigravity ? 1 : 0) +
                               (options.cursor ? 1 : 0) +
+                              (options.chrome ? 1 : 0) +
+                              (options.edge ? 1 : 0) +
                               (options.chatgpt_app ? 1 : 0) +
                               (options.chatgpt_web ? 1 : 0) +
                               (options.wechat ? 1 : 0) +
@@ -319,11 +339,15 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
     if (target_count != 1) {
         std::wcerr << L"Specify exactly one target: a command after --, --pid PID, "
                       L"--appx AUMID, --antigravity, --chatgpt-app, --chatgpt-web, --wechat, "
-                      L"--cursor, --wechat-existing, or --windivert.\n";
+                      L"--cursor, --chrome, --edge, --wechat-existing, or --windivert.\n";
         return false;
     }
-    if (!options.browser_path.empty() && !options.chatgpt_web) {
-        std::wcerr << L"--browser-path can only be used with --chatgpt-web.\n";
+    if (!options.browser_path.empty() && !options.chatgpt_web && !options.chrome && !options.edge) {
+        std::wcerr << L"--browser-path can only be used with a browser mode.\n";
+        return false;
+    }
+    if (options.browser_isolated && !options.chrome && !options.edge) {
+        std::wcerr << L"--browser-isolated can only be used with --chrome or --edge.\n";
         return false;
     }
     if (!options.antigravity_path.empty() && !options.antigravity) {
@@ -354,8 +378,12 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
         std::wcerr << L"Application arguments cannot be used with --wechat-existing.\n";
         return false;
     }
-    if (options.windivert && options.command.empty()) {
+    if (options.windivert && options.command.empty() && !options.windivert_existing) {
         std::wcerr << L"--windivert requires an application command after --.\n";
+        return false;
+    }
+    if (options.windivert_existing && !options.windivert) {
+        std::wcerr << L"--windivert-existing requires --windivert.\n";
         return false;
     }
     if (!options.windivert_processes.empty() && !options.windivert) {
@@ -581,6 +609,27 @@ std::optional<std::filesystem::path> FindChromiumBrowser(const Options& options)
     for (const auto& candidate : candidates) {
         if (std::filesystem::is_regular_file(candidate)) {
             return candidate;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> FindSpecificChromiumBrowser(const Options& options,
+                                                                 bool edge) {
+    if (!options.browser_path.empty()) {
+        const std::filesystem::path configured(options.browser_path);
+        return std::filesystem::is_regular_file(configured)
+            ? std::optional<std::filesystem::path>(configured)
+            : std::nullopt;
+    }
+    const wchar_t* relative = edge ? L"Microsoft/Edge/Application/msedge.exe"
+                                   : L"Google/Chrome/Application/chrome.exe";
+    for (const wchar_t* variable : {L"ProgramFiles(x86)", L"ProgramFiles", L"LOCALAPPDATA"}) {
+        if (const auto root = EnvironmentValue(variable)) {
+            const std::filesystem::path candidate = std::filesystem::path(*root) / relative;
+            if (std::filesystem::is_regular_file(candidate)) {
+                return candidate;
+            }
         }
     }
     return std::nullopt;
@@ -1892,16 +1941,18 @@ int LaunchWinDivertApplication(const Options& options) {
     std::wcerr << L"--windivert is available only in the x64 package.\n";
     return 3;
 #else
-    if (options.command.empty()) {
+    if (options.command.empty() && !options.windivert_existing) {
         return 2;
     }
-    std::error_code path_error;
-    const std::filesystem::path executable =
-        std::filesystem::absolute(options.command.front(), path_error);
-    if (path_error || !std::filesystem::is_regular_file(executable)) {
-        std::wcerr << L"The WinDivert target executable was not found: "
-                   << options.command.front() << L".\n";
-        return 3;
+    std::filesystem::path executable;
+    if (!options.windivert_existing) {
+        std::error_code path_error;
+        executable = std::filesystem::absolute(options.command.front(), path_error);
+        if (path_error || !std::filesystem::is_regular_file(executable)) {
+            std::wcerr << L"The WinDivert target executable was not found: "
+                       << options.command.front() << L".\n";
+            return 3;
+        }
     }
     std::wstring proxy_host;
     if (!easy_net::browser::ParseLiteralSocksEndpoint(options.proxy, proxy_host)) {
@@ -1932,6 +1983,10 @@ int LaunchWinDivertApplication(const Options& options) {
                        << L".\n";
             return 5;
         }
+        if (options.windivert_existing) {
+            std::wcout << L"Shared WinDivert rules are active for the running application.\n";
+            return 0;
+        }
 
         std::vector<std::wstring> target_command = options.command;
         target_command.front() = executable.wstring();
@@ -1961,6 +2016,11 @@ int LaunchWinDivertApplication(const Options& options) {
         GetExitCodeProcess(target.hProcess, &target_exit);
         CloseHandle(target.hProcess);
         return static_cast<int>(target_exit);
+    }
+
+    if (options.windivert_existing) {
+        std::wcerr << L"--windivert-existing requires a Lite-managed shared profile.\n";
+        return 4;
     }
 
     if (!IsProcessElevated()) {
@@ -2698,6 +2758,77 @@ int LaunchChatGptWeb(const Options& options) {
     return static_cast<int>(exit_code);
 }
 
+int LaunchChromiumBrowser(const Options& options, bool edge) {
+    if (!options.username.empty() || !options.password.empty()) {
+        std::wcerr << L"Chromium does not support SOCKS5 username/password authentication.\n";
+        return 2;
+    }
+    std::wstring proxy_host;
+    if (!easy_net::browser::ParseLiteralSocksEndpoint(options.proxy, proxy_host)) {
+        std::wcerr << L"The browser mode requires a literal SOCKS5 address such as 127.0.0.1:1080.\n";
+        return 2;
+    }
+    const auto browser = FindSpecificChromiumBrowser(options, edge);
+    if (!browser) {
+        std::wcerr << (edge ? L"Microsoft Edge" : L"Google Chrome")
+                   << L" was not found. Use --browser-path PATH.\n";
+        return 3;
+    }
+    std::vector<std::wstring> command{browser->wstring()};
+    if (options.browser_isolated) {
+        const auto local_app_data = EnvironmentValue(L"LOCALAPPDATA");
+        if (!local_app_data) {
+            std::wcerr << L"LOCALAPPDATA is unavailable; cannot create the browser profile.\n";
+            return 3;
+        }
+        const std::filesystem::path profile =
+            std::filesystem::path(*local_app_data) / L"EasyNetHook" /
+            (edge ? L"EdgeProfile" : L"ChromeProfile") /
+            easy_net::browser::ProfileKey(options.proxy);
+        std::error_code directory_error;
+        std::filesystem::create_directories(profile, directory_error);
+        if (directory_error) {
+            std::wcerr << L"Cannot create the isolated browser profile.\n";
+            return 3;
+        }
+        command.push_back(L"--user-data-dir=" + profile.wstring());
+    }
+    const auto proxy_arguments = easy_net::browser::NativeSocksArguments(options.proxy, proxy_host);
+    command.insert(command.end(), proxy_arguments.begin(), proxy_arguments.end());
+    command.insert(command.end(), {L"--new-window", L"--no-first-run",
+                                   L"--no-default-browser-check"});
+    if (options.command.empty()) {
+        command.push_back(L"about:blank");
+    } else {
+        command.insert(command.end(), options.command.begin(), options.command.end());
+    }
+    std::wstring command_line = BuildCommandLine(command);
+    std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
+    mutable_command.push_back(L'\0');
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(browser->c_str(), mutable_command.data(), nullptr, nullptr, FALSE,
+                        CREATE_DEFAULT_ERROR_MODE, nullptr, browser->parent_path().c_str(),
+                        &startup, &process)) {
+        std::wcerr << L"Cannot start the browser (error " << GetLastError() << L").\n";
+        return 5;
+    }
+    CloseHandle(process.hThread);
+    std::wcout << L"Opened " << (edge ? L"Microsoft Edge" : L"Google Chrome")
+               << L" through native SOCKS5 " << options.proxy << L" (PID "
+               << process.dwProcessId << L").\n";
+    if (options.detach) {
+        CloseHandle(process.hProcess);
+        return 0;
+    }
+    WaitForSingleObject(process.hProcess, INFINITE);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(process.hProcess, &exit_code);
+    CloseHandle(process.hProcess);
+    return static_cast<int>(exit_code);
+}
+
 bool SameArchitecture(HANDLE process, std::wstring& error) {
     using IsWow64Process2Fn = BOOL(WINAPI*)(HANDLE, USHORT*, USHORT*);
     const auto is_wow64_process2 = reinterpret_cast<IsWow64Process2Fn>(
@@ -3362,6 +3493,12 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (options.chatgpt_web) {
         return LaunchChatGptWeb(options);
+    }
+    if (options.chrome) {
+        return LaunchChromiumBrowser(options, false);
+    }
+    if (options.edge) {
+        return LaunchChromiumBrowser(options, true);
     }
     if (options.chatgpt_app) {
         return LaunchChatGptApp(options);

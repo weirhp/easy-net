@@ -130,7 +130,7 @@ func TestShareExportImportRoundTripAvoidsPortConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile := model.Profile{ID: "source", Name: "shared ws", Type: model.ProxyTypeWebSocket, ListenHost: "127.0.0.1", ListenPort: 1080, AutoStart: true, BypassPrivate: true, WebSocket: &model.WebSocketConfig{URL: "wss://example.com"}}
+	profile := model.Profile{ID: "source", Name: "shared ws", Type: model.ProxyTypeWebSocket, ListenHost: "127.0.0.1", ListenPort: 1080, AutoStart: true, BypassPrivate: true, BypassChina: true, WebSocket: &model.WebSocketConfig{URL: "wss://example.com"}}
 	if err := svc.Upsert(profile, SecretValues{WebSocketSecret: "shared-secret"}); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestShareExportImportRoundTripAvoidsPortConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	imported, ok := svc.Profile(importedID)
-	if !ok || imported.ListenPort != 1081 || imported.AutoStart || !imported.BypassPrivate {
+	if !ok || imported.ListenPort != 1081 || imported.AutoStart || !imported.BypassPrivate || !imported.BypassChina {
 		t.Fatalf("unexpected imported profile: %#v", imported)
 	}
 	if secrets.values[importedID+"/websocket"] != "shared-secret" {
@@ -177,7 +177,7 @@ func TestImportOrReuseShareUpdatesExistingEndpoint(t *testing.T) {
 		t.Fatal("original profile is missing")
 	}
 	reused, err := svc.ImportOrReuseShare(sharecode.Payload{
-		Version: sharecode.CurrentVersion, Name: "新名称", Type: model.ProxyTypeWebSocket, PreferredPort: 1090, BypassPrivate: true,
+		Version: sharecode.CurrentVersion, Name: "新名称", Type: model.ProxyTypeWebSocket, PreferredPort: 1090, BypassPrivate: true, BypassChina: true,
 		WebSocket: &sharecode.WebSocketConfig{URL: "wss://example.com/tunnel", Secret: "new-secret", LegacyQueryAuth: true},
 	})
 	if err != nil {
@@ -190,7 +190,7 @@ func TestImportOrReuseShareUpdatesExistingEndpoint(t *testing.T) {
 		t.Fatalf("reuse created an extra profile: %#v", svc.States())
 	}
 	profile, ok := svc.Profile(first)
-	if !ok || profile.ListenPort != original.ListenPort || profile.Name != "原配置" || !profile.BypassPrivate ||
+	if !ok || profile.ListenPort != original.ListenPort || profile.Name != "原配置" || !profile.BypassPrivate || !profile.BypassChina ||
 		profile.WebSocket == nil || !profile.WebSocket.LegacyQueryAuth {
 		t.Fatalf("unexpected reused profile: %#v", profile)
 	}

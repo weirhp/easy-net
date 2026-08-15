@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"unicode/utf16"
@@ -112,6 +113,65 @@ func (windowsRunner) IsRunning(entry model.LaunchEntry) (bool, error) {
 	}
 }
 
+func (windowsRunner) Processes() ([]ProcessInfo, error) {
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil, fmt.Errorf("读取运行进程：%w", err)
+	}
+	defer windows.CloseHandle(snapshot)
+	var process windows.ProcessEntry32
+	process.Size = uint32(unsafe.Sizeof(process))
+	if err := windows.Process32First(snapshot, &process); err != nil {
+		return nil, fmt.Errorf("读取运行进程：%w", err)
+	}
+	items := make([]ProcessInfo, 0, 64)
+	seen := make(map[string]struct{})
+	internalNames := map[string]struct{}{
+		"easy-net-lite.exe": {}, "easy-net-hook.exe": {},
+		"easy-net-windivert.exe": {}, "sing-box.exe": {},
+	}
+	for {
+		name := windows.UTF16ToString(process.ExeFile[:])
+		path := queryProcessPath(process.ProcessID)
+		lowerName := strings.ToLower(name)
+		_, internal := internalNames[lowerName]
+		if path != "" && strings.HasSuffix(lowerName, ".exe") && !internal {
+			key := strings.ToLower(path)
+			if _, exists := seen[key]; !exists {
+				seen[key] = struct{}{}
+				items = append(items, ProcessInfo{PID: process.ProcessID, Name: name, Path: path})
+			}
+		}
+		if err := windows.Process32Next(snapshot, &process); err != nil {
+			if err == windows.ERROR_NO_MORE_FILES {
+				break
+			}
+			return nil, fmt.Errorf("读取运行进程：%w", err)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if !strings.EqualFold(items[i].Name, items[j].Name) {
+			return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+		}
+		return items[i].PID < items[j].PID
+	})
+	return items, nil
+}
+
+func queryProcessPath(pid uint32) string {
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return ""
+	}
+	defer windows.CloseHandle(process)
+	buffer := make([]uint16, 32768)
+	size := uint32(len(buffer))
+	if err := windows.QueryFullProcessImageName(process, 0, &buffer[0], &size); err != nil || size == 0 {
+		return ""
+	}
+	return windows.UTF16ToString(buffer[:size])
+}
+
 func launchProcessNames(entry model.LaunchEntry) []string {
 	if entry.Path != "" {
 		return []string{filepath.Base(entry.Path)}
@@ -123,6 +183,10 @@ func launchProcessNames(entry model.LaunchEntry) []string {
 		return []string{"Antigravity IDE.exe"}
 	case model.LaunchModeCursor:
 		return []string{"Cursor.exe"}
+	case model.LaunchModeChrome:
+		return []string{"chrome.exe"}
+	case model.LaunchModeEdge:
+		return []string{"msedge.exe"}
 	case model.LaunchModeWeChat, model.LaunchModeWeChatWinDivert:
 		return []string{"Weixin.exe", "WeChat.exe", "xwechat.exe"}
 	default:

@@ -116,3 +116,57 @@ func TestHookArgsGenericWinDivert(t *testing.T) {
 		t.Fatalf("got %#v want %#v", args, want)
 	}
 }
+
+func TestHookArgsChromeIsolated(t *testing.T) {
+	args, err := HookArgs(model.LaunchEntry{
+		ID: "6", Name: "Chrome", Mode: model.LaunchModeChrome, ProfileID: "p",
+		Path: `C:\Program Files\Google\Chrome\Application\chrome.exe`, Isolated: true,
+		Arguments: `https://example.com`,
+	}, "127.0.0.1:1082")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"--proxy", "127.0.0.1:1082", "--detach", "--gui-worker", "--chrome",
+		"--browser-path", `C:\Program Files\Google\Chrome\Application\chrome.exe`,
+		"--browser-isolated", "--", "https://example.com",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("got %#v want %#v", args, want)
+	}
+}
+
+func TestHookArgsAttachRunningEdge(t *testing.T) {
+	args, err := HookArgs(model.LaunchEntry{
+		ID: "7", Name: "Edge", Mode: model.LaunchModeEdge, ProfileID: "p",
+		AttachExisting: true, UDPMode: "block", ProcessNames: "edge-helper.exe",
+	}, "127.0.0.1:1082")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"--proxy", "127.0.0.1:1082", "--detach", "--gui-worker", "--windivert",
+		"--windivert-existing", "--tun-udp", "block",
+		"--windivert-processes", "msedge.exe;edge-helper.exe",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("got %#v want %#v", args, want)
+	}
+}
+
+func TestHookArgsAttachRunningGenericWinDivert(t *testing.T) {
+	args, err := HookArgs(model.LaunchEntry{
+		ID: "8", Name: "Running App", Mode: model.LaunchModeWinDivert, Proxy: "127.0.0.1:10808",
+		Path: `D:\App\app.exe`, AttachExisting: true, UDPMode: "proxy", ProcessNames: "app.exe",
+	}, "127.0.0.1:10808")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"--proxy", "127.0.0.1:10808", "--detach", "--gui-worker", "--windivert",
+		"--tun-udp", "proxy", "--windivert-existing", "--windivert-processes", "app.exe",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("got %#v want %#v", args, want)
+	}
+}

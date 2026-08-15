@@ -82,6 +82,7 @@ type profileInput struct {
 	ListenPort    int             `json:"listenPort"`
 	AutoStart     bool            `json:"autoStart"`
 	BypassPrivate bool            `json:"bypassPrivate"`
+	BypassChina   bool            `json:"bypassChina"`
 	WebSocket     *webSocketInput `json:"websocket"`
 	SSH           *sshInput       `json:"ssh"`
 }
@@ -117,6 +118,7 @@ type publicProfile struct {
 	ListenPort    int              `json:"listenPort"`
 	AutoStart     bool             `json:"autoStart"`
 	BypassPrivate bool             `json:"bypassPrivate"`
+	BypassChina   bool             `json:"bypassChina"`
 	WebSocket     *publicWebSocket `json:"websocket,omitempty"`
 	SSH           *publicSSH       `json:"ssh,omitempty"`
 }
@@ -173,6 +175,7 @@ func NewWithOptions(svc *service.Service, onQuit func(), options Options) (*Serv
 	mux.HandleFunc("/api/profiles/", s.handleProfileAction)
 	mux.HandleFunc("/api/launches", s.handleLaunches)
 	mux.HandleFunc("/api/launches/", s.handleLaunchAction)
+	mux.HandleFunc("/api/processes", s.handleProcesses)
 	mux.HandleFunc("/api/export", s.handleExport)
 	mux.HandleFunc("/api/import", s.handleImport)
 	mux.HandleFunc("/api/start-all", s.handleStartAll)
@@ -471,6 +474,26 @@ func (s *Server) handleLaunches(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleProcesses(w http.ResponseWriter, r *http.Request) {
+	if s.launches == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	processes, err := s.launches.Processes()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if processes == nil {
+		processes = []launch.ProcessInfo{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"processes": processes})
+}
+
 func (s *Server) handleLaunchAction(w http.ResponseWriter, r *http.Request) {
 	if s.launches == nil {
 		http.NotFound(w, r)
@@ -525,6 +548,13 @@ func (s *Server) handleLaunchAction(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
 					"error": err.Error(), "code": "proxy_unavailable",
 					"profileName": unavailable.ProfileName, "address": unavailable.Address,
+				})
+				return
+			}
+			var notRunning *launch.ApplicationNotRunningError
+			if errors.As(err, &notRunning) {
+				writeJSON(w, http.StatusConflict, map[string]string{
+					"error": err.Error(), "code": "application_not_running", "name": notRunning.Entry.Name,
 				})
 				return
 			}
@@ -917,7 +947,7 @@ func probeApplicationServerAt(baseURL, expectedApplication string, allowLegacy b
 }
 
 func (p profileInput) modelProfile() model.Profile {
-	profile := model.Profile{ID: p.ID, Name: p.Name, Type: p.Type, ListenHost: p.ListenHost, ListenPort: p.ListenPort, AutoStart: p.AutoStart, BypassPrivate: p.BypassPrivate}
+	profile := model.Profile{ID: p.ID, Name: p.Name, Type: p.Type, ListenHost: p.ListenHost, ListenPort: p.ListenPort, AutoStart: p.AutoStart, BypassPrivate: p.BypassPrivate, BypassChina: p.BypassChina}
 	if p.WebSocket != nil {
 		profile.WebSocket = &model.WebSocketConfig{URL: p.WebSocket.URL, AllowInsecure: p.WebSocket.AllowInsecure, LegacyQueryAuth: p.WebSocket.LegacyQueryAuth}
 	}
@@ -929,7 +959,7 @@ func (p profileInput) modelProfile() model.Profile {
 
 func toProfileView(state service.ProfileState) profileView {
 	profile := state.Profile
-	view := publicProfile{ID: profile.ID, Name: profile.Name, Type: profile.Type, ListenHost: profile.ListenHost, ListenPort: profile.ListenPort, AutoStart: profile.AutoStart, BypassPrivate: profile.BypassPrivate}
+	view := publicProfile{ID: profile.ID, Name: profile.Name, Type: profile.Type, ListenHost: profile.ListenHost, ListenPort: profile.ListenPort, AutoStart: profile.AutoStart, BypassPrivate: profile.BypassPrivate, BypassChina: profile.BypassChina}
 	if profile.WebSocket != nil {
 		view.WebSocket = &publicWebSocket{URL: profile.WebSocket.URL, HasSecret: profile.WebSocket.SecretRef != "", AllowInsecure: profile.WebSocket.AllowInsecure, LegacyQueryAuth: profile.WebSocket.LegacyQueryAuth}
 	}

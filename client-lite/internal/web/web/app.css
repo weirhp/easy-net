@@ -145,6 +145,7 @@ dialog::backdrop { background: rgba(28,24,43,.5); backdrop-filter: blur(3px); }
 .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--primary); background: white; }
 .field small { color: var(--muted); font-size: 11px; font-weight: 450; line-height: 1.45; }
 .inline-fields { display: grid; grid-template-columns: minmax(140px,.75fr) minmax(180px,1fr); align-items: end; gap: 14px; }
+.input-action { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; }
 .check-field { min-height: 40px; display: flex; align-items: center; gap: 8px; color: #444a5a; font-size: 12px; font-weight: 620; }
 .check-field input { width: 17px; height: 17px; flex: 0 0 auto; accent-color: var(--primary); }
 .full-span { grid-column: 1 / -1; }
@@ -193,7 +194,7 @@ dialog::backdrop { background: rgba(28,24,43,.5); backdrop-filter: blur(3px); }
   .card-main { padding: 16px; }
   .card-content { padding-right: 32px; }
   .card-actions .button { flex: 0 1 auto; }
-  .form-grid, .inline-fields { grid-template-columns: 1fr; }
+  .form-grid, .inline-fields, .input-action { grid-template-columns: 1fr; }
   .field.full, .check-field.full { grid-column: auto; }
   .dialog-header, .dialog-body, .dialog-actions { padding-left: 18px; padding-right: 18px; }
   .dialog-actions { flex-wrap: wrap; justify-content: flex-end; }

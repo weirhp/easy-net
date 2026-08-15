@@ -3,6 +3,7 @@
 const appState = {
   profiles: [],
   launches: [],
+  runningProcesses: [],
   features: { appLaunches: false },
   tab: location.hash === "#apps" ? "apps" : "proxies",
   token: "",
@@ -186,6 +187,7 @@ function renderProfiles() {
             <span class="status ${statusClass}">${statusText}</span>
             ${profile.autoStart ? `<span class="badge neutral">自动启动</span>` : ""}
             ${profile.bypassPrivate ? `<span class="badge neutral">局域网直连</span>` : ""}
+            ${profile.bypassChina ? `<span class="badge neutral">国内直连</span>` : ""}
           </div>
           <p class="endpoint">${localCapabilities} ${escapeHTML(profile.listenHost)}:${profile.listenPort} · ${escapeHTML(endpoint)}</p>
 		  <div class="connection-row">${connectionStatus}</div>
@@ -256,6 +258,8 @@ function launchModeLabel(mode) {
     chatgpt: "ChatGPT",
     antigravity: "Antigravity IDE",
     cursor: "Cursor",
+    chrome: "Google Chrome",
+    edge: "Microsoft Edge",
     wechat: "微信 TUN",
     "wechat-windivert": "微信 WinDivert",
     hook: "通用 Hook",
@@ -293,7 +297,7 @@ function renderLaunches() {
           <p class="endpoint">${escapeHTML(profileText)}${entry.path ? ` · ${escapeHTML(entry.path)}` : ""}</p>
         </div>
         <div class="card-actions">
-          <button class="button start" data-launch-action="start" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("play")}启动</button>
+          <button class="button start" data-launch-action="start" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon(entry.attachExisting ? "target" : "play")}${entry.attachExisting ? "接管" : "启动"}</button>
           <button class="button secondary" data-launch-action="shortcut" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("shortcut")}桌面快捷方式</button>
           <button class="button secondary" data-launch-action="edit" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("edit")}编辑</button>
         </div>
@@ -318,35 +322,44 @@ function syncLaunchFields() {
   const mode = $("#launch-mode").value;
   const wechat = mode === "wechat" || mode === "wechat-windivert";
   const windivert = mode === "windivert";
-  const existing = wechat && $("#launch-wechat-existing").checked;
-  $("#launch-path-row").hidden = mode === "chatgpt" || existing;
+  const browser = mode === "chrome" || mode === "edge";
+  const supportsAttach = windivert || browser;
+  const attachExisting = supportsAttach && $("#launch-attach-existing").checked;
+  const existing = wechat && $("#launch-wechat-existing").checked || attachExisting;
+  $("#launch-path-row").hidden = mode === "chatgpt" || existing && !windivert;
   $("#launch-args-row").hidden = mode === "chatgpt" || existing;
-  $("#launch-isolated-row").hidden = mode !== "antigravity" && mode !== "cursor";
+  $("#launch-isolated-row").hidden = attachExisting || mode !== "antigravity" && mode !== "cursor" && !browser;
+  $("#launch-isolated-row span").textContent = browser ? "使用独立代理配置目录（推荐，不影响日常浏览器）" : "使用隔离配置（不影响日常登录状态）";
+  $("#launch-attach-existing-row").hidden = !supportsAttach;
+  $("#launch-running-process-row").hidden = !windivert || !attachExisting;
   $("#launch-wechat-existing-row").hidden = !wechat;
-  $("#launch-udp-row").hidden = !wechat && !windivert;
-  $("#launch-dns-row").hidden = mode === "chatgpt" || windivert;
+  $("#launch-udp-row").hidden = !wechat && !windivert && !attachExisting;
+  $("#launch-dns-row").hidden = mode === "chatgpt" || windivert || attachExisting;
   $("#launch-processes-row").hidden = !windivert;
   $("#launch-path-label").textContent = mode === "hook" || windivert ? "程序路径" : "程序路径（可留空自动查找）";
-  $("#launch-path").required = (mode === "hook" || windivert) && !existing;
+  $("#launch-path").required = mode === "hook" || windivert;
   const manualProxy = $("#launch-profile").value === "__manual__";
   $("#launch-proxy-row").hidden = !manualProxy;
   $("#launch-proxy").required = manualProxy;
   const notes = {
     hook: "通用 Hook 通过 DLL 注入代理 TCP；目标程序必须与 Hook 架构一致，UDP 不会走 SOCKS5。",
-    windivert: "通用 WinDivert 支持 TCP+UDP，需要 x64-TUN 完整包和管理员授权。Lite 会把所有通用 WinDivert 应用合并到一套共享引擎中；规则会影响所有同名进程，代理断开时默认阻断匹配流量。"
+    windivert: attachExisting ? "保存后点击“接管”，Lite 会把所选进程加入共享 WinDivert 规则。只影响新建连接，不会重新启动或关闭原程序。" : "通用 WinDivert 支持 TCP+UDP，需要 x64-TUN 完整包和管理员授权。Lite 会把所有通用 WinDivert 应用合并到一套共享引擎中；规则会影响所有同名进程，代理断开时默认阻断匹配流量。",
+    chrome: attachExisting ? "接管已运行的 Chrome：使用共享 WinDivert，只影响新建连接；所有 chrome.exe 窗口都会匹配。" : "使用 Chromium 原生 SOCKS5 启动 Chrome。推荐使用独立配置目录，避免已有 Chrome 进程忽略代理参数。",
+    edge: attachExisting ? "接管已运行的 Edge：使用共享 WinDivert，只影响新建连接；所有 msedge.exe 窗口都会匹配。" : "使用 Chromium 原生 SOCKS5 启动 Edge。推荐使用独立配置目录，避免已有 Edge 进程忽略代理参数。"
   };
   $("#launch-mode-note").textContent = notes[mode] || "启动由 Easy-Net Hook 在后台完成。请把 easy-net-hook.exe 和 Lite 放在同一目录。";
   if (!wechat) $("#launch-wechat-existing").checked = false;
+  if (!supportsAttach) $("#launch-attach-existing").checked = false;
 }
 
-function openLaunchDialog(id = "") {
+async function openLaunchDialog(id = "", attachRunning = false) {
   const entry = id ? appState.launches.find((item) => item.id === id) : null;
   appState.editingLaunchId = id;
   launchFormElement.reset();
   $("#launch-error").hidden = true;
   $("#launch-dialog-title").textContent = id ? "编辑被代理应用" : "添加被代理应用";
   $("#launch-name").value = entry?.name || "";
-  $("#launch-mode").value = entry?.mode || "chatgpt";
+  $("#launch-mode").value = entry?.mode || (attachRunning ? "windivert" : "chatgpt");
   $("#launch-path").value = entry?.path || "";
   $("#launch-args").value = entry?.arguments || "";
   $("#launch-udp").value = entry?.udpMode || "auto";
@@ -354,11 +367,47 @@ function openLaunchDialog(id = "") {
   $("#launch-processes").value = entry?.processNames || "";
   $("#launch-isolated").checked = Boolean(entry?.isolated);
   $("#launch-wechat-existing").checked = Boolean(entry?.wechatExisting);
+  $("#launch-attach-existing").checked = Boolean(entry?.attachExisting || attachRunning);
+  if (!entry && !attachRunning && ["chrome", "edge"].includes($("#launch-mode").value)) $("#launch-isolated").checked = true;
   fillLaunchProfiles(entry?.proxy ? "__manual__" : entry?.profileId || appState.profiles[0]?.profile?.id || "__manual__");
   $("#launch-proxy").value = entry?.proxy || "";
   syncLaunchFields();
   launchDialogElement.showModal();
-  $("#launch-name").focus();
+  if (attachRunning || entry?.attachExisting) {
+    await loadRunningProcesses(entry?.path || "");
+    $("#launch-running-process").focus();
+  } else {
+    $("#launch-name").focus();
+  }
+}
+
+async function loadRunningProcesses(selectedPath = "") {
+  const select = $("#launch-running-process");
+  const refresh = $("#refresh-running-processes");
+  refresh.disabled = true;
+  select.innerHTML = `<option value="">正在读取运行进程…</option>`;
+  try {
+    const data = await api("/api/processes");
+    appState.runningProcesses = data.processes || [];
+    select.innerHTML = `<option value="">请选择程序</option>` + appState.runningProcesses.map((process, index) =>
+      `<option value="${index}" ${selectedPath && process.path.toLowerCase() === selectedPath.toLowerCase() ? "selected" : ""}>${escapeHTML(process.name)} · PID ${process.pid}</option>`
+    ).join("");
+    if (select.value) applyRunningProcess();
+  } catch (error) {
+    select.innerHTML = `<option value="">读取失败：${escapeHTML(error.message)}</option>`;
+  } finally {
+    refresh.disabled = false;
+  }
+}
+
+function applyRunningProcess() {
+	if (!$("#launch-running-process").value) return;
+  const index = Number($("#launch-running-process").value);
+  const process = appState.runningProcesses[index];
+  if (!process) return;
+  $("#launch-path").value = process.path;
+  $("#launch-processes").value = process.name;
+  if (!$("#launch-name").value.trim()) $("#launch-name").value = process.name.replace(/\.exe$/i, "");
 }
 
 function closeLaunchDialog() {
@@ -391,7 +440,8 @@ async function saveLaunch(event) {
         wechatExisting: !$("#launch-wechat-existing-row").hidden && $("#launch-wechat-existing").checked,
         udpMode: $("#launch-udp-row").hidden ? "" : $("#launch-udp").value,
         dns: $("#launch-dns-row").hidden ? "" : $("#launch-dns").value.trim(),
-        processNames: $("#launch-processes-row").hidden ? "" : $("#launch-processes").value.trim()
+        processNames: $("#launch-processes-row").hidden ? "" : $("#launch-processes").value.trim(),
+        attachExisting: !$("#launch-attach-existing-row").hidden && $("#launch-attach-existing").checked
       })
     });
     closeLaunchDialog();
@@ -460,6 +510,13 @@ async function launchAction(action, id) {
         message: error.message,
         details: "请先在“网络代理”中检查或启动该代理，确认连接正常后再试。"
       });
+    } else if (action === "start" && error.data?.code === "application_not_running") {
+      await showAlertModal({
+        kind: "接管失败",
+        title: "没有找到正在运行的程序",
+        message: error.message,
+        details: "请先启动目标程序，或编辑入口后重新选择当前运行的进程。"
+      });
     } else {
       showToast(error.message, true);
     }
@@ -488,6 +545,7 @@ function openProfileDialog(kind, id = "") {
   $("#field-local-port").value = profile?.listenPort || nextPort();
   $("#field-auto-start").checked = profile ? profile.autoStart : true;
   $("#field-bypass-private").checked = profile ? Boolean(profile.bypassPrivate) : true;
+  $("#field-bypass-china").checked = profile ? Boolean(profile.bypassChina) : false;
   if (kind === "websocket") {
     $("#field-ws-url").value = profile?.websocket?.url || "";
 	$("#field-ws-secret").placeholder = id ? "已保存；如需更换请重新输入" : "请输入连接密钥";
@@ -573,6 +631,7 @@ async function profileRequestFromForm() {
     listenPort: Number($("#field-local-port").value),
     autoStart: $("#field-auto-start").checked,
     bypassPrivate: $("#field-bypass-private").checked,
+    bypassChina: $("#field-bypass-china").checked,
     websocket: null,
     ssh: null
   };
@@ -862,6 +921,8 @@ document.addEventListener("click", (event) => {
   if (tabButton) { setTab(tabButton.dataset.tab); return; }
   const addLaunchButton = event.target.closest("[data-add-launch]");
   if (addLaunchButton) { openLaunchDialog(); return; }
+  const attachLaunchButton = event.target.closest("[data-attach-launch]");
+  if (attachLaunchButton) { openLaunchDialog("", true); return; }
   const launchButton = event.target.closest("[data-launch-action]");
   if (launchButton) { launchAction(launchButton.dataset.launchAction, launchButton.dataset.id); return; }
   const importButton = event.target.closest("[data-import]");
@@ -902,9 +963,20 @@ $("#paste-share-code").addEventListener("click", pasteShareCode);
 importFormElement.addEventListener("submit", importProfile);
 formElement.addEventListener("submit", saveProfile);
 launchFormElement.addEventListener("submit", saveLaunch);
-$("#launch-mode").addEventListener("change", syncLaunchFields);
+$("#launch-mode").addEventListener("change", () => {
+  if (!appState.editingLaunchId && ["chrome", "edge"].includes($("#launch-mode").value)) {
+    $("#launch-isolated").checked = true;
+  }
+  syncLaunchFields();
+});
 $("#launch-profile").addEventListener("change", syncLaunchFields);
 $("#launch-wechat-existing").addEventListener("change", syncLaunchFields);
+$("#launch-attach-existing").addEventListener("change", async () => {
+  syncLaunchFields();
+  if (!$("#launch-running-process-row").hidden) await loadRunningProcesses($("#launch-path").value);
+});
+$("#launch-running-process").addEventListener("change", applyRunningProcess);
+$("#refresh-running-processes").addEventListener("click", () => loadRunningProcesses($("#launch-path").value));
 $("#close-launch-dialog").addEventListener("click", closeLaunchDialog);
 $("#cancel-launch-dialog").addEventListener("click", closeLaunchDialog);
 launchDialogElement.addEventListener("click", (event) => { if (event.target === launchDialogElement) closeLaunchDialog(); });

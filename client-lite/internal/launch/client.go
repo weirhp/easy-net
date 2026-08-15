@@ -61,11 +61,14 @@ func StartOnExisting(baseURL, id string) error {
 		}
 		_ = json.Unmarshal(body, &payload)
 		if payload.Error != "" {
+			title := "启动失败"
 			if payload.Code == "proxy_unavailable" {
-				ShowLaunchError("代理不可用", payload.Error)
-				return nil
+				title = "代理不可用"
+			} else if payload.Code == "application_not_running" {
+				title = "接管失败"
 			}
-			return fmt.Errorf("%s", payload.Error)
+			ShowLaunchError(title, payload.Error)
+			return nil
 		}
 		return fmt.Errorf("启动应用失败（%d）", response.StatusCode)
 	}

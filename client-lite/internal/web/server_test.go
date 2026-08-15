@@ -653,8 +653,9 @@ func (r *recordingHookRunner) IsRunning(model.LaunchEntry) (bool, error) {
 	defer r.mu.Unlock()
 	return r.running, nil
 }
-func (r *recordingHookRunner) CheckProxy(string) error     { return nil }
-func (r *recordingHookRunner) Executable() (string, error) { return "easy-net-hook.exe", nil }
+func (r *recordingHookRunner) CheckProxy(string) error                  { return nil }
+func (r *recordingHookRunner) Processes() ([]launch.ProcessInfo, error) { return nil, nil }
+func (r *recordingHookRunner) Executable() (string, error)              { return "easy-net-hook.exe", nil }
 func (r *recordingHookRunner) CreateShortcut(options launch.ShortcutOptions) (string, error) {
 	return `C:\Users\test\Desktop\` + options.Name + `.lnk`, nil
 }

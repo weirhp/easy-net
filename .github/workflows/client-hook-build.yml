@@ -50,9 +50,16 @@ jobs:
             Tee-Object -FilePath client-hook/build-output.log
           $buildExitCode = $LASTEXITCODE
           if ($buildExitCode -ne 0) {
-            $diagnostics = ($buildOutput | Select-Object -Last 60 | ForEach-Object { "$_" }) -join "`n"
+            $buildOutput |
+              Where-Object { "$_" -match '(?i)(error [A-Z]+[0-9]+|fatal error|cmake error|undefined reference|unresolved external)' } |
+              Select-Object -Last 20 |
+              ForEach-Object {
+                $detail = "$_".Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+                Write-Host "::error title=Build error::$detail"
+              }
+            $diagnostics = ($buildOutput | Select-Object -Last 15 | ForEach-Object { "$_" }) -join "`n"
             $message = $diagnostics.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-            Write-Host "::error title=Build output::$message"
+            Write-Host "::error title=Build tail::$message"
             exit $buildExitCode
           }
 

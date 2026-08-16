@@ -88,6 +88,10 @@ func (s *Service) writeSharedWinDivertProfile() (string, error) {
 			}
 			processOwners[key] = entry.ID
 		}
+		// A shortcut-launched application may also use the native Chromium or
+		// DLL Hook path. Its connection to the configured SOCKS5 server must
+		// bypass WinDivert, otherwise a non-loopback proxy can be proxied again.
+		profile.ProxyRules = append(profile.ProxyRules, newBridgeEndpointRule(processList, host, port, proxyID))
 		for _, target := range privateTargetRanges {
 			profile.ProxyRules = append(profile.ProxyRules, newBridgeRule(processList, target, "BOTH", "DIRECT", proxyID))
 		}
@@ -210,5 +214,12 @@ func newBridgeRule(processes, targets, protocol, action string, proxyID int) bri
 	return bridgeProxyRule{
 		ProcessName: processes, TargetHosts: targets, TargetPorts: "*", TargetDomain: "*",
 		Protocol: protocol, Action: action, Enabled: true, ProxyID: proxyID,
+	}
+}
+
+func newBridgeEndpointRule(processes, host, port string, proxyID int) bridgeProxyRule {
+	return bridgeProxyRule{
+		ProcessName: processes, TargetHosts: host, TargetPorts: port, TargetDomain: "*",
+		Protocol: "BOTH", Action: "DIRECT", Enabled: true, ProxyID: proxyID,
 	}
 }

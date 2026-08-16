@@ -255,8 +255,68 @@ func TestCreateShortcutPointsAtLiteLaunchEntry(t *testing.T) {
 	if !strings.HasPrefix(runner.shortcuts[0].Arguments, "--launch-entry ") {
 		t.Fatalf("shortcut should launch Lite entry: %#v", runner.shortcuts[0])
 	}
+	if !strings.Contains(runner.shortcuts[0].Arguments, " --launch-spec ") {
+		t.Fatalf("shortcut should contain a recovery snapshot: %#v", runner.shortcuts[0])
+	}
 	if runner.shortcuts[0].IconPath != "" || runner.shortcuts[0].UseChatGPTIcon {
 		t.Fatalf("unexpected Cursor shortcut icon options: %#v", runner.shortcuts[0])
+	}
+}
+
+func TestRestoreShortcutEntryUsesEmbeddedSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	launches, err := New(dir, testService(t, dir), &fakeRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := launches.Upsert(model.LaunchEntry{
+		Name: "Cursor", Mode: model.LaunchModeCursor, Proxy: "127.0.0.1:1082",
+		Path: `D:\Apps\Cursor.exe`, AttachExisting: true, UDPMode: "auto",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := encodeShortcutSpec(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := launches.Delete(original.ID); err != nil {
+		t.Fatal(err)
+	}
+	restored, wasRestored, err := launches.RestoreShortcutEntry(original.ID, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !wasRestored || restored.ID != original.ID || restored.Path != original.Path {
+		t.Fatalf("unexpected restored entry: restored=%#v wasRestored=%v", restored, wasRestored)
+	}
+}
+
+func TestRestoreShortcutEntryPrefersCurrentEntry(t *testing.T) {
+	dir := t.TempDir()
+	launches, err := New(dir, testService(t, dir), &fakeRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := launches.Upsert(model.LaunchEntry{
+		Name: "Cursor", Mode: model.LaunchModeCursor, Proxy: "127.0.0.1:1082",
+		Path: `D:\Apps\Cursor.exe`, AttachExisting: true, UDPMode: "auto",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallback := current
+	fallback.Proxy = "127.0.0.1:7890"
+	spec, err := encodeShortcutSpec(fallback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, wasRestored, err := launches.RestoreShortcutEntry(current.ID, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wasRestored || resolved.Proxy != current.Proxy {
+		t.Fatalf("current entry should win: resolved=%#v wasRestored=%v", resolved, wasRestored)
 	}
 }
 

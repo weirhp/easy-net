@@ -14,7 +14,7 @@ import (
 	"easy-net/client-lite/internal/service"
 )
 
-var ErrNotFound = fmt.Errorf("启动入口不存在")
+var ErrNotFound = fmt.Errorf("该快捷方式对应的应用配置已不存在，请在“应用代理管理”中重新添加应用并创建快捷方式")
 
 type StartOptions struct {
 	ConfirmRunning bool
@@ -160,6 +160,30 @@ func (s *Service) Get(id string) (model.LaunchEntry, bool) {
 		return model.LaunchEntry{}, false
 	}
 	return s.file.Entries[index].Clone(), true
+}
+
+// RestoreShortcutEntry restores the snapshot embedded in a desktop shortcut
+// only when its original entry no longer exists. Existing entries always win,
+// so later edits to proxy and routing settings remain effective.
+func (s *Service) RestoreShortcutEntry(id, spec string) (model.LaunchEntry, bool, error) {
+	if entry, ok := s.Get(id); ok {
+		return entry, false, nil
+	}
+	if strings.TrimSpace(spec) == "" {
+		return model.LaunchEntry{}, false, ErrNotFound
+	}
+	entry, err := decodeShortcutSpec(spec)
+	if err != nil {
+		return model.LaunchEntry{}, false, err
+	}
+	if entry.ID != id {
+		return model.LaunchEntry{}, false, fmt.Errorf("快捷方式备用配置与启动入口不匹配")
+	}
+	saved, err := s.Upsert(entry)
+	if err != nil {
+		return model.LaunchEntry{}, false, fmt.Errorf("恢复快捷方式应用配置：%w", err)
+	}
+	return saved, true, nil
 }
 
 func (s *Service) Processes() ([]ProcessInfo, error) {
@@ -332,6 +356,11 @@ func (s *Service) StartWithOptions(id string, options StartOptions) (View, error
 	if err := s.runner.CheckProxy(proxyAddress); err != nil {
 		return View{}, &ProxyUnavailableError{ProfileName: profileName, Address: proxyAddress, Cause: err}
 	}
+	if usesSharedWinDivert(entry) {
+		if err := s.applySharedRulesLocked(); err != nil {
+			return View{}, err
+		}
+	}
 	launchEntry.ProfileID = ""
 	launchEntry.Proxy = proxyAddress
 	args, err := HookArgs(launchEntry, proxyAddress)
@@ -359,6 +388,10 @@ func (s *Service) StartWithOptions(id string, options StartOptions) (View, error
 func (s *Service) ApplySharedRules() error {
 	s.startMu.Lock()
 	defer s.startMu.Unlock()
+	return s.applySharedRulesLocked()
+}
+
+func (s *Service) applySharedRulesLocked() error {
 	entries := s.List()
 	rules := make([]model.LaunchEntry, 0, len(entries))
 	for _, entry := range entries {
@@ -459,6 +492,10 @@ func (s *Service) CreateShortcut(id string) (string, error) {
 	if err := entry.ValidateForShortcut(); err != nil {
 		return "", err
 	}
+	spec, err := encodeShortcutSpec(entry)
+	if err != nil {
+		return "", err
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return "", fmt.Errorf("定位 Easy-Net Lite：%w", err)
@@ -466,7 +503,7 @@ func (s *Service) CreateShortcut(id string) (string, error) {
 	return s.runner.CreateShortcut(ShortcutOptions{
 		Name:             entry.Name,
 		Target:           self,
-		Arguments:        "--launch-entry " + entry.ID,
+		Arguments:        "--launch-entry " + entry.ID + " --launch-spec " + spec,
 		WorkingDirectory: filepath.Dir(self),
 		Description:      "通过 Easy-Net Lite 代理启动 " + entry.Name,
 		IconPath:         entry.Path,

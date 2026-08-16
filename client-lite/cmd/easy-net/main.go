@@ -23,7 +23,7 @@ import (
 )
 
 func main() {
-	launchID, openApps, background, showVersion := parseArgs(os.Args[1:])
+	launchID, launchSpec, openApps, background, showVersion := parseArgs(os.Args[1:])
 	if showVersion {
 		fmt.Printf("Easy-Net Lite %s\n", version.Value)
 		return
@@ -56,7 +56,7 @@ func main() {
 		var alreadyRunning *web.AlreadyRunningError
 		if errors.As(err, &alreadyRunning) {
 			if launchID != "" {
-				if startErr := launch.StartOnExisting(alreadyRunning.URL, launchID); startErr != nil {
+				if startErr := launch.StartOnExisting(alreadyRunning.URL, launchID, launchSpec); startErr != nil {
 					log.Printf("[Easy-Net Lite] 启动已保存的应用失败：%v", startErr)
 				}
 				return
@@ -84,6 +84,15 @@ func main() {
 	go svc.StartAuto()
 	if launchID != "" {
 		go func() {
+			_, restored, restoreErr := launches.RestoreShortcutEntry(launchID, launchSpec)
+			if restoreErr != nil {
+				launch.ShowLaunchError("快捷方式已失效", restoreErr.Error())
+				log.Printf("[Easy-Net Lite] 恢复快捷方式失败：%v", restoreErr)
+				return
+			}
+			if restored {
+				log.Printf("[Easy-Net Lite] 已从桌面快捷方式恢复应用配置 %s", launchID)
+			}
 			_, startErr := launches.Start(launchID)
 			var running *launch.AlreadyRunningError
 			if errors.As(startErr, &running) && launch.ConfirmRunningApplication(running.Entry.Name) {
@@ -103,6 +112,12 @@ func main() {
 				}
 				launch.ShowLaunchError(title, startErr.Error())
 				log.Printf("[Easy-Net Lite] 启动入口失败：%v", startErr)
+			}
+		}()
+	} else {
+		go func() {
+			if err := launches.ApplySharedRules(); err != nil {
+				log.Printf("[Easy-Net Lite] 恢复共享 WinDivert 接管失败：%v", err)
 			}
 		}()
 	}
@@ -131,7 +146,7 @@ func main() {
 	<-shutdownDone
 }
 
-func parseArgs(args []string) (launchID string, openApps bool, background bool, showVersion bool) {
+func parseArgs(args []string) (launchID string, launchSpec string, openApps bool, background bool, showVersion bool) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--version", "-version":
@@ -146,9 +161,15 @@ func parseArgs(args []string) (launchID string, openApps bool, background bool, 
 			}
 			launchID = strings.TrimSpace(args[i+1])
 			i++
+		case "--launch-spec":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				log.Fatal("--launch-spec 需要备用配置")
+			}
+			launchSpec = strings.TrimSpace(args[i+1])
+			i++
 		}
 	}
-	return launchID, openApps, background, showVersion
+	return launchID, launchSpec, openApps, background, showVersion
 }
 
 func configureLogging(configDir string) func() {

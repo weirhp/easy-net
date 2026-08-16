@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func StartOnExisting(baseURL, id string) error {
+func StartOnExisting(baseURL, id, shortcutSpec string) error {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	id = strings.TrimSpace(id)
 	if baseURL == "" || id == "" {
@@ -35,7 +35,7 @@ func StartOnExisting(baseURL, id string) error {
 	if err := json.NewDecoder(io.LimitReader(stateResponse.Body, 256*1024)).Decode(&state); err != nil || state.Token == "" {
 		return fmt.Errorf("读取已运行的 Easy-Net Lite 令牌失败")
 	}
-	response, body, err := postLaunch(client, baseURL, id, state.Token, false)
+	response, body, err := postLaunch(client, baseURL, id, state.Token, false, shortcutSpec)
 	if err != nil {
 		return fmt.Errorf("通知已运行的 Easy-Net Lite 启动应用：%w", err)
 	}
@@ -46,7 +46,7 @@ func StartOnExisting(baseURL, id string) error {
 		}
 		_ = json.Unmarshal(body, &payload)
 		if payload.Code == "application_already_running" && ConfirmRunningApplication(payload.Name) {
-			response, body, err = postLaunch(client, baseURL, id, state.Token, true)
+			response, body, err = postLaunch(client, baseURL, id, state.Token, true, shortcutSpec)
 			if err != nil {
 				return fmt.Errorf("通知已运行的 Easy-Net Lite 启动应用：%w", err)
 			}
@@ -77,8 +77,11 @@ func StartOnExisting(baseURL, id string) error {
 	return nil
 }
 
-func postLaunch(client *http.Client, baseURL, id, token string, confirmRunning bool) (*http.Response, []byte, error) {
-	payload, _ := json.Marshal(map[string]bool{"confirmRunning": confirmRunning})
+func postLaunch(client *http.Client, baseURL, id, token string, confirmRunning bool, shortcutSpec string) (*http.Response, []byte, error) {
+	payload, _ := json.Marshal(struct {
+		ConfirmRunning bool   `json:"confirmRunning"`
+		ShortcutSpec   string `json:"shortcutSpec,omitempty"`
+	}{ConfirmRunning: confirmRunning, ShortcutSpec: shortcutSpec})
 	request, err := http.NewRequest(http.MethodPost, baseURL+"/api/launches/"+id+"/start", bytes.NewReader(payload))
 	if err != nil {
 		return nil, nil, err

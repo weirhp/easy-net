@@ -641,7 +641,7 @@ async function launchAction(action, id) {
       kind: "删除应用",
       title: "删除这个被代理应用？",
       message: `“${entry.name}”将从应用代理列表中移除。`,
-      details: "已创建的桌面快捷方式不会自动删除，双击后会提示应用配置已失效。",
+      details: "已创建的桌面快捷方式不会自动删除；以后双击它会从快照恢复这个应用配置。如需彻底删除，请同时删除桌面快捷方式。",
       confirmText: "删除应用",
       danger: true
     });

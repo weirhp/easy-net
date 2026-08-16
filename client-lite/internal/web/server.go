@@ -613,10 +613,20 @@ func (s *Server) handleLaunchAction(w http.ResponseWriter, r *http.Request) {
 	switch parts[1] {
 	case "start":
 		var body struct {
-			ConfirmRunning bool `json:"confirmRunning"`
+			ConfirmRunning bool   `json:"confirmRunning"`
+			ShortcutSpec   string `json:"shortcutSpec,omitempty"`
 		}
 		if err := decodeJSON(w, r, &body); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		_, _, restoreErr := s.launches.RestoreShortcutEntry(id, body.ShortcutSpec)
+		if restoreErr != nil {
+			status := http.StatusBadRequest
+			if errors.Is(restoreErr, launch.ErrNotFound) {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, restoreErr.Error())
 			return
 		}
 		view, err := s.launches.StartWithOptions(id, launch.StartOptions{ConfirmRunning: body.ConfirmRunning})

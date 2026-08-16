@@ -42,7 +42,7 @@ func TestSharedWinDivertProfileCombinesApplicationsAndProxies(t *testing.T) {
 	if len(profile.ProxyConfigs) != 2 {
 		t.Fatalf("proxy configs = %d, want 2", len(profile.ProxyConfigs))
 	}
-	var firstTCP, firstUDP, secondTCP bool
+	var firstTCP, firstUDP, secondTCP, firstProxyBypass, secondProxyBypass bool
 	for _, rule := range profile.ProxyRules {
 		if strings.Contains(rule.ProcessName, "one.exe") && rule.Protocol == "TCP" && rule.Action == "PROXY" && rule.ProxyID == 1 {
 			firstTCP = true
@@ -53,9 +53,15 @@ func TestSharedWinDivertProfileCombinesApplicationsAndProxies(t *testing.T) {
 		if strings.Contains(rule.ProcessName, "two.exe") && rule.Protocol == "TCP" && rule.Action == "PROXY" && rule.ProxyID == 2 {
 			secondTCP = true
 		}
+		if strings.Contains(rule.ProcessName, "one.exe") && rule.TargetHosts == "127.0.0.1" && rule.TargetPorts == "1081" && rule.Action == "DIRECT" {
+			firstProxyBypass = true
+		}
+		if strings.Contains(rule.ProcessName, "two.exe") && rule.TargetHosts == "127.0.0.1" && rule.TargetPorts == "1082" && rule.Action == "DIRECT" {
+			secondProxyBypass = true
+		}
 	}
-	if !firstTCP || !firstUDP || !secondTCP {
-		t.Fatalf("missing shared rules: firstTCP=%v firstUDP=%v secondTCP=%v", firstTCP, firstUDP, secondTCP)
+	if !firstTCP || !firstUDP || !secondTCP || !firstProxyBypass || !secondProxyBypass {
+		t.Fatalf("missing shared rules: firstTCP=%v firstUDP=%v secondTCP=%v firstProxyBypass=%v secondProxyBypass=%v", firstTCP, firstUDP, secondTCP, firstProxyBypass, secondProxyBypass)
 	}
 }
 

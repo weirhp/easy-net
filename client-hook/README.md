@@ -79,7 +79,7 @@ windivert\WinDivert64.sys         （仅 x64）
 
 请在 Easy-Net Lite 中导入 `ENL1.` 分享码或手动添加 WebSocket/SSH/外部 SOCKS5 配置。应用入口选择其中的配置，启动时由常驻的 Lite 打开对应的回环 SOCKS5，再拉起 Hook。
 
-「桌面快捷方式」由 Lite 应用页创建，目标为 `Easy-Net-Lite.exe --launch-entry <ID>`。旧快捷方式若仍指向 `easy-net-hook.exe --launch-entry`，会先询问 Lite；找不到对应入口时才回退到原来的 tsv。
+「桌面快捷方式」由 Lite 应用页创建，目标为 `Easy-Net-Lite.exe --launch-entry <ID>`，同时内嵌不含密码的应用恢复快照。如果应用入口被误删，双击快捷方式会自动恢复它；要彻底删除时需同时删除桌面快捷方式。旧快捷方式若仍指向 `easy-net-hook.exe --launch-entry`，会先询问 Lite；找不到对应入口时才回退到原来的 tsv。
 
 命令行同样可以在已经有本地 SOCKS5 时直接启动应用：
 

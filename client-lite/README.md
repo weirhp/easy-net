@@ -49,7 +49,7 @@ Windows 管理页有「代理」和「应用」两个标签。代理页继续管
 - 「通用 WinDivert」按进程名覆盖 TCP+UDP，需要 x64-TUN 完整包和管理员授权。如果程序由辅助 EXE 发起网络，需在入口中补充这些进程名。同名的全部进程都会匹配，已建立连接不会迁移，需要重新打开页面或让应用重新连接。
 - Lite 可以保持普通用户权限；首次保存接管规则时会单独弹出 Windows UAC。Lite 会等待授权和引擎就绪，用户取消授权或驱动启动失败时会在管理页显示“配置已保存但接管未刷新”。
 - 应用没有单独指定代理时会实时继承网络代理页的默认代理；切换默认代理会同步刷新共享规则。外部代理只由 Lite 引用，Lite 不会启动或关闭 Clash、v2rayN。
-- 应用列表不再直接启动程序。「桌面快捷方式」指向 `Easy-Net-Lite.exe --launch-entry <ID>`，ChatGPT/Cursor/Antigravity/Chrome/Edge 使用各自的原生 SOCKS5 启动方式，Claude Code 和普通程序使用 Hook；启动前仍会检查代理可用性。
+- 应用列表不再直接启动程序。「桌面快捷方式」指向 `Easy-Net-Lite.exe --launch-entry <ID>` 并内嵌一份不含密码的恢复快照；入口被误删后仍可自动恢复。ChatGPT/Cursor/Antigravity/Chrome/Edge 使用各自的原生 SOCKS5 启动方式，Claude Code 和普通程序使用 Hook；共享 WinDivert 会显式直连该应用所用的 SOCKS5 服务器端点，防止快捷启动流量被二次代理。启动前仍会检查代理可用性。
 - 请把 `easy-net-hook.exe`（以及微信场景需要的 DLL / WinDivert / TUN 文件）和 Lite 放在同一目录，或设置环境变量 `EASY_NET_HOOK`。
 - macOS 不显示「应用」标签。首次在 Windows 上打开 Lite 时，如果存在旧的 `%LOCALAPPDATA%\EasyNetHook\launcher-entries.tsv`，会按本地监听地址匹配并导入到 `%AppData%\Easy-Net Lite\launches.json`。
 

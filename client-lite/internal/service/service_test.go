@@ -90,6 +90,30 @@ func TestUpsertRejectsDuplicatePort(t *testing.T) {
 	}
 }
 
+func TestOnlyOneProfileCanBeDefault(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := New(config.NewStoreAt(filepath.Join(dir, "config.json")), &memorySecrets{values: map[string]string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range []model.Profile{
+		{ID: "clash", Name: "Clash", Type: model.ProxyTypeExternal, ListenHost: "127.0.0.1", ListenPort: 7890, Default: true},
+		{ID: "v2rayn", Name: "v2rayN", Type: model.ProxyTypeExternal, ListenHost: "127.0.0.1", ListenPort: 10808, Default: true},
+	} {
+		if err := svc.Upsert(profile, SecretValues{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, ok := svc.DefaultProfile()
+	if !ok || got.ID != "v2rayn" {
+		t.Fatalf("default profile = %#v, %v", got, ok)
+	}
+	first, _ := svc.Profile("clash")
+	if first.Default {
+		t.Fatal("previous default was not cleared")
+	}
+}
+
 func TestPrivateKeyImportIsRemovedWithProfile(t *testing.T) {
 	secrets := &memorySecrets{values: map[string]string{}}
 	svc, err := New(config.NewStoreAt(filepath.Join(t.TempDir(), "config.json")), secrets)

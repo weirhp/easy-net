@@ -12,7 +12,8 @@ Easy-Net Lite 是一个使用本地网页管理界面、常驻系统托盘的轻
 - 每个配置可选“中国大陆 IP 直连”，按内置 APNIC CN 地址表让国内目标走本机网络、其他目标走代理。
 - 独立“测试连接”、本地监听状态与最近远端连接结果。
 - 加密分享码，可复制分享并快速导入 WebSocket 或 SSH 配置。
-- Windows 上可在管理页「应用」标签启动 ChatGPT、Chrome、Edge、Cursor、微信等，也可选择运行中的程序交给共享 WinDivert 引擎接管。
+- Windows 上可把 Lite 自建的 WebSocket/SSH 代理和 Clash、v2rayN 等外部 SOCKS5 统一放在「网络代理管理」，并设置唯一默认代理。
+- 「应用代理管理」维护共享 WinDivert 接管规则，可从运行进程批量添加，或快速导入 Cursor、ChatGPT、Antigravity、Claude Code、Chrome、Edge。
 - 启动后自动打开 `http://127.0.0.1:18081` 管理页面。
 
 ## 使用
@@ -44,10 +45,11 @@ Windows 管理页有「代理」和「应用」两个标签。代理页继续管
 - 分享码仍然只在「代理」页导入。应用入口可以选择 Lite 配置，也可手动填写另一个已运行的 SOCKS5（例如 `127.0.0.1:10808`）。手动代理不由 Lite 启停或保存认证口令。
 - 「通用 Hook」通过 DLL 注入代理 TCP，资源占用低，但不覆盖 UDP，并受进程架构和保护策略限制。
 - Chrome/Edge 默认使用 Chromium 原生 SOCKS5 参数启动。建议保留“独立代理配置目录”，否则已经运行的浏览器可能接收新窗口并忽略本次代理参数。
-- 「接管运行中的应用」会列出当前可访问的 EXE，并创建“通用 WinDivert”入口；保存后点击“接管”即可让该进程的新连接生效，不会终止或重启原程序。
+- 「从运行进程添加」会列出当前可访问的 EXE，并支持多选；应用名称直接使用进程文件名。保存后会自动刷新共享规则，让已运行和以后启动的同名进程的新连接生效。
 - 「通用 WinDivert」按进程名覆盖 TCP+UDP，需要 x64-TUN 完整包和管理员授权。如果程序由辅助 EXE 发起网络，需在入口中补充这些进程名。同名的全部进程都会匹配，已建立连接不会迁移，需要重新打开页面或让应用重新连接。
-- Lite 可以保持普通用户权限；首次启用共享 WinDivert 时会单独弹出 Windows UAC。Lite 会等待授权和引擎就绪，用户取消授权或驱动启动失败时会在管理页显示错误，不再静默报告成功。接管成功后，共享引擎会持续到 Lite 退出，因此本次 Lite 运行期间以后启动的同名程序也会自动匹配；仅保存入口而没有成功点击“接管”不会启动引擎，Lite 重启后也需要重新启用。
-- 「桌面快捷方式」指向 `Easy-Net-Lite.exe --launch-entry <ID>`。Lite 已在运行时会直接启动该入口；否则会先启动 Lite。
+- Lite 可以保持普通用户权限；首次保存接管规则时会单独弹出 Windows UAC。Lite 会等待授权和引擎就绪，用户取消授权或驱动启动失败时会在管理页显示“配置已保存但接管未刷新”。
+- 应用没有单独指定代理时会实时继承网络代理页的默认代理；切换默认代理会同步刷新共享规则。外部代理只由 Lite 引用，Lite 不会启动或关闭 Clash、v2rayN。
+- 应用列表不再直接启动程序。「桌面快捷方式」指向 `Easy-Net-Lite.exe --launch-entry <ID>`，ChatGPT/Cursor/Antigravity/Chrome/Edge 使用各自的原生 SOCKS5 启动方式，Claude Code 和普通程序使用 Hook；启动前仍会检查代理可用性。
 - 请把 `easy-net-hook.exe`（以及微信场景需要的 DLL / WinDivert / TUN 文件）和 Lite 放在同一目录，或设置环境变量 `EASY_NET_HOOK`。
 - macOS 不显示「应用」标签。首次在 Windows 上打开 Lite 时，如果存在旧的 `%LOCALAPPDATA%\EasyNetHook\launcher-entries.tsv`，会按本地监听地址匹配并导入到 `%AppData%\Easy-Net Lite\launches.json`。
 

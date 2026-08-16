@@ -75,6 +75,7 @@ type View struct {
 	ProfileRunning  bool   `json:"profileRunning"`
 	ProfileStarting bool   `json:"profileStarting"`
 	ExternalProxy   bool   `json:"externalProxy"`
+	UsesDefault     bool   `json:"usesDefault"`
 }
 
 func New(dir string, proxies *service.Service, runner Runner) (*Service, error) {
@@ -92,6 +93,10 @@ func New(dir string, proxies *service.Service, runner Runner) (*Service, error) 
 			return nil, migrateErr
 		}
 		if len(migrated) > 0 {
+			for index := range migrated {
+				migrated[index].AttachExisting = true
+				migrated[index].Normalize()
+			}
 			file.Entries = migrated
 			if err := s.store.Save(file); err != nil {
 				return nil, err
@@ -123,11 +128,19 @@ func (s *Service) Views() []View {
 	views := make([]View, 0, len(entries))
 	for _, entry := range entries {
 		view := View{LaunchEntry: entry, ModeLabel: entry.Mode.Label()}
-		if state, ok := states[entry.ProfileID]; ok {
+		profileID := entry.ProfileID
+		if profileID == "" && entry.Proxy == "" && s.proxies != nil {
+			if profile, ok := s.proxies.DefaultProfile(); ok {
+				profileID = profile.ID
+				view.UsesDefault = true
+			}
+		}
+		if state, ok := states[profileID]; ok {
 			view.ProfileName = state.Profile.Name
 			view.ListenAddress = state.Profile.ListenAddress()
-			view.ProfileRunning = state.Running
+			view.ProfileRunning = state.Running || state.Profile.Type == model.ProxyTypeExternal
 			view.ProfileStarting = state.Starting
+			view.ExternalProxy = state.Profile.Type == model.ProxyTypeExternal
 		} else if entry.Proxy != "" {
 			view.ProfileName = "手动 SOCKS5"
 			view.ListenAddress = entry.Proxy
@@ -152,34 +165,88 @@ func (s *Service) Processes() ([]ProcessInfo, error) {
 	return s.runner.Processes()
 }
 
-func (s *Service) Upsert(entry model.LaunchEntry) (model.LaunchEntry, error) {
-	entry.Normalize()
-	if entry.ID == "" {
-		entry.ID = newID()
+func (s *Service) ProxyUsageCount(profileID string) int {
+	defaultID := ""
+	if s.proxies != nil {
+		if profile, ok := s.proxies.DefaultProfile(); ok {
+			defaultID = profile.ID
+		}
 	}
-	if err := entry.Validate(); err != nil {
+	count := 0
+	for _, entry := range s.List() {
+		if entry.ProfileID == profileID || entry.ProfileID == "" && entry.Proxy == "" && defaultID == profileID {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *Service) DefaultProxyUsageCount() int {
+	count := 0
+	for _, entry := range s.List() {
+		if entry.ProfileID == "" && entry.Proxy == "" {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *Service) Upsert(entry model.LaunchEntry) (model.LaunchEntry, error) {
+	saved, err := s.UpsertMany([]model.LaunchEntry{entry})
+	if err != nil {
 		return model.LaunchEntry{}, err
 	}
-	if entry.ProfileID != "" && s.proxies != nil {
-		if _, ok := s.proxies.Profile(entry.ProfileID); !ok {
-			return model.LaunchEntry{}, fmt.Errorf("代理配置不存在")
-		}
+	return saved[0], nil
+}
+
+func (s *Service) UpsertMany(entries []model.LaunchEntry) ([]model.LaunchEntry, error) {
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("请至少选择一个应用")
+	}
+	if len(entries) > model.MaxLaunchEntries {
+		return nil, fmt.Errorf("一次最多添加 %d 个应用", model.MaxLaunchEntries)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	index := s.indexLocked(entry.ID)
-	if index < 0 && len(s.file.Entries) >= model.MaxLaunchEntries {
-		return model.LaunchEntry{}, fmt.Errorf("启动入口最多 %d 个", model.MaxLaunchEntries)
+	updated := &model.LaunchFile{Version: s.file.Version, Entries: append([]model.LaunchEntry(nil), s.file.Entries...)}
+	saved := make([]model.LaunchEntry, 0, len(entries))
+	for _, entry := range entries {
+		entry.Normalize()
+		if entry.ID == "" {
+			for _, existing := range updated.Entries {
+				if sameManagedApplication(existing, entry) {
+					entry.ID = existing.ID
+					break
+				}
+			}
+			if entry.ID == "" {
+				entry.ID = newID()
+			}
+		}
+		if err := entry.Validate(); err != nil {
+			return nil, err
+		}
+		if entry.ProfileID != "" && s.proxies != nil {
+			if _, ok := s.proxies.Profile(entry.ProfileID); !ok {
+				return nil, fmt.Errorf("代理配置不存在")
+			}
+		}
+		index := launchEntryIndex(updated.Entries, entry.ID)
+		if index < 0 && len(updated.Entries) >= model.MaxLaunchEntries {
+			return nil, fmt.Errorf("启动入口最多 %d 个", model.MaxLaunchEntries)
+		}
+		if index >= 0 {
+			updated.Entries[index] = entry
+		} else {
+			updated.Entries = append(updated.Entries, entry)
+		}
+		saved = append(saved, entry)
 	}
-	if index >= 0 {
-		s.file.Entries[index] = entry
-	} else {
-		s.file.Entries = append(s.file.Entries, entry)
+	if err := s.store.Save(updated); err != nil {
+		return nil, err
 	}
-	if err := s.store.Save(s.file); err != nil {
-		return model.LaunchEntry{}, err
-	}
-	return entry, nil
+	s.file = updated
+	return saved, nil
 }
 
 func (s *Service) Delete(id string) error {
@@ -204,18 +271,20 @@ func (s *Service) StartWithOptions(id string, options StartOptions) (View, error
 	if !ok {
 		return View{}, ErrNotFound
 	}
-	if err := entry.ValidateForStart(); err != nil {
+	if err := entry.ValidateForShortcut(); err != nil {
 		return View{}, err
 	}
-	running, err := s.runner.IsRunning(entry)
+	launchEntry := entry
+	launchEntry.AttachExisting = false
+	launchEntry.WeChatExisting = false
+	if launchEntry.Mode == model.LaunchModeWinDivert {
+		launchEntry.Mode = model.LaunchModeHook
+	}
+	running, err := s.runner.IsRunning(launchEntry)
 	if err != nil {
 		return View{}, err
 	}
-	if entry.AttachExisting {
-		if !running {
-			return View{}, &ApplicationNotRunningError{Entry: entry}
-		}
-	} else if !options.ConfirmRunning {
+	if !options.ConfirmRunning {
 		if running {
 			return View{}, &AlreadyRunningError{Entry: entry}
 		}
@@ -223,42 +292,44 @@ func (s *Service) StartWithOptions(id string, options StartOptions) (View, error
 	proxyAddress := entry.Proxy
 	profileName := "手动 SOCKS5"
 	profileRunning := false
-	if entry.ProfileID != "" {
+	profileID := entry.ProfileID
+	usesDefault := false
+	if profileID == "" && proxyAddress == "" && s.proxies != nil {
+		if profile, found := s.proxies.DefaultProfile(); found {
+			profileID = profile.ID
+			usesDefault = true
+		}
+	}
+	if profileID != "" {
 		if s.proxies == nil {
 			return View{}, fmt.Errorf("代理服务不可用")
 		}
-		if err := s.proxies.Start(entry.ProfileID); err != nil {
-			return View{}, fmt.Errorf("启动本地代理失败：%w", err)
-		}
-		profile, ok := s.proxies.Profile(entry.ProfileID)
+		profile, ok := s.proxies.Profile(profileID)
 		if !ok {
 			return View{}, fmt.Errorf("代理配置不存在")
 		}
+		if profile.Type != model.ProxyTypeExternal {
+			if err := s.proxies.Start(profileID); err != nil {
+				return View{}, fmt.Errorf("启动本地代理失败：%w", err)
+			}
+			profileRunning = true
+		}
 		proxyAddress = profile.ListenAddress()
 		profileName = profile.Name
-		profileRunning = true
+	}
+	if proxyAddress == "" {
+		return View{}, fmt.Errorf("尚未设置默认代理；请先在网络代理列表中选择一个默认代理")
 	}
 	if err := s.runner.CheckProxy(proxyAddress); err != nil {
 		return View{}, &ProxyUnavailableError{ProfileName: profileName, Address: proxyAddress, Cause: err}
 	}
-	args, err := HookArgs(entry, proxyAddress)
+	launchEntry.ProfileID = ""
+	launchEntry.Proxy = proxyAddress
+	args, err := HookArgs(launchEntry, proxyAddress)
 	if err != nil {
 		return View{}, err
 	}
-	if usesSharedWinDivert(entry) {
-		profilePath, profileErr := s.writeSharedWinDivertProfile()
-		if profileErr != nil {
-			return View{}, profileErr
-		}
-		args = insertHookOptions(args,
-			"--windivert-shared-profile", profilePath,
-			"--windivert-shared-root", strconv.Itoa(os.Getpid()))
-	}
 	if err := s.runner.Start(args); err != nil {
-		var hookError *HookStartError
-		if usesSharedWinDivert(entry) && errors.As(err, &hookError) && hookError.ExitCode == 5 {
-			return View{}, &WinDivertStartError{Cause: err}
-		}
 		return View{}, err
 	}
 	view := View{
@@ -267,9 +338,93 @@ func (s *Service) StartWithOptions(id string, options StartOptions) (View, error
 		ProfileName:    profileName,
 		ListenAddress:  proxyAddress,
 		ProfileRunning: profileRunning,
-		ExternalProxy:  entry.Proxy != "",
+		ExternalProxy:  entry.Proxy != "" || profileID != "" && !profileRunning,
+		UsesDefault:    usesDefault,
 	}
 	return view, nil
+}
+
+// ApplySharedRules updates the one Lite-owned WinDivert engine used by every
+// takeover entry. It intentionally does not require the target process to be
+// running: the process-name rules also match applications started later.
+func (s *Service) ApplySharedRules() error {
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
+	entries := s.List()
+	rules := make([]model.LaunchEntry, 0, len(entries))
+	for _, entry := range entries {
+		if usesSharedWinDivert(entry) {
+			rules = append(rules, entry)
+		}
+	}
+	if len(rules) == 0 {
+		_, err := s.writeSharedWinDivertProfile()
+		return err
+	}
+	firstProxy := ""
+	checked := make(map[string]struct{})
+	for _, entry := range rules {
+		address, name, err := s.prepareEntryProxy(entry)
+		if err != nil {
+			return err
+		}
+		if _, exists := checked[address]; !exists {
+			if err := s.runner.CheckProxy(address); err != nil {
+				return &ProxyUnavailableError{ProfileName: name, Address: address, Cause: err}
+			}
+			checked[address] = struct{}{}
+		}
+		if firstProxy == "" {
+			firstProxy = address
+		}
+	}
+	profilePath, err := s.writeSharedWinDivertProfile()
+	if err != nil {
+		return err
+	}
+	args := []string{
+		"--proxy", firstProxy, "--detach", "--gui-worker", "--windivert",
+		"--tun-udp", "auto", "--windivert-existing",
+		"--windivert-processes", "easy-net-shared-rule.exe",
+		"--windivert-shared-profile", profilePath,
+		"--windivert-shared-root", strconv.Itoa(os.Getpid()),
+	}
+	if err := s.runner.Start(args); err != nil {
+		var hookError *HookStartError
+		if errors.As(err, &hookError) && hookError.ExitCode == 5 {
+			return &WinDivertStartError{Cause: err}
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *Service) prepareEntryProxy(entry model.LaunchEntry) (string, string, error) {
+	if entry.Proxy != "" {
+		return entry.Proxy, "手动 SOCKS5", nil
+	}
+	if s.proxies == nil {
+		return "", "", fmt.Errorf("代理服务不可用")
+	}
+	var profile model.Profile
+	var ok bool
+	if entry.ProfileID == "" {
+		profile, ok = s.proxies.DefaultProfile()
+		if !ok {
+			return "", "", fmt.Errorf("尚未设置默认代理；请先在网络代理列表中选择一个默认代理")
+		}
+	} else {
+		profile, ok = s.proxies.Profile(entry.ProfileID)
+		if !ok {
+			return "", "", fmt.Errorf("代理配置不存在")
+		}
+	}
+	if profile.Type != model.ProxyTypeExternal {
+		if err := s.proxies.Start(profile.ID); err != nil {
+			return "", "", fmt.Errorf("启动本地代理失败：%w", err)
+		}
+	}
+	return profile.ListenAddress(), profile.Name, nil
 }
 
 func insertHookOptions(args []string, values ...string) []string {
@@ -292,7 +447,7 @@ func (s *Service) CreateShortcut(id string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("启动入口不存在")
 	}
-	if err := entry.Validate(); err != nil {
+	if err := entry.ValidateForShortcut(); err != nil {
 		return "", err
 	}
 	self, err := os.Executable()
@@ -308,6 +463,24 @@ func (s *Service) CreateShortcut(id string) (string, error) {
 		IconPath:         entry.Path,
 		UseChatGPTIcon:   entry.Mode == model.LaunchModeChatGPT,
 	})
+}
+
+func sameManagedApplication(left, right model.LaunchEntry) bool {
+	if left.Path != "" && right.Path != "" {
+		return strings.EqualFold(filepath.Clean(left.Path), filepath.Clean(right.Path))
+	}
+	leftNames, leftErr := winDivertProcessNames(left)
+	rightNames, rightErr := winDivertProcessNames(right)
+	return leftErr == nil && rightErr == nil && len(leftNames) > 0 && len(rightNames) > 0 && strings.EqualFold(leftNames[0], rightNames[0])
+}
+
+func launchEntryIndex(entries []model.LaunchEntry, id string) int {
+	for index := range entries {
+		if entries[index].ID == id {
+			return index
+		}
+	}
+	return -1
 }
 
 func (s *Service) indexLocked(id string) int {

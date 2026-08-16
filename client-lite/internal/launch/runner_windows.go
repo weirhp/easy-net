@@ -294,6 +294,8 @@ func launchProcessNames(entry model.LaunchEntry) []string {
 		return []string{"chrome.exe"}
 	case model.LaunchModeEdge:
 		return []string{"msedge.exe"}
+	case model.LaunchModeClaude:
+		return []string{"claude.exe", "claude-code.exe"}
 	case model.LaunchModeWeChat, model.LaunchModeWeChatWinDivert:
 		return []string{"Weixin.exe", "WeChat.exe", "xwechat.exe"}
 	default:

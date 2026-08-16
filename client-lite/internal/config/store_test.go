@@ -8,6 +8,24 @@ import (
 	"easy-net/client-lite/internal/model"
 )
 
+func TestVersionThreeMigrationDoesNotReenableLegacyWebSocketAuth(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	data := `{"version":2,"profiles":[{"id":"ws-1","name":"modern","type":"websocket","listenHost":"127.0.0.1","listenPort":1080,"websocket":{"url":"wss://example.com/tunnel","secretRef":"ws-1/websocket","legacyQueryAuth":false}}]}`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := NewStoreAt(path).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Version != model.CurrentConfigVersion || len(loaded.Profiles) != 1 {
+		t.Fatalf("unexpected migrated config: %#v", loaded)
+	}
+	if loaded.Profiles[0].WebSocket.LegacyQueryAuth {
+		t.Fatal("v2 WebSocket profile was incorrectly changed to legacy query authentication")
+	}
+}
+
 func TestSaveAndLoad(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "config.json")
 	store := NewStoreAt(path)

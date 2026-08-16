@@ -171,30 +171,25 @@ func TestStartSpawnsHookAfterLocalProxy(t *testing.T) {
 	}
 }
 
-func TestAttachExistingRequiresRunningApplication(t *testing.T) {
+func TestApplyTakeoverRulesDoesNotRequireRunningApplication(t *testing.T) {
 	dir := t.TempDir()
 	runner := &fakeRunner{running: false}
 	launches, err := New(dir, testService(t, dir), runner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	saved, err := launches.Upsert(model.LaunchEntry{
+	_, err = launches.Upsert(model.LaunchEntry{
 		Name: "运行中的应用", Mode: model.LaunchModeWinDivert, Proxy: "127.0.0.1:1082",
 		Path: `D:\App\app.exe`, ProcessNames: "app.exe", AttachExisting: true, UDPMode: "auto",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := launches.Start(saved.ID); err == nil {
-		t.Fatal("expected an application-not-running error")
-	} else {
-		var notRunning *ApplicationNotRunningError
-		if !errors.As(err, &notRunning) {
-			t.Fatalf("unexpected error: %v", err)
-		}
+	if err := launches.ApplySharedRules(); err != nil {
+		t.Fatalf("future process rules should apply without a running target: %v", err)
 	}
-	if got := runner.lastArgs(); got != nil {
-		t.Fatalf("hook should not start without the target application: %#v", got)
+	if got := runner.lastArgs(); !containsArgument(got, "--windivert-existing") {
+		t.Fatalf("shared takeover did not start: %#v", got)
 	}
 }
 
@@ -217,7 +212,8 @@ func TestAttachExistingReportsWinDivertPermissionFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := launches.Start(saved.ID); err == nil {
+	_ = saved
+	if err := launches.ApplySharedRules(); err == nil {
 		t.Fatal("expected a WinDivert startup error")
 	} else {
 		var permission *WinDivertStartError
@@ -261,6 +257,33 @@ func TestCreateShortcutPointsAtLiteLaunchEntry(t *testing.T) {
 	}
 	if runner.shortcuts[0].IconPath != "" || runner.shortcuts[0].UseChatGPTIcon {
 		t.Fatalf("unexpected Cursor shortcut icon options: %#v", runner.shortcuts[0])
+	}
+}
+
+func TestShortcutInheritsExternalDefaultProxy(t *testing.T) {
+	dir := t.TempDir()
+	proxies := testService(t, dir)
+	if err := proxies.Upsert(model.Profile{
+		ID: "clash", Name: "Clash", Type: model.ProxyTypeExternal,
+		ListenHost: "127.0.0.1", ListenPort: 7890, Default: true,
+	}, service.SecretValues{}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{}
+	launches, err := New(dir, proxies, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := launches.Upsert(model.LaunchEntry{Name: "ChatGPT.exe", Mode: model.LaunchModeChatGPT, AttachExisting: true, ProcessNames: "ChatGPT.exe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := launches.Start(saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !view.UsesDefault || view.ListenAddress != "127.0.0.1:7890" || !containsArgument(runner.lastArgs(), "127.0.0.1:7890") {
+		t.Fatalf("default proxy was not inherited: view=%#v args=%#v", view, runner.lastArgs())
 	}
 }
 
@@ -355,7 +378,8 @@ func TestStartWinDivertUsesLiteSharedProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := launches.Start(saved.ID); err != nil {
+	_ = saved
+	if err := launches.ApplySharedRules(); err != nil {
 		t.Fatal(err)
 	}
 	args := runner.lastArgs()
@@ -375,7 +399,16 @@ func TestStartWinDivertUsesLiteSharedProfile(t *testing.T) {
 			sharedOption = index
 		}
 	}
-	if separator < 0 || sharedOption < 0 || sharedOption > separator {
-		t.Fatalf("shared options must be placed before target command: %#v", args)
+	if separator >= 0 || sharedOption < 0 {
+		t.Fatalf("shared apply should not launch a target command: %#v", args)
 	}
+}
+
+func containsArgument(args []string, wanted string) bool {
+	for _, argument := range args {
+		if argument == wanted {
+			return true
+		}
+	}
+	return false
 }

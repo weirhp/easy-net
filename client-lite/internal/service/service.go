@@ -20,6 +20,7 @@ import (
 	"easy-net/client-lite/internal/proxy"
 	"easy-net/client-lite/internal/secretstore"
 	"easy-net/client-lite/internal/sharecode"
+	"easy-net/client-lite/internal/socksprobe"
 	"easy-net/client-lite/internal/transport"
 	sshtransport "easy-net/client-lite/internal/transport/ssh"
 	websockettransport "easy-net/client-lite/internal/transport/websocket"
@@ -105,6 +106,40 @@ func (s *Service) Profile(id string) (model.Profile, bool) {
 		}
 	}
 	return model.Profile{}, false
+}
+
+func (s *Service) DefaultProfile() (model.Profile, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, profile := range s.cfg.Profiles {
+		if profile.Default {
+			return profile.Clone(), true
+		}
+	}
+	return model.Profile{}, false
+}
+
+func (s *Service) SetDefault(id string, enabled bool) error {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	s.mu.Lock()
+	updated := cloneConfig(s.cfg)
+	index := profileIndex(updated, id)
+	if index < 0 {
+		s.mu.Unlock()
+		return fmt.Errorf("代理配置不存在")
+	}
+	for profileIndex := range updated.Profiles {
+		updated.Profiles[profileIndex].Default = enabled && profileIndex == index
+	}
+	s.mu.Unlock()
+	if err := s.store.Save(updated); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.cfg = updated
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *Service) Secret(ref string) (string, error) {
@@ -365,6 +400,13 @@ func (s *Service) Upsert(incoming model.Profile, values SecretValues) error {
 	} else {
 		updated.Profiles = append(updated.Profiles, profile)
 	}
+	if profile.Default {
+		for index := range updated.Profiles {
+			if updated.Profiles[index].ID != profile.ID {
+				updated.Profiles[index].Default = false
+			}
+		}
+	}
 	if err := s.store.Save(updated); err != nil {
 		rollback()
 		return err
@@ -401,7 +443,10 @@ func (s *Service) Upsert(incoming model.Profile, values SecretValues) error {
 func (s *Service) prepareProfile(incoming model.Profile, old *model.Profile, values SecretValues) (model.Profile, string, error) {
 	profile := incoming.Clone()
 	profile.Normalize()
-	if profile.Type == model.ProxyTypeWebSocket {
+	if profile.Type == model.ProxyTypeExternal {
+		profile.WebSocket = nil
+		profile.SSH = nil
+	} else if profile.Type == model.ProxyTypeWebSocket {
 		profile.SSH = nil
 		if profile.WebSocket == nil {
 			profile.WebSocket = &model.WebSocketConfig{}
@@ -511,6 +556,11 @@ func (s *Service) Start(id string) error {
 		return fmt.Errorf("代理配置不存在")
 	}
 	profile := s.cfg.Profiles[index].Clone()
+	if profile.Type == model.ProxyTypeExternal {
+		s.errors[id] = ""
+		s.mu.Unlock()
+		return nil
+	}
 	s.revisions[id]++
 	revision := s.revisions[id]
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -580,6 +630,15 @@ func (s *Service) TestConnection(id string) error {
 	}
 	profile := s.cfg.Profiles[index].Clone()
 	s.mu.Unlock()
+
+	if profile.Type == model.ProxyTypeExternal {
+		err := socksprobe.Check(profile.ListenAddress())
+		result := newConnectionHealth(profile, err)
+		s.mu.Lock()
+		s.connections[id] = result
+		s.mu.Unlock()
+		return err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -708,7 +767,7 @@ func websocketProbeTarget(rawURL string) (string, error) {
 
 func (s *Service) StartAuto() {
 	for _, state := range s.States() {
-		if state.Profile.AutoStart {
+		if state.Profile.AutoStart && state.Profile.Type != model.ProxyTypeExternal {
 			_ = s.Start(state.Profile.ID)
 		}
 	}
@@ -716,7 +775,9 @@ func (s *Service) StartAuto() {
 
 func (s *Service) StartAll() {
 	for _, state := range s.States() {
-		_ = s.Start(state.Profile.ID)
+		if state.Profile.Type != model.ProxyTypeExternal {
+			_ = s.Start(state.Profile.ID)
+		}
 	}
 }
 
@@ -755,6 +816,8 @@ func (s *Service) TrustSSHHost(id, fingerprint string) error {
 
 func (s *Service) buildTransport(profile model.Profile) (transport.Transport, error) {
 	switch profile.Type {
+	case model.ProxyTypeExternal:
+		return nil, fmt.Errorf("外部 SOCKS5 由其他软件提供，Lite 不会创建本地监听")
 	case model.ProxyTypeWebSocket:
 		secret, err := s.getSecret(profile.WebSocket.SecretRef, "WebSocket 密钥")
 		if err != nil {

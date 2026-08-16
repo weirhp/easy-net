@@ -3,6 +3,7 @@ package launch
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,6 +12,9 @@ import (
 
 func TestSharedWinDivertProfileCombinesApplicationsAndProxies(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "launches.json"), []byte(`{"version":2,"entries":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	launches, err := New(dir, testService(t, dir), &fakeRunner{})
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +59,7 @@ func TestSharedWinDivertProfileCombinesApplicationsAndProxies(t *testing.T) {
 	}
 }
 
-func TestSharedWinDivertProfileRejectsDuplicateProcessOwnership(t *testing.T) {
+func TestUpsertReusesExistingApplicationByExecutable(t *testing.T) {
 	dir := t.TempDir()
 	launches, err := New(dir, testService(t, dir), &fakeRunner{})
 	if err != nil {
@@ -69,8 +73,17 @@ func TestSharedWinDivertProfileRejectsDuplicateProcessOwnership(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := launches.writeSharedWinDivertProfile(); err == nil || !strings.Contains(err.Error(), "同时出现在多个") {
-		t.Fatalf("expected duplicate process error, got %v", err)
+	matches := 0
+	for _, entry := range launches.List() {
+		if strings.EqualFold(entry.Path, `D:\Apps\shared.exe`) {
+			matches++
+			if entry.Name != "第二个" {
+				t.Fatalf("existing rule was not updated: %#v", entry)
+			}
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("duplicate executable should produce one rule, got %d", matches)
 	}
 }
 

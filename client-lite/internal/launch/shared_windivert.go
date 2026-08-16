@@ -51,7 +51,9 @@ var privateTargetRanges = []string{
 
 func (s *Service) writeSharedWinDivertProfile() (string, error) {
 	entries := s.List()
-	profile := bridgeProfile{Version: "1.0"}
+	profile := bridgeProfile{
+		Version: "1.0", ProxyConfigs: []bridgeProxyConfig{}, ProxyRules: []bridgeProxyRule{},
+	}
 	proxyIDs := make(map[string]int)
 	processOwners := make(map[string]string)
 	for _, entry := range entries {
@@ -98,9 +100,6 @@ func (s *Service) writeSharedWinDivertProfile() (string, error) {
 		}
 		profile.ProxyRules = append(profile.ProxyRules, newBridgeRule(processList, "*", "UDP", udpAction, proxyID))
 	}
-	if len(profile.ProxyRules) == 0 {
-		return "", fmt.Errorf("共享 WinDivert 配置中没有应用规则")
-	}
 	data, err := json.MarshalIndent(profile, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("生成共享 WinDivert 配置：%w", err)
@@ -128,8 +127,18 @@ func (s *Service) entryProxyAddress(entry model.LaunchEntry) (string, error) {
 	if s.proxies == nil {
 		return "", fmt.Errorf("代理服务不可用")
 	}
-	profile, ok := s.proxies.Profile(entry.ProfileID)
+	profileID := entry.ProfileID
+	var profile model.Profile
+	var ok bool
+	if profileID == "" {
+		profile, ok = s.proxies.DefaultProfile()
+	} else {
+		profile, ok = s.proxies.Profile(profileID)
+	}
 	if !ok {
+		if profileID == "" {
+			return "", fmt.Errorf("尚未设置默认代理")
+		}
 		return "", fmt.Errorf("代理配置不存在")
 	}
 	return profile.ListenAddress(), nil
@@ -147,10 +156,20 @@ func winDivertProcessNames(entry model.LaunchEntry) ([]string, error) {
 	names := []string{windowsExecutableBase(entry.Path)}
 	if names[0] == "" {
 		switch entry.Mode {
+		case model.LaunchModeChatGPT:
+			names = []string{"ChatGPT.exe", "codex-code-mode-host.exe"}
+		case model.LaunchModeAntigravity:
+			names = []string{"Antigravity IDE.exe", "language_server_windows_x64.exe"}
+		case model.LaunchModeCursor:
+			names = []string{"Cursor.exe"}
 		case model.LaunchModeChrome:
-			names[0] = "chrome.exe"
+			names = []string{"chrome.exe"}
 		case model.LaunchModeEdge:
-			names[0] = "msedge.exe"
+			names = []string{"msedge.exe"}
+		case model.LaunchModeClaude:
+			names = []string{"claude.exe", "claude-code.exe"}
+		case model.LaunchModeWeChat, model.LaunchModeWeChatWinDivert:
+			names = []string{"Weixin.exe", "WeChat.exe", "WeChatApp.exe", "WeChatAppEx.exe", "WeChatBrowser.exe"}
 		}
 	}
 	for _, name := range strings.FieldsFunc(entry.ProcessNames, func(r rune) bool { return r == ';' || r == ',' }) {

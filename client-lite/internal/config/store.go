@@ -104,15 +104,18 @@ func parseConfig(data []byte) (*model.Config, []string, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, nil, fmt.Errorf("解析配置：%w", err)
 	}
-	legacy := cfg.Version < model.CurrentConfigVersion
+	// Query-string authentication was only the v1 compatibility format.  New
+	// config-version bumps must not silently turn it back on for v2+ profiles.
+	legacyQueryAuth := cfg.Version < 2
 	valid := make([]model.Profile, 0, len(cfg.Profiles))
 	warnings := make([]string, 0)
 	seenIDs := make(map[string]struct{})
 	seenPorts := make(map[string]struct{})
+	defaultSeen := false
 	for i := range cfg.Profiles {
 		profile := cfg.Profiles[i].Clone()
 		profile.Normalize()
-		if legacy && profile.WebSocket != nil {
+		if legacyQueryAuth && profile.WebSocket != nil {
 			profile.WebSocket.LegacyQueryAuth = true
 			lowerURL := strings.ToLower(profile.WebSocket.URL)
 			if strings.HasPrefix(lowerURL, "ws://") || strings.HasPrefix(lowerURL, "http://") {
@@ -126,6 +129,14 @@ func parseConfig(data []byte) (*model.Config, []string, error) {
 		if _, exists := seenIDs[profile.ID]; exists {
 			warnings = append(warnings, fmt.Sprintf("已跳过 ID 重复的配置 %q", profile.Name))
 			continue
+		}
+		if profile.Default {
+			if defaultSeen {
+				profile.Default = false
+				warnings = append(warnings, fmt.Sprintf("配置 %q 的默认标记已取消；只能设置一个默认代理", profile.Name))
+			} else {
+				defaultSeen = true
+			}
 		}
 		listenAddress := profile.ListenAddress()
 		if _, exists := seenPorts[listenAddress]; exists {
@@ -247,6 +258,7 @@ func (s *Store) Save(cfg *model.Config) error {
 func validateForSave(cfg *model.Config) error {
 	seenIDs := make(map[string]struct{}, len(cfg.Profiles))
 	seenAddresses := make(map[string]struct{}, len(cfg.Profiles))
+	defaultCount := 0
 	for i := range cfg.Profiles {
 		cfg.Profiles[i].Normalize()
 		profile := cfg.Profiles[i]
@@ -259,6 +271,12 @@ func validateForSave(cfg *model.Config) error {
 		address := profile.ListenAddress()
 		if _, exists := seenAddresses[address]; exists {
 			return fmt.Errorf("本地监听地址 %s 重复", address)
+		}
+		if profile.Default {
+			defaultCount++
+			if defaultCount > 1 {
+				return fmt.Errorf("只能设置一个默认代理")
+			}
 		}
 		seenIDs[profile.ID] = struct{}{}
 		seenAddresses[address] = struct{}{}

@@ -7,13 +7,14 @@ import (
 	"strings"
 )
 
-const CurrentConfigVersion = 2
+const CurrentConfigVersion = 3
 
 type ProxyType string
 
 const (
 	ProxyTypeWebSocket ProxyType = "websocket"
 	ProxyTypeSSH       ProxyType = "ssh"
+	ProxyTypeExternal  ProxyType = "external"
 )
 
 type AuthType string
@@ -35,6 +36,7 @@ type Profile struct {
 	ListenHost string    `json:"listenHost"`
 	ListenPort int       `json:"listenPort"`
 	AutoStart  bool      `json:"autoStart"`
+	Default    bool      `json:"default,omitempty"`
 	// BypassPrivate sends private, loopback, and link-local destinations through
 	// the machine's normal network stack instead of the configured transport.
 	BypassPrivate bool `json:"bypassPrivate,omitempty"`
@@ -95,6 +97,13 @@ func (p *Profile) Normalize() {
 			p.SSH.AuthType = AuthTypePassword
 		}
 	}
+	if p.Type == ProxyTypeExternal {
+		p.AutoStart = false
+		p.BypassPrivate = false
+		p.BypassChina = false
+		p.WebSocket = nil
+		p.SSH = nil
+	}
 }
 
 func (p Profile) Validate() error {
@@ -104,13 +113,18 @@ func (p Profile) Validate() error {
 	if strings.TrimSpace(p.Name) == "" {
 		return fmt.Errorf("名称不能为空")
 	}
-	if ip := net.ParseIP(p.ListenHost); ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("第一版仅允许监听本机回环地址")
+	ip := net.ParseIP(p.ListenHost)
+	if ip == nil || p.Type != ProxyTypeExternal && !ip.IsLoopback() {
+		return fmt.Errorf("代理地址必须是有效 IP；Lite 自建代理仅允许监听本机回环地址")
 	}
 	if p.ListenPort < 1 || p.ListenPort > 65535 {
 		return fmt.Errorf("本地端口必须在 1–65535 之间")
 	}
 	switch p.Type {
+	case ProxyTypeExternal:
+		if p.WebSocket != nil || p.SSH != nil {
+			return fmt.Errorf("外部 SOCKS5 配置不能包含 Lite 隧道参数")
+		}
 	case ProxyTypeWebSocket:
 		if p.WebSocket == nil || strings.TrimSpace(p.WebSocket.URL) == "" {
 			return fmt.Errorf("WebSocket 地址不能为空")
@@ -165,6 +179,8 @@ func (p Profile) Validate() error {
 
 func (p Profile) Endpoint() string {
 	switch p.Type {
+	case ProxyTypeExternal:
+		return p.ListenAddress()
 	case ProxyTypeWebSocket:
 		if p.WebSocket != nil {
 			return p.WebSocket.URL

@@ -15,11 +15,12 @@ const (
 	LaunchModeCursor          LaunchMode = "cursor"
 	LaunchModeChrome          LaunchMode = "chrome"
 	LaunchModeEdge            LaunchMode = "edge"
+	LaunchModeClaude          LaunchMode = "claude"
 	LaunchModeWeChat          LaunchMode = "wechat"
 	LaunchModeWeChatWinDivert LaunchMode = "wechat-windivert"
 	LaunchModeHook            LaunchMode = "hook"
 	LaunchModeWinDivert       LaunchMode = "windivert"
-	CurrentLaunchFileVersion             = 1
+	CurrentLaunchFileVersion             = 2
 	MaxLaunchEntries                     = 30
 )
 
@@ -69,14 +70,6 @@ func (e *LaunchEntry) Normalize() {
 	if e.Mode != LaunchModeWinDivert && !e.AttachExisting {
 		e.ProcessNames = ""
 	}
-	if e.Mode != LaunchModeWinDivert && e.Mode != LaunchModeChrome && e.Mode != LaunchModeEdge {
-		e.AttachExisting = false
-	}
-	if e.AttachExisting {
-		e.Arguments = ""
-		e.DNS = ""
-		e.Isolated = false
-	}
 	if e.WeChatExisting {
 		e.Path = ""
 		e.Arguments = ""
@@ -94,9 +87,9 @@ func (e LaunchEntry) Validate() error {
 		return fmt.Errorf("启动入口名称无效")
 	}
 	switch e.Mode {
-	case LaunchModeChatGPT, LaunchModeAntigravity, LaunchModeCursor, LaunchModeChrome, LaunchModeEdge, LaunchModeWeChat, LaunchModeWeChatWinDivert:
+	case LaunchModeChatGPT, LaunchModeAntigravity, LaunchModeCursor, LaunchModeChrome, LaunchModeEdge, LaunchModeClaude, LaunchModeWeChat, LaunchModeWeChatWinDivert:
 	case LaunchModeHook, LaunchModeWinDivert:
-		if e.Path == "" {
+		if e.Path == "" && !e.AttachExisting {
 			return fmt.Errorf("通用场景需要填写可执行文件路径")
 		}
 	default:
@@ -107,9 +100,6 @@ func (e LaunchEntry) Validate() error {
 	}
 	if e.ProfileID != "" && e.Proxy != "" {
 		return fmt.Errorf("代理配置和手动 SOCKS5 地址只能选择一种")
-	}
-	if e.AttachExisting && e.Mode != LaunchModeWinDivert && e.Mode != LaunchModeChrome && e.Mode != LaunchModeEdge {
-		return fmt.Errorf("当前场景不支持接管已运行程序")
 	}
 	if e.Proxy != "" {
 		if err := validateLiteralProxy(e.Proxy); err != nil {
@@ -154,6 +144,24 @@ func (e LaunchEntry) ValidateForStart() error {
 	return nil
 }
 
+// ValidateForShortcut verifies fields required to start a new application.
+// A takeover-only entry may omit its executable path, but a generic/Claude
+// desktop shortcut cannot.
+func (e LaunchEntry) ValidateForShortcut() error {
+	copy := e
+	copy.AttachExisting = false
+	if copy.Mode == LaunchModeWinDivert {
+		copy.Mode = LaunchModeHook
+	}
+	if err := copy.Validate(); err != nil {
+		return err
+	}
+	if (copy.Mode == LaunchModeHook || copy.Mode == LaunchModeClaude) && copy.Path == "" {
+		return fmt.Errorf("%s 需要先编辑并填写可执行文件路径，才能创建桌面快捷方式", e.Name)
+	}
+	return nil
+}
+
 func validateLiteralProxy(value string) error {
 	host, portText, err := net.SplitHostPort(value)
 	if err != nil || net.ParseIP(strings.Trim(host, "[]")) == nil {
@@ -178,6 +186,8 @@ func (e LaunchMode) Label() string {
 		return "Google Chrome"
 	case LaunchModeEdge:
 		return "Microsoft Edge"
+	case LaunchModeClaude:
+		return "Claude Code"
 	case LaunchModeWeChat:
 		return "微信 TUN"
 	case LaunchModeWeChatWinDivert:

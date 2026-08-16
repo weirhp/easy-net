@@ -802,7 +802,7 @@ func TestLaunchAPIStartsHookAfterProxy(t *testing.T) {
 	}
 }
 
-func TestLaunchAPIReportsWinDivertStartupFailure(t *testing.T) {
+func TestLaunchAPIReportsSavedRuleApplyFailure(t *testing.T) {
 	dir := t.TempDir()
 	svc, err := service.New(config.NewStoreAt(filepath.Join(dir, "config.json")), &memorySecrets{values: map[string]string{}})
 	if err != nil {
@@ -818,12 +818,9 @@ func TestLaunchAPIReportsWinDivertStartupFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry, err := launches.Upsert(model.LaunchEntry{
+	entry := model.LaunchEntry{
 		Name: "接管应用", Mode: model.LaunchModeWinDivert, Proxy: "127.0.0.1:1082",
 		Path: `D:\App\app.exe`, ProcessNames: "app.exe", AttachExisting: true, UDPMode: "auto",
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 	manager, err := NewWithOptions(svc, func() {}, Options{Launches: launches})
 	if err != nil {
@@ -832,7 +829,8 @@ func TestLaunchAPIReportsWinDivertStartupFailure(t *testing.T) {
 	server := httptest.NewServer(manager.Handler())
 	defer server.Close()
 	state := getState(t, server.URL)
-	request, _ := http.NewRequest(http.MethodPost, server.URL+"/api/launches/"+entry.ID+"/start", bytes.NewReader([]byte(`{}`)))
+	body, _ := json.Marshal(entry)
+	request, _ := http.NewRequest(http.MethodPost, server.URL+"/api/launches", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Easy-Net-Token", state.Token)
 	response, err := http.DefaultClient.Do(request)
@@ -844,7 +842,8 @@ func TestLaunchAPIReportsWinDivertStartupFailure(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != http.StatusFailedDependency || payload["code"] != "windivert_start_failed" {
+	applyError, _ := payload["applyError"].(string)
+	if response.StatusCode != http.StatusOK || !strings.Contains(applyError, "WinDivert") {
 		t.Fatalf("unexpected response: %d %#v", response.StatusCode, payload)
 	}
 }

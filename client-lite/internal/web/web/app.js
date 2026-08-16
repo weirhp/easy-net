@@ -4,6 +4,7 @@ const appState = {
   profiles: [],
   launches: [],
   runningProcesses: [],
+  commonPaths: new Map(),
   features: { appLaunches: false },
   tab: location.hash === "#apps" ? "apps" : "proxies",
   token: "",
@@ -28,7 +29,20 @@ const actionDialogElement = $("#action-dialog");
 const shareDialogElement = $("#share-dialog");
 const importDialogElement = $("#import-dialog");
 const importFormElement = $("#import-form");
+const processDialogElement = $("#process-dialog");
+const processFormElement = $("#process-form");
+const commonDialogElement = $("#common-dialog");
+const commonFormElement = $("#common-form");
 let actionDialogResolver = null;
+
+const commonApplications = [
+  { name: "Cursor.exe", label: "Cursor", mode: "cursor", processes: "Cursor.exe" },
+  { name: "ChatGPT.exe", label: "ChatGPT", mode: "chatgpt", processes: "ChatGPT.exe;codex-code-mode-host.exe" },
+  { name: "Antigravity IDE.exe", label: "Antigravity IDE", mode: "antigravity", processes: "Antigravity IDE.exe;language_server_windows_x64.exe" },
+  { name: "claude.exe", label: "Claude Code", mode: "claude", processes: "claude.exe;claude-code.exe" },
+  { name: "chrome.exe", label: "Google Chrome", mode: "chrome", processes: "chrome.exe" },
+  { name: "msedge.exe", label: "Microsoft Edge", mode: "edge", processes: "msedge.exe" }
+];
 
 function icon(name) {
   return `<svg class="icon" aria-hidden="true"><use href="#icon-${name}"></use></svg>`;
@@ -150,7 +164,8 @@ function formatConnectionTime(value) {
 function renderProfiles() {
   if (appState.tab !== "proxies") return;
   const running = appState.profiles.filter((item) => item.running).length;
-  $("#summary").textContent = `${appState.profiles.length} 个配置 · ${running} 个本地监听`;
+  const external = appState.profiles.filter((item) => item.profile.type === "external").length;
+  $("#summary").textContent = `${appState.profiles.length} 个代理 · ${running} 个本地监听${external ? ` · ${external} 个外部代理` : ""}`;
   $("#page-eyebrow").textContent = "LOCAL PROXY";
   $("#page-title").textContent = "网络代理管理";
   $("#notice-title").textContent = "使用说明";
@@ -163,11 +178,12 @@ function renderProfiles() {
   profilesElement.innerHTML = appState.profiles.map((item) => {
     const profile = item.profile;
     const busy = appState.busy.has(profile.id);
-    const type = profile.type === "ssh" ? "SSH" : "WebSocket";
-    const localCapabilities = profile.type === "ssh" ? "SOCKS5 TCP / HTTP" : "SOCKS5 TCP+UDP / HTTP";
-    const statusClass = busy || item.starting ? "busy" : item.running ? "running" : "";
-    const statusText = item.starting ? "正在启动" : busy ? "正在处理" : item.running ? "本地监听中" : "已停止";
-    const endpoint = profile.type === "ssh" ? `${profile.ssh.host}:${profile.ssh.port}` : profile.websocket.url;
+    const isExternal = profile.type === "external";
+    const type = profile.type === "ssh" ? "SSH" : isExternal ? "外部 SOCKS5" : "WebSocket";
+    const localCapabilities = isExternal ? "SOCKS5 / 混合端口" : profile.type === "ssh" ? "SOCKS5 TCP / HTTP" : "SOCKS5 TCP+UDP / HTTP";
+    const statusClass = busy || item.starting ? "busy" : item.running || isExternal ? "running" : "";
+    const statusText = item.starting ? "正在启动" : busy ? "正在处理" : isExternal ? "外部提供" : item.running ? "本地监听中" : "已停止";
+    const endpoint = isExternal ? "由其他代理软件管理" : profile.type === "ssh" ? `${profile.ssh.host}:${profile.ssh.port}` : profile.websocket.url;
     const primaryAction = item.running ? "stop" : "start";
     const primaryText = item.running ? "停止" : "启动";
 	const connectionTime = formatConnectionTime(item.connectionAt);
@@ -181,10 +197,11 @@ function renderProfiles() {
       <div class="card-main">
         <div class="card-content">
           <div class="card-title-row">
-            <label class="profile-selector" title="选择 ${escapeHTML(profile.name)}"><input class="profile-select" type="checkbox" data-profile-select="${escapeHTML(profile.id)}" aria-label="选择 ${escapeHTML(profile.name)}" ${selected ? "checked" : ""}></label>
+            ${isExternal ? "" : `<label class="profile-selector" title="选择 ${escapeHTML(profile.name)}"><input class="profile-select" type="checkbox" data-profile-select="${escapeHTML(profile.id)}" aria-label="选择 ${escapeHTML(profile.name)}" ${selected ? "checked" : ""}></label>`}
             <h2 class="card-title">${escapeHTML(profile.name)}</h2>
             <span class="badge">${type}</span>
             <span class="status ${statusClass}">${statusText}</span>
+            ${profile.default ? `<span class="badge default-badge">默认代理</span>` : ""}
             ${profile.autoStart ? `<span class="badge neutral">自动启动</span>` : ""}
             ${profile.bypassPrivate ? `<span class="badge neutral">局域网直连</span>` : ""}
             ${profile.bypassChina ? `<span class="badge neutral">国内直连</span>` : ""}
@@ -197,12 +214,12 @@ function renderProfiles() {
       </div>
       <div class="card-top-actions">
         <div class="card-actions">
-          <button class="button compact ${item.running ? "stop" : "start"}" data-profile-action="${primaryAction}" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon(item.running ? "stop" : "play")}${primaryText}</button>
-          <button class="button compact secondary icon-only" aria-label="分享 ${escapeHTML(profile.name)}" data-tooltip="分享配置" data-profile-action="share" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("share")}</button>
+          ${isExternal ? "" : `<button class="button compact ${item.running ? "stop" : "start"}" data-profile-action="${primaryAction}" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon(item.running ? "stop" : "play")}${primaryText}</button><button class="button compact secondary icon-only" aria-label="分享 ${escapeHTML(profile.name)}" data-tooltip="分享配置" data-profile-action="share" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("share")}</button>`}
           <button class="button compact secondary icon-only" aria-label="编辑 ${escapeHTML(profile.name)}" data-tooltip="编辑配置" data-profile-action="edit" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("edit")}</button>
         </div>
         <button class="card-delete" aria-label="删除 ${escapeHTML(profile.name)}" data-tooltip="删除配置" data-profile-action="delete" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("close")}</button>
       </div>
+      <label class="default-proxy-switch"><span>设为默认</span><input type="checkbox" role="switch" data-profile-default="${escapeHTML(profile.id)}" ${profile.default ? "checked" : ""} ${busy ? "disabled" : ""}><span class="switch-track" aria-hidden="true"></span></label>
     </article>`;
   }).join("");
   updateSelectionToolbar();
@@ -210,10 +227,11 @@ function renderProfiles() {
 
 function updateSelectionToolbar() {
   const count = appState.selectedProfiles.size;
-  $("#selection-toolbar").hidden = appState.tab !== "proxies" || appState.profiles.length === 0;
+  const selectable = appState.profiles.filter((item) => item.profile.type !== "external").length;
+  $("#selection-toolbar").hidden = appState.tab !== "proxies" || selectable === 0;
   $("#selection-count").textContent = `已选择 ${count} 项`;
   $("#batch-export").disabled = count === 0;
-  const allSelected = appState.profiles.length > 0 && count === appState.profiles.length;
+  const allSelected = selectable > 0 && count === selectable;
   $("#select-all-profiles").checked = allSelected;
   $("#select-all-profiles").indeterminate = count > 0 && !allSelected;
 }
@@ -262,6 +280,7 @@ function launchModeLabel(mode) {
     cursor: "Cursor",
     chrome: "Google Chrome",
     edge: "Microsoft Edge",
+    claude: "Claude Code",
     wechat: "微信 TUN",
     "wechat-windivert": "微信 WinDivert",
     hook: "通用 Hook",
@@ -275,9 +294,9 @@ function renderLaunches() {
   $("#page-title").textContent = "应用代理管理";
   $("#summary").textContent = `${appState.launches.length} 个被代理应用`;
   $("#notice-title").textContent = "应用代理说明";
-  $("#overview-note").textContent = "启动应用时会先准备所选代理，再由 Easy-Net Hook 在后台完成代理接管。桌面快捷方式始终读取最新设置。";
+  $("#overview-note").textContent = "这里维护持续生效的进程接管规则。启动新应用请创建桌面快捷方式；快捷方式会读取最新的默认或单独指定代理。";
   if (!appState.launches.length) {
-    launchesElement.innerHTML = `<div class="empty-state"><h2>还没有被代理应用</h2><p>添加 ChatGPT、Cursor、微信或其他程序，选择代理后即可启动。</p></div>`;
+    launchesElement.innerHTML = `<div class="empty-state"><h2>还没有接管应用</h2><p>可从当前运行进程批量添加，或快速导入常见应用。</p></div>`;
     return;
   }
   launchesElement.innerHTML = appState.launches.map((entry) => {
@@ -286,7 +305,7 @@ function renderLaunches() {
       ? `${entry.profileName} · ${entry.listenAddress || "未监听"}`
       : "尚未选择代理配置";
     const statusClass = busy ? "busy" : entry.profileRunning || entry.externalProxy ? "running" : "";
-    const statusText = busy ? "正在处理" : entry.profileStarting ? "代理启动中" : entry.profileRunning ? "代理已就绪" : entry.externalProxy ? "外部代理" : "代理未启动";
+    const statusText = busy ? "正在处理" : entry.usesDefault ? "继承默认代理" : entry.profileName ? "单独指定代理" : "等待设置默认代理";
     return `<article class="profile-card app-card">
       <div class="card-main">
         <div class="card-content">
@@ -299,7 +318,6 @@ function renderLaunches() {
           <p class="endpoint">${escapeHTML(profileText)}${entry.path ? ` · ${escapeHTML(entry.path)}` : ""}</p>
         </div>
         <div class="card-actions">
-          <button class="button start" data-launch-action="start" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon(entry.attachExisting ? "target" : "play")}${entry.attachExisting ? "接管" : "启动"}</button>
           <button class="button secondary" data-launch-action="shortcut" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("shortcut")}桌面快捷方式</button>
           <button class="button secondary" data-launch-action="edit" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("edit")}编辑</button>
         </div>
@@ -310,106 +328,61 @@ function renderLaunches() {
 }
 
 function fillLaunchProfiles(selectedId) {
-  const select = $("#launch-profile");
+  return fillProxySelect($("#launch-profile"), selectedId);
+}
+
+function fillProxySelect(select, selectedId = "") {
   const options = appState.profiles.map((item) => {
     const profile = item.profile;
     const selected = profile.id === selectedId ? "selected" : "";
     return `<option value="${escapeHTML(profile.id)}" ${selected}>${escapeHTML(profile.name)}（${escapeHTML(profile.listenHost)}:${profile.listenPort}）</option>`;
   });
-  options.push(`<option value="__manual__" ${selectedId === "__manual__" ? "selected" : ""}>手动输入其他 SOCKS5</option>`);
+  options.unshift(`<option value="" ${!selectedId ? "selected" : ""}>使用网络代理页的默认代理</option>`);
   select.innerHTML = options.join("");
 }
 
 function syncLaunchFields() {
   const mode = $("#launch-mode").value;
-  const wechat = mode === "wechat" || mode === "wechat-windivert";
-  const windivert = mode === "windivert";
   const browser = mode === "chrome" || mode === "edge";
-  const supportsAttach = windivert || browser;
-  const attachExisting = supportsAttach && $("#launch-attach-existing").checked;
-  const existing = wechat && $("#launch-wechat-existing").checked || attachExisting;
-  $("#launch-path-row").hidden = mode === "chatgpt" || existing && !windivert;
-  $("#launch-args-row").hidden = mode === "chatgpt" || existing;
-  $("#launch-isolated-row").hidden = attachExisting || mode !== "antigravity" && mode !== "cursor" && !browser;
+  $("#launch-path-row").hidden = mode === "chatgpt";
+  $("#launch-args-row").hidden = mode === "chatgpt";
+  $("#launch-isolated-row").hidden = mode !== "antigravity" && mode !== "cursor" && !browser;
   $("#launch-isolated-row span").textContent = browser ? "使用独立代理配置目录（推荐，不影响日常浏览器）" : "使用隔离配置（不影响日常登录状态）";
-  $("#launch-attach-existing-row").hidden = !supportsAttach;
-  $("#launch-running-process-row").hidden = !windivert || !attachExisting;
-  $("#launch-wechat-existing-row").hidden = !wechat;
-  $("#launch-udp-row").hidden = !wechat && !windivert && !attachExisting;
-  $("#launch-dns-row").hidden = mode === "chatgpt" || windivert || attachExisting;
-  $("#launch-processes-row").hidden = !windivert;
-  $("#launch-path-label").textContent = mode === "hook" || windivert ? "程序路径" : "程序路径（可留空自动查找）";
-  $("#launch-path").required = mode === "hook" || windivert;
-  const manualProxy = $("#launch-profile").value === "__manual__";
-  $("#launch-proxy-row").hidden = !manualProxy;
-  $("#launch-proxy").required = manualProxy;
+  $("#launch-dns-row").hidden = mode === "chatgpt" || mode === "chrome" || mode === "edge";
+  $("#launch-path-label").textContent = mode === "hook" || mode === "claude" || mode === "windivert" ? "程序路径（创建快捷方式必填）" : "程序路径（可留空自动查找）";
+  $("#launch-path").required = false;
   const notes = {
-    hook: "通用 Hook 通过 DLL 注入代理 TCP；目标程序必须与 Hook 架构一致，UDP 不会走 SOCKS5。",
-    windivert: attachExisting ? "保存后点击“接管”，Lite 会把所选进程加入共享 WinDivert 规则。只影响新建连接；接管成功后，本次 Lite 运行期间以后启动的同名程序也会自动生效。" : "通用 WinDivert 支持 TCP+UDP，需要 x64-TUN 完整包和管理员授权。Lite 会把所有通用 WinDivert 应用合并到一套共享引擎中；规则会影响所有同名进程，代理断开时默认阻断匹配流量。",
-    chrome: attachExisting ? "接管 Chrome 使用共享 WinDivert，只影响新建连接；成功后，本次 Lite 运行期间以后启动的 chrome.exe 也会自动生效。" : "使用 Chromium 原生 SOCKS5 启动 Chrome。推荐使用独立配置目录，避免已有 Chrome 进程忽略代理参数。",
-    edge: attachExisting ? "接管 Edge 使用共享 WinDivert，只影响新建连接；成功后，本次 Lite 运行期间以后启动的 msedge.exe 也会自动生效。" : "使用 Chromium 原生 SOCKS5 启动 Edge。推荐使用独立配置目录，避免已有 Edge 进程忽略代理参数。"
+    hook: "接管由共享 WinDivert 完成；桌面快捷方式使用 Hook 启动 TCP 流量。",
+    windivert: "接管由共享 WinDivert 完成；填写程序路径后，桌面快捷方式将优先使用通用 Hook 以减少提权。",
+    claude: "接管 claude.exe；桌面快捷方式使用 Hook，因此需要填写 Claude 可执行文件路径。",
+    chrome: "接管 chrome.exe；桌面快捷方式使用 Chromium 原生 SOCKS5 参数。",
+    edge: "接管 msedge.exe；桌面快捷方式使用 Chromium 原生 SOCKS5 参数。"
   };
-  $("#launch-mode-note").textContent = notes[mode] || "启动由 Easy-Net Hook 在后台完成。请把 easy-net-hook.exe 和 Lite 放在同一目录。";
-  if (!wechat) $("#launch-wechat-existing").checked = false;
-  if (!supportsAttach) $("#launch-attach-existing").checked = false;
+  $("#launch-mode-note").textContent = notes[mode] || "接管规则对已运行和以后启动的同名进程生效；桌面快捷方式使用轻量启动方式。";
 }
 
-async function openLaunchDialog(id = "", attachRunning = false) {
+async function openLaunchDialog(id = "") {
   const entry = id ? appState.launches.find((item) => item.id === id) : null;
+  if (!entry) return;
   appState.editingLaunchId = id;
   launchFormElement.reset();
   $("#launch-error").hidden = true;
-  $("#launch-dialog-title").textContent = id ? "编辑被代理应用" : "添加被代理应用";
-  $("#launch-name").value = entry?.name || "";
-  $("#launch-mode").value = entry?.mode || (attachRunning ? "windivert" : "chatgpt");
+  $("#launch-dialog-title").textContent = `编辑 ${entry.name}`;
+  $("#launch-app-name").textContent = entry.name;
+  $("#launch-name").value = entry.name;
+  $("#launch-mode").value = entry.mode;
   $("#launch-path").value = entry?.path || "";
   $("#launch-args").value = entry?.arguments || "";
   $("#launch-udp").value = entry?.udpMode || "auto";
   $("#launch-dns").value = entry?.dns || "";
   $("#launch-processes").value = entry?.processNames || "";
   $("#launch-isolated").checked = Boolean(entry?.isolated);
-  $("#launch-wechat-existing").checked = Boolean(entry?.wechatExisting);
-  $("#launch-attach-existing").checked = Boolean(entry?.attachExisting || attachRunning);
-  if (!entry && !attachRunning && ["chrome", "edge"].includes($("#launch-mode").value)) $("#launch-isolated").checked = true;
-  fillLaunchProfiles(entry?.proxy ? "__manual__" : entry?.profileId || appState.profiles[0]?.profile?.id || "__manual__");
+  $("#launch-attach-existing").value = "true";
+  fillLaunchProfiles(entry.profileId || "");
   $("#launch-proxy").value = entry?.proxy || "";
   syncLaunchFields();
   launchDialogElement.showModal();
-  if (attachRunning || entry?.attachExisting) {
-    await loadRunningProcesses(entry?.path || "");
-    $("#launch-running-process").focus();
-  } else {
-    $("#launch-name").focus();
-  }
-}
-
-async function loadRunningProcesses(selectedPath = "") {
-  const select = $("#launch-running-process");
-  const refresh = $("#refresh-running-processes");
-  refresh.disabled = true;
-  select.innerHTML = `<option value="">正在读取运行进程…</option>`;
-  try {
-    const data = await api("/api/processes");
-    appState.runningProcesses = data.processes || [];
-    select.innerHTML = `<option value="">请选择程序</option>` + appState.runningProcesses.map((process, index) =>
-      `<option value="${index}" ${selectedPath && process.path.toLowerCase() === selectedPath.toLowerCase() ? "selected" : ""}>${escapeHTML(process.name)} · PID ${process.pid}</option>`
-    ).join("");
-    if (select.value) applyRunningProcess();
-  } catch (error) {
-    select.innerHTML = `<option value="">读取失败：${escapeHTML(error.message)}</option>`;
-  } finally {
-    refresh.disabled = false;
-  }
-}
-
-function applyRunningProcess() {
-	if (!$("#launch-running-process").value) return;
-  const index = Number($("#launch-running-process").value);
-  const process = appState.runningProcesses[index];
-  if (!process) return;
-  $("#launch-path").value = process.path;
-  $("#launch-processes").value = process.name;
-  if (!$("#launch-name").value.trim()) $("#launch-name").value = process.name.replace(/\.exe$/i, "");
+  $("#launch-path").focus();
 }
 
 function closeLaunchDialog() {
@@ -424,30 +397,29 @@ async function saveLaunch(event) {
   errorElement.hidden = true;
   syncLaunchFields();
   if (!launchFormElement.reportValidity()) return;
-  const manualProxy = $("#launch-profile").value === "__manual__";
   saveButton.disabled = true;
   saveButton.textContent = "保存中…";
   try {
-    await api("/api/launches", {
+    const data = await api("/api/launches", {
       method: "POST",
       body: JSON.stringify({
         id: appState.editingLaunchId || "",
         name: $("#launch-name").value.trim(),
         mode: $("#launch-mode").value,
-        profileId: manualProxy ? "" : $("#launch-profile").value,
-        proxy: manualProxy ? $("#launch-proxy").value.trim() : "",
+        profileId: $("#launch-profile").value,
+        proxy: "",
         path: $("#launch-path-row").hidden ? "" : $("#launch-path").value.trim(),
         arguments: $("#launch-args-row").hidden ? "" : $("#launch-args").value.trim(),
         isolated: !$("#launch-isolated-row").hidden && $("#launch-isolated").checked,
-        wechatExisting: !$("#launch-wechat-existing-row").hidden && $("#launch-wechat-existing").checked,
-        udpMode: $("#launch-udp-row").hidden ? "" : $("#launch-udp").value,
+        wechatExisting: false,
+        udpMode: $("#launch-udp").value,
         dns: $("#launch-dns-row").hidden ? "" : $("#launch-dns").value.trim(),
-        processNames: $("#launch-processes-row").hidden ? "" : $("#launch-processes").value.trim(),
-        attachExisting: !$("#launch-attach-existing-row").hidden && $("#launch-attach-existing").checked
+        processNames: $("#launch-processes").value.trim(),
+        attachExisting: true
       })
     });
     closeLaunchDialog();
-    showToast("被代理应用已保存");
+    showToast(data.applyError ? `应用已保存，但接管未刷新：${data.applyError}` : "应用已保存，接管规则已刷新", Boolean(data.applyError));
     await loadState();
   } catch (error) {
     errorElement.textContent = error.message;
@@ -455,6 +427,138 @@ async function saveLaunch(event) {
   } finally {
     saveButton.disabled = false;
     saveButton.textContent = "保存应用";
+  }
+}
+
+function processApplication(process) {
+  const lower = process.name.toLowerCase();
+  const known = commonApplications.find((item) => item.processes.toLowerCase().split(";").includes(lower));
+  return {
+    name: process.name,
+    mode: known?.mode || "hook",
+    profileId: $("#process-profile").value,
+    proxy: "",
+    path: process.path,
+    arguments: "",
+    isolated: false,
+    udpMode: "auto",
+    dns: "",
+    processNames: known?.processes || process.name,
+    attachExisting: true
+  };
+}
+
+async function loadProcessChoices() {
+  const list = $("#process-choice-list");
+  const refresh = $("#refresh-process-list");
+  refresh.disabled = true;
+  list.innerHTML = `<div class="empty-state compact-empty"><div class="loading" aria-hidden="true"></div><p>正在读取运行进程</p></div>`;
+  try {
+    const data = await api("/api/processes");
+    appState.runningProcesses = data.processes || [];
+    list.innerHTML = appState.runningProcesses.length ? appState.runningProcesses.map((process, index) => `
+      <label class="choice-item"><input type="checkbox" name="running-process" value="${index}"><span class="choice-icon">${icon("apps")}</span><span class="choice-copy"><strong>${escapeHTML(process.name)}</strong><small>${escapeHTML(process.path)} · PID ${process.pid}</small></span></label>`).join("") : `<div class="empty-state compact-empty"><p>没有读取到可添加的桌面进程</p></div>`;
+  } catch (error) {
+    list.innerHTML = `<p class="form-error" role="alert">${escapeHTML(error.message)}</p>`;
+  } finally {
+    refresh.disabled = false;
+  }
+}
+
+async function openProcessDialog() {
+  processFormElement.reset();
+  $("#process-error").hidden = true;
+  fillProxySelect($("#process-profile"));
+  processDialogElement.showModal();
+  await loadProcessChoices();
+}
+
+function closeProcessDialog() {
+  if (processDialogElement.open) processDialogElement.close();
+}
+
+function detectedCommonApplicationPath(app) {
+  for (const processName of app.processes.split(";")) {
+    const path = appState.commonPaths.get(processName.toLowerCase());
+    if (path) return path;
+  }
+  return "";
+}
+
+async function saveProcesses(event) {
+  event.preventDefault();
+  const selected = [...document.querySelectorAll('input[name="running-process"]:checked')]
+    .map((input) => appState.runningProcesses[Number(input.value)]).filter(Boolean);
+  const errorElement = $("#process-error");
+  if (!selected.length) {
+    errorElement.textContent = "请至少选择一个运行进程";
+    errorElement.hidden = false;
+    return;
+  }
+  const button = $("#save-processes");
+  button.disabled = true;
+  button.textContent = "正在添加…";
+  try {
+    const data = await api("/api/launches/bulk", { method: "POST", body: JSON.stringify({ entries: selected.map(processApplication) }) });
+    closeProcessDialog();
+    showToast(data.applyError ? `已添加 ${data.saved} 个应用，但接管未刷新：${data.applyError}` : `已添加 ${data.saved} 个应用，接管规则已刷新`, Boolean(data.applyError));
+    await loadState();
+  } catch (error) {
+    errorElement.textContent = error.message;
+    errorElement.hidden = false;
+  } finally {
+    button.disabled = false;
+    button.textContent = "添加所选应用";
+  }
+}
+
+async function openCommonDialog() {
+  commonFormElement.reset();
+  $("#common-error").hidden = true;
+  fillProxySelect($("#common-profile"));
+  appState.commonPaths.clear();
+  try {
+    const data = await api("/api/processes");
+    for (const process of data.processes || []) appState.commonPaths.set(process.name.toLowerCase(), process.path);
+  } catch (_) {}
+  $("#common-choice-list").innerHTML = commonApplications.map((app, index) => `
+    <label class="choice-item common-choice"><input type="checkbox" name="common-app" value="${index}"><span class="choice-icon">${icon(app.mode === "chrome" || app.mode === "edge" ? "network" : "apps")}</span><span class="choice-copy"><strong>${escapeHTML(app.label)}</strong><small>${escapeHTML(app.processes.replaceAll(";", " · "))}${detectedCommonApplicationPath(app) ? " · 已检测路径" : ""}</small></span></label>`).join("");
+  commonDialogElement.showModal();
+}
+
+function closeCommonDialog() {
+  if (commonDialogElement.open) commonDialogElement.close();
+}
+
+async function saveCommonApps(event) {
+  event.preventDefault();
+  const selected = [...document.querySelectorAll('input[name="common-app"]:checked')]
+    .map((input) => commonApplications[Number(input.value)]).filter(Boolean);
+  const errorElement = $("#common-error");
+  if (!selected.length) {
+    errorElement.textContent = "请至少选择一个常见应用";
+    errorElement.hidden = false;
+    return;
+  }
+  const profileId = $("#common-profile").value;
+  const entries = selected.map((app) => ({
+    name: app.name, mode: app.mode, profileId, proxy: "", path: detectedCommonApplicationPath(app), arguments: "",
+    isolated: false, udpMode: "auto", dns: "", processNames: app.processes, attachExisting: true
+  }));
+  const button = $("#save-common-apps");
+  button.disabled = true;
+  button.textContent = "正在导入…";
+  try {
+    const data = await api("/api/launches/bulk", { method: "POST", body: JSON.stringify({ entries }) });
+    closeCommonDialog();
+    showToast(data.applyError ? `已导入 ${data.saved} 个应用，但接管未刷新：${data.applyError}` : `已导入 ${data.saved} 个常见应用，接管规则已刷新`, Boolean(data.applyError));
+    await loadState();
+  } catch (error) {
+    errorElement.textContent = error.message;
+    errorElement.hidden = false;
+  } finally {
+    button.disabled = false;
+    button.textContent = "导入所选应用";
   }
 }
 
@@ -474,7 +578,11 @@ async function launchAction(action, id) {
       danger: true
     });
     if (!confirmed) return;
-    try { await api(`/api/launches/${encodeURIComponent(id)}`, { method: "DELETE" }); showToast("被代理应用已删除"); await loadState(); }
+    try {
+      const data = await api(`/api/launches/${encodeURIComponent(id)}`, { method: "DELETE" });
+      showToast(data.applyError ? `应用已删除，但接管规则刷新失败：${data.applyError}` : "被代理应用已删除，接管规则已刷新", Boolean(data.applyError));
+      await loadState();
+    }
     catch (error) { showToast(error.message, true); }
     return;
   }
@@ -554,18 +662,27 @@ function openProfileDialog(kind, id = "") {
   formElement.reset();
   $("#form-error").hidden = true;
   $("#form-error").classList.remove("success-result");
-  $("#dialog-kind").textContent = kind === "ssh" ? "SSH 代理" : "WebSocket 代理";
+  $("#dialog-kind").textContent = kind === "ssh" ? "SSH 代理" : kind === "external" ? "外部 SOCKS5" : "WebSocket 代理";
   $("#dialog-title").textContent = id ? "编辑配置" : "添加配置";
   $("#test-profile").hidden = !id;
   $("#test-profile").disabled = false;
   $("#websocket-fields").hidden = kind !== "websocket";
   $("#ssh-fields").hidden = kind !== "ssh";
+  $("#external-fields").hidden = kind !== "external";
+  $("#managed-listen-fields").hidden = kind === "external";
+  $("#field-bypass-private-row").hidden = kind === "external";
+  $("#field-bypass-china-row").hidden = kind === "external";
   document.querySelectorAll(".edit-secret-hint").forEach((element) => { element.hidden = !id; });
   $("#field-name").value = profile?.name || "";
   $("#field-local-port").value = profile?.listenPort || nextPort();
+  $("#field-local-port").required = kind !== "external";
   $("#field-auto-start").checked = profile ? profile.autoStart : true;
   $("#field-bypass-private").checked = profile ? Boolean(profile.bypassPrivate) : true;
   $("#field-bypass-china").checked = profile ? Boolean(profile.bypassChina) : true;
+  $("#field-external-host").required = kind === "external";
+  $("#field-external-port").required = kind === "external";
+  $("#field-external-host").value = kind === "external" ? profile?.listenHost || "127.0.0.1" : "";
+  $("#field-external-port").value = kind === "external" ? profile?.listenPort || 7890 : "";
   if (kind === "websocket") {
     $("#field-ws-url").value = profile?.websocket?.url || "";
 	$("#field-ws-secret").placeholder = id ? "已保存；如需更换请重新输入" : "请输入连接密钥";
@@ -579,7 +696,7 @@ function openProfileDialog(kind, id = "") {
 	$("#field-ssh-host").required = false;
 	$("#field-ssh-user").required = false;
 	$("#field-ssh-port").required = false;
-  } else {
+	} else if (kind === "ssh") {
 	$("#field-ws-url").required = false;
 	$("#field-ws-secret").required = false;
     $("#field-ssh-host").value = profile?.ssh?.host || "";
@@ -593,6 +710,12 @@ function openProfileDialog(kind, id = "") {
     const existingKey = Boolean(profile?.ssh?.hasPrivateKey);
     $("#ssh-key-hint").textContent = existingKey ? "已保存私钥；重新选择文件将替换它" : "支持 OpenSSH 私钥，最大 64 KiB";
     toggleSSHAuth();
+  } else {
+	$("#field-ws-url").required = false;
+	$("#field-ws-secret").required = false;
+	$("#field-ssh-host").required = false;
+	$("#field-ssh-user").required = false;
+	$("#field-ssh-port").required = false;
   }
   dialogElement.showModal();
   $("#field-name").focus();
@@ -647,15 +770,17 @@ async function profileRequestFromForm() {
     id: existing?.id || "",
     name: $("#field-name").value.trim(),
     type: appState.kind,
-    listenHost: "127.0.0.1",
-    listenPort: Number($("#field-local-port").value),
-    autoStart: $("#field-auto-start").checked,
+    listenHost: appState.kind === "external" ? $("#field-external-host").value.trim() : "127.0.0.1",
+    listenPort: Number(appState.kind === "external" ? $("#field-external-port").value : $("#field-local-port").value),
+    autoStart: appState.kind !== "external" && $("#field-auto-start").checked,
+    default: Boolean(existing?.default),
     bypassPrivate: $("#field-bypass-private").checked,
     bypassChina: $("#field-bypass-china").checked,
     websocket: null,
     ssh: null
   };
   const request = { profile, websocketSecret: "", sshPassword: "", sshPassphrase: "", sshPrivateKey: "" };
+  if (appState.kind === "external") return request;
   if (appState.kind === "websocket") {
     profile.websocket = {
       url: $("#field-ws-url").value.trim(),
@@ -699,7 +824,7 @@ async function testEditedProfile() {
     await api("/api/profiles", { method: "POST", body: JSON.stringify(request) });
     await api(`/api/profiles/${encodeURIComponent(id)}/test`, { method: "POST" });
     errorElement.classList.add("success-result");
-    errorElement.textContent = appState.kind === "ssh" ? "连接成功：SSH 地址和认证信息验证通过。" : "连接成功：WebSocket 地址、密钥和隧道握手验证通过。";
+    errorElement.textContent = appState.kind === "ssh" ? "连接成功：SSH 地址和认证信息验证通过。" : appState.kind === "external" ? "连接成功：外部 SOCKS5 握手及测试目标连接正常。" : "连接成功：WebSocket 地址、密钥和隧道握手验证通过。";
     errorElement.hidden = false;
     await loadState(true);
   } catch (error) {
@@ -797,6 +922,22 @@ async function profileAction(action, id) {
   }
 }
 
+async function setDefaultProfile(id, enabled) {
+  if (appState.busy.has(id)) return;
+  appState.busy.add(id);
+  renderProfiles();
+  try {
+    const data = await api(`/api/profiles/${encodeURIComponent(id)}/default`, { method: "POST", body: JSON.stringify({ enabled }) });
+    const message = enabled ? "默认代理已切换；未单独指定代理的应用会自动使用它" : "已取消默认代理";
+    showToast(data.applyError ? `${message}，但接管规则刷新失败：${data.applyError}` : message, Boolean(data.applyError));
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    appState.busy.delete(id);
+    await loadState(true);
+  }
+}
+
 function closeShareDialog() {
   if (shareDialogElement.open) shareDialogElement.close();
   $("#share-code").value = "";
@@ -839,7 +980,7 @@ async function exportSelectedProfiles() {
 
 function setAllProfilesSelected(selected) {
   appState.selectedProfiles.clear();
-  if (selected) for (const item of appState.profiles) appState.selectedProfiles.add(item.profile.id);
+  if (selected) for (const item of appState.profiles) if (item.profile.type !== "external") appState.selectedProfiles.add(item.profile.id);
   renderProfiles();
 }
 
@@ -939,10 +1080,19 @@ function escapeHTML(value) {
 document.addEventListener("click", (event) => {
   const tabButton = event.target.closest("[data-tab]");
   if (tabButton) { setTab(tabButton.dataset.tab); return; }
-  const addLaunchButton = event.target.closest("[data-add-launch]");
-  if (addLaunchButton) { openLaunchDialog(); return; }
-  const attachLaunchButton = event.target.closest("[data-attach-launch]");
-  if (attachLaunchButton) { openLaunchDialog("", true); return; }
+  const processLaunchButton = event.target.closest("[data-process-launch]");
+  if (processLaunchButton) { openProcessDialog(); return; }
+  const commonLaunchButton = event.target.closest("[data-common-launch]");
+  if (commonLaunchButton) { openCommonDialog(); return; }
+  const presetButton = event.target.closest("[data-external-preset]");
+  if (presetButton) {
+    const presets = { clash: ["Clash", 7890], v2rayn: ["v2rayN", 10808], "clash-meta": ["Clash Meta", 7890] };
+    const [name, port] = presets[presetButton.dataset.externalPreset] || ["外部代理", 7890];
+    if (!$("#field-name").value.trim()) $("#field-name").value = name;
+    $("#field-external-host").value = "127.0.0.1";
+    $("#field-external-port").value = port;
+    return;
+  }
   const launchButton = event.target.closest("[data-launch-action]");
   if (launchButton) { launchAction(launchButton.dataset.launchAction, launchButton.dataset.id); return; }
   const importButton = event.target.closest("[data-import]");
@@ -956,6 +1106,8 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  const defaultSwitch = event.target.closest("[data-profile-default]");
+  if (defaultSwitch) { setDefaultProfile(defaultSwitch.dataset.profileDefault, defaultSwitch.checked); return; }
   const checkbox = event.target.closest("[data-profile-select]");
   if (!checkbox) return;
   if (checkbox.checked) appState.selectedProfiles.add(checkbox.dataset.profileSelect);
@@ -990,13 +1142,11 @@ $("#launch-mode").addEventListener("change", () => {
   syncLaunchFields();
 });
 $("#launch-profile").addEventListener("change", syncLaunchFields);
-$("#launch-wechat-existing").addEventListener("change", syncLaunchFields);
-$("#launch-attach-existing").addEventListener("change", async () => {
-  syncLaunchFields();
-  if (!$("#launch-running-process-row").hidden) await loadRunningProcesses($("#launch-path").value);
-});
-$("#launch-running-process").addEventListener("change", applyRunningProcess);
-$("#refresh-running-processes").addEventListener("click", () => loadRunningProcesses($("#launch-path").value));
+$("#refresh-process-list").addEventListener("click", loadProcessChoices);
+processFormElement.addEventListener("submit", saveProcesses);
+commonFormElement.addEventListener("submit", saveCommonApps);
+document.querySelectorAll("[data-close-process]").forEach((button) => button.addEventListener("click", closeProcessDialog));
+document.querySelectorAll("[data-close-common]").forEach((button) => button.addEventListener("click", closeCommonDialog));
 $("#close-launch-dialog").addEventListener("click", closeLaunchDialog);
 $("#cancel-launch-dialog").addEventListener("click", closeLaunchDialog);
 launchDialogElement.addEventListener("click", (event) => { if (event.target === launchDialogElement) closeLaunchDialog(); });
@@ -1017,9 +1167,13 @@ actionDialogElement.addEventListener("close", () => {
 actionDialogElement.addEventListener("click", (event) => { if (event.target === actionDialogElement) finishActionDialog(false); });
 shareDialogElement.addEventListener("click", (event) => { if (event.target === shareDialogElement) closeShareDialog(); });
 importDialogElement.addEventListener("click", (event) => { if (event.target === importDialogElement) closeImportDialog(); });
+processDialogElement.addEventListener("click", (event) => { if (event.target === processDialogElement) closeProcessDialog(); });
+commonDialogElement.addEventListener("click", (event) => { if (event.target === commonDialogElement) closeCommonDialog(); });
 shareDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); closeShareDialog(); });
 importDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); closeImportDialog(); });
+processDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); closeProcessDialog(); });
+commonDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); closeCommonDialog(); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loadState(true); });
 
 loadState();
-appState.poll = setInterval(() => { if (!document.hidden && !dialogElement.open && !shareDialogElement.open && !importDialogElement.open && !launchDialogElement.open) loadState(true); }, 2500);
+appState.poll = setInterval(() => { if (!document.hidden && !dialogElement.open && !shareDialogElement.open && !importDialogElement.open && !launchDialogElement.open && !processDialogElement.open && !commonDialogElement.open) loadState(true); }, 2500);

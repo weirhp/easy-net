@@ -47,6 +47,17 @@ func HookArgs(entry model.LaunchEntry, proxy string) ([]string, error) {
 			args = append(args, "--")
 			args = append(args, splitArguments(entry.Arguments)...)
 		}
+	case model.LaunchModeClaude:
+		if entry.Path == "" {
+			return nil, fmt.Errorf("Claude Code 需要填写可执行文件路径")
+		}
+		if entry.DNS != "" {
+			args = append(args, "--dns", entry.DNS)
+		}
+		args = append(args, "--", entry.Path)
+		if entry.Arguments != "" {
+			args = append(args, splitArguments(entry.Arguments)...)
+		}
 	case model.LaunchModeChrome, model.LaunchModeEdge:
 		if entry.AttachExisting {
 			args = append(args, "--windivert", "--windivert-existing", "--tun-udp", entry.UDPMode)

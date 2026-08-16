@@ -1530,6 +1530,14 @@ int WatchSharedWinDivert(DWORD root_process_id,
         const auto current_revision = SharedProfileRevision(config_path);
         const bool configuration_changed =
             active_revision && current_revision && *active_revision != *current_revision;
+        if (configuration_changed) {
+            const auto profile = ReadUtf8File(config_path);
+            if (profile && profile->find("\"ProxyRules\": []") != std::string::npos) {
+                finish_engine();
+                std::filesystem::remove(ready_path, ignored);
+                return 0;
+            }
+        }
         const bool engine_stopped =
             engine.get() == nullptr || WaitForSingleObject(engine.get(), 0) != WAIT_TIMEOUT;
         if (configuration_changed || engine_stopped) {

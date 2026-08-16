@@ -35,9 +35,13 @@ func (s *store) Load() (*model.LaunchFile, error) {
 	if err := json.Unmarshal(data, &file); err != nil {
 		return nil, fmt.Errorf("解析启动入口：%w", err)
 	}
+	legacy := file.Version < model.CurrentLaunchFileVersion
 	valid := make([]model.LaunchEntry, 0, len(file.Entries))
 	seen := make(map[string]struct{}, len(file.Entries))
 	for _, entry := range file.Entries {
+		if legacy {
+			entry.AttachExisting = true
+		}
 		entry.Normalize()
 		if entry.Validate() != nil {
 			continue

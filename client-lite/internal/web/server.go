@@ -81,6 +81,7 @@ type profileInput struct {
 	ListenHost    string          `json:"listenHost"`
 	ListenPort    int             `json:"listenPort"`
 	AutoStart     bool            `json:"autoStart"`
+	Default       bool            `json:"default"`
 	BypassPrivate bool            `json:"bypassPrivate"`
 	BypassChina   bool            `json:"bypassChina"`
 	WebSocket     *webSocketInput `json:"websocket"`
@@ -117,6 +118,7 @@ type publicProfile struct {
 	ListenHost    string           `json:"listenHost"`
 	ListenPort    int              `json:"listenPort"`
 	AutoStart     bool             `json:"autoStart"`
+	Default       bool             `json:"default"`
 	BypassPrivate bool             `json:"bypassPrivate"`
 	BypassChina   bool             `json:"bypassChina"`
 	WebSocket     *publicWebSocket `json:"websocket,omitempty"`
@@ -174,6 +176,7 @@ func NewWithOptions(svc *service.Service, onQuit func(), options Options) (*Serv
 	mux.HandleFunc("/api/profiles", s.handleProfiles)
 	mux.HandleFunc("/api/profiles/", s.handleProfileAction)
 	mux.HandleFunc("/api/launches", s.handleLaunches)
+	mux.HandleFunc("/api/launches/bulk", s.handleLaunchBulk)
 	mux.HandleFunc("/api/launches/", s.handleLaunchAction)
 	mux.HandleFunc("/api/processes", s.handleProcesses)
 	mux.HandleFunc("/api/export", s.handleExport)
@@ -185,9 +188,10 @@ func NewWithOptions(svc *service.Service, onQuit func(), options Options) (*Serv
 		Handler:           securityHeaders(localRequestOnly(mux)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       20 * time.Second,
-		WriteTimeout:      20 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    16 * 1024,
+		// A first shared-WinDivert update may wait for a visible UAC decision.
+		WriteTimeout:   2 * time.Minute,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 16 * 1024,
 	}
 	return s, nil
 }
@@ -381,6 +385,12 @@ func (s *Server) handleProfileAction(w http.ResponseWriter, r *http.Request) {
 	}
 	id := parts[0]
 	if len(parts) == 1 && r.Method == http.MethodDelete {
+		if s.launches != nil {
+			if count := s.launches.ProxyUsageCount(id); count > 0 {
+				writeError(w, http.StatusConflict, fmt.Sprintf("该代理正被 %d 个应用使用，请先为这些应用更换代理", count))
+				return
+			}
+		}
 		if err := s.service.Delete(id); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -407,6 +417,27 @@ func (s *Server) handleProfileAction(w http.ResponseWriter, r *http.Request) {
 		s.service.Stop(id)
 	case "test":
 		err = s.service.TestConnection(id)
+	case "default":
+		var body struct {
+			Enabled bool `json:"enabled"`
+		}
+		if decodeErr := decodeJSON(w, r, &body); decodeErr != nil {
+			err = decodeErr
+		} else {
+			current, isCurrentDefault := s.service.Profile(id)
+			if !body.Enabled && isCurrentDefault && current.Default && s.launches != nil && s.launches.DefaultProxyUsageCount() > 0 {
+				err = fmt.Errorf("仍有应用继承默认代理；请直接把另一个代理设为默认")
+			} else {
+				err = s.service.SetDefault(id, body.Enabled)
+			}
+			if err == nil && s.launches != nil {
+				applyError := ""
+				if applyErr := s.launches.ApplySharedRules(); applyErr != nil {
+					applyError = applyErr.Error()
+				}
+				result = map[string]any{"ok": true, "applyError": applyError}
+			}
+		}
 	case "trust":
 		var body struct {
 			Fingerprint string `json:"fingerprint"`
@@ -468,10 +499,50 @@ func (s *Server) handleLaunches(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "entry": saved})
+		applyError := ""
+		if saved.AttachExisting {
+			if err := s.launches.ApplySharedRules(); err != nil {
+				applyError = err.Error()
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "entry": saved, "applyError": applyError})
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+func (s *Server) handleLaunchBulk(w http.ResponseWriter, r *http.Request) {
+	if s.launches == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.authorized(r) {
+		writeError(w, http.StatusForbidden, "本地管理令牌无效，请刷新页面")
+		return
+	}
+	var body struct {
+		Entries []model.LaunchEntry `json:"entries"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	saved, err := s.launches.UpsertMany(body.Entries)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	applyError := ""
+	if err := s.launches.ApplySharedRules(); err != nil {
+		applyError = err.Error()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "entries": saved, "saved": len(saved), "applyError": applyError,
+	})
 }
 
 func (s *Server) handleProcesses(w http.ResponseWriter, r *http.Request) {
@@ -514,7 +585,11 @@ func (s *Server) handleLaunchAction(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		applyError := ""
+		if err := s.launches.ApplySharedRules(); err != nil {
+			applyError = err.Error()
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applyError": applyError})
 		return
 	}
 	if len(parts) != 2 || r.Method != http.MethodPost {
@@ -954,7 +1029,7 @@ func probeApplicationServerAt(baseURL, expectedApplication string, allowLegacy b
 }
 
 func (p profileInput) modelProfile() model.Profile {
-	profile := model.Profile{ID: p.ID, Name: p.Name, Type: p.Type, ListenHost: p.ListenHost, ListenPort: p.ListenPort, AutoStart: p.AutoStart, BypassPrivate: p.BypassPrivate, BypassChina: p.BypassChina}
+	profile := model.Profile{ID: p.ID, Name: p.Name, Type: p.Type, ListenHost: p.ListenHost, ListenPort: p.ListenPort, AutoStart: p.AutoStart, Default: p.Default, BypassPrivate: p.BypassPrivate, BypassChina: p.BypassChina}
 	if p.WebSocket != nil {
 		profile.WebSocket = &model.WebSocketConfig{URL: p.WebSocket.URL, AllowInsecure: p.WebSocket.AllowInsecure, LegacyQueryAuth: p.WebSocket.LegacyQueryAuth}
 	}
@@ -966,7 +1041,7 @@ func (p profileInput) modelProfile() model.Profile {
 
 func toProfileView(state service.ProfileState) profileView {
 	profile := state.Profile
-	view := publicProfile{ID: profile.ID, Name: profile.Name, Type: profile.Type, ListenHost: profile.ListenHost, ListenPort: profile.ListenPort, AutoStart: profile.AutoStart, BypassPrivate: profile.BypassPrivate, BypassChina: profile.BypassChina}
+	view := publicProfile{ID: profile.ID, Name: profile.Name, Type: profile.Type, ListenHost: profile.ListenHost, ListenPort: profile.ListenPort, AutoStart: profile.AutoStart, Default: profile.Default, BypassPrivate: profile.BypassPrivate, BypassChina: profile.BypassChina}
 	if profile.WebSocket != nil {
 		view.WebSocket = &publicWebSocket{URL: profile.WebSocket.URL, HasSecret: profile.WebSocket.SecretRef != "", AllowInsecure: profile.WebSocket.AllowInsecure, LegacyQueryAuth: profile.WebSocket.LegacyQueryAuth}
 	}

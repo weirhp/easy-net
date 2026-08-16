@@ -197,8 +197,7 @@ inline int OpenLiteApps(const std::wstring& hook_path) {
     return 0;
 }
 
-// Returns 0 on success, a positive process exit code on failure, or -1 to fall back
-// to the legacy launcher-entries.tsv shortcut path.
+// Returns 0 on success or a positive process exit code on failure.
 inline int DispatchLaunchEntry(const std::wstring& hook_path, const std::wstring& id) {
     std::wstring token;
     std::wstring error;
@@ -207,14 +206,17 @@ inline int DispatchLaunchEntry(const std::wstring& hook_path, const std::wstring
             return 0;
         }
         if (error == L"not_found") {
-            return -1;
+            error = L"启动入口不存在，可能已在 Easy-Net Lite 中删除。";
         }
         MessageBoxW(nullptr, error.c_str(), L"启动失败", MB_OK | MB_ICONERROR);
         return 3;
     }
     const auto lite_path = FindLiteExecutable(hook_path);
     if (lite_path.empty()) {
-        return -1;
+        MessageBoxW(nullptr,
+                    L"找不到 Easy-Net-Lite.exe，无法读取该桌面快捷方式。",
+                    L"启动失败", MB_OK | MB_ICONERROR);
+        return 3;
     }
     // Start the full Lite control plane without opening a browser, then submit the
     // launch through its authenticated local API.  Starting Lite with

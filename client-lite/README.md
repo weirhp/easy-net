@@ -53,7 +53,7 @@ Windows 管理页有「代理」和「应用」两个标签。代理页继续管
 - 请把 `easy-net-hook.exe`（以及微信场景需要的 DLL / WinDivert / TUN 文件）和 Lite 放在同一目录，或设置环境变量 `EASY_NET_HOOK`。
 - macOS 不显示「应用」标签。首次在 Windows 上打开 Lite 时，如果存在旧的 `%LOCALAPPDATA%\EasyNetHook\launcher-entries.tsv`，会按本地监听地址匹配并导入到 `%AppData%\Easy-Net Lite\launches.json`。
 
-双击 `easy-net-hook.exe` 或传入 `--gui` 会打开 Lite 管理页的 `#apps`。旧 Win32 启动器窗口仍可用 `--legacy-gui` 打开。
+双击 `easy-net-hook.exe` 或传入 `--gui` 会打开 Lite 管理页的 `#apps`。
 
 ## 配置与凭据
 

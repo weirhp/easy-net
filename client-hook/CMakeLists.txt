@@ -112,16 +112,12 @@ set_target_properties(easy_net_hook_dll PROPERTIES OUTPUT_NAME "easy-net-hook")
 
 add_executable(easy_net_hook_launcher
     src/easy_net_hook.manifest
-    src/easy_net_hook.rc
     src/browser_proxy.h
     src/chatgpt_package.h
     src/config_ipc.h
     src/history_store.h
     src/launcher.cpp
-    src/launcher_gui.cpp
-    src/launcher_gui.h
-    src/lite_engine.h
-    src/resource.h
+    src/lite_api.h
     src/socks5_health.h
     src/tun_config.h
     src/wechat_supervisor.h
@@ -155,10 +151,6 @@ set_tests_properties(launcher_cursor_help_test PROPERTIES
 add_test(NAME launcher_browser_help_test COMMAND easy_net_hook_launcher --help)
 set_tests_properties(launcher_browser_help_test PROPERTIES
     PASS_REGULAR_EXPRESSION "browser-isolated")
-add_test(NAME launcher_share_code_help_test COMMAND easy_net_hook_launcher --help)
-set_tests_properties(launcher_share_code_help_test PROPERTIES
-    PASS_REGULAR_EXPRESSION "share-code")
-
 add_executable(socks5_protocol_test tests/socks5_protocol_test.cpp src/socks5_protocol.h)
 target_compile_features(socks5_protocol_test PRIVATE cxx_std_20)
 target_compile_definitions(socks5_protocol_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -214,15 +206,6 @@ set_property(TARGET history_store_test PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_test(NAME history_store_test COMMAND history_store_test)
 
-add_executable(lite_engine_test tests/lite_engine_test.cpp src/lite_engine.h)
-target_compile_features(lite_engine_test PRIVATE cxx_std_20)
-target_compile_definitions(lite_engine_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
-target_compile_options(lite_engine_test PRIVATE /W4 /permissive- /EHsc /UNDEBUG)
-target_link_libraries(lite_engine_test PRIVATE winhttp)
-set_property(TARGET lite_engine_test PROPERTY
-    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-add_test(NAME lite_engine_test COMMAND lite_engine_test)
-
 add_executable(tun_config_test tests/tun_config_test.cpp src/tun_config.h)
 target_compile_features(tun_config_test PRIVATE cxx_std_20)
 target_compile_options(tun_config_test PRIVATE /W4 /permissive- /EHsc /UNDEBUG)
@@ -275,70 +258,52 @@ add_custom_command(TARGET easy_net_hook_launcher POST_BUILD
 find_program(GO_EXECUTABLE go)
 if(GO_EXECUTABLE)
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set(EASY_NET_ENGINE_GOARCH amd64)
+        set(EASY_NET_LITE_GOARCH amd64)
     else()
-        set(EASY_NET_ENGINE_GOARCH 386)
+        set(EASY_NET_LITE_GOARCH 386)
     endif()
-    set(EASY_NET_ENGINE_VERSION "dev")
+    set(EASY_NET_LITE_VERSION "dev")
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite/VERSION")
-        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite/VERSION" EASY_NET_ENGINE_VERSION)
-        string(STRIP "${EASY_NET_ENGINE_VERSION}" EASY_NET_ENGINE_VERSION)
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite/VERSION" EASY_NET_LITE_VERSION)
+        string(STRIP "${EASY_NET_LITE_VERSION}" EASY_NET_LITE_VERSION)
     endif()
-    file(GLOB_RECURSE EASY_NET_ENGINE_GO_SOURCES CONFIGURE_DEPENDS
+    file(GLOB_RECURSE EASY_NET_LITE_GO_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite/*.go"
     )
-    set(EASY_NET_ENGINE_OUTPUT
-        "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/easy-net-engine.exe")
     set(EASY_NET_LITE_OUTPUT
         "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/Easy-Net-Lite.exe")
-    add_custom_command(OUTPUT "${EASY_NET_ENGINE_OUTPUT}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>"
-        COMMAND ${CMAKE_COMMAND} -E env
-            CGO_ENABLED=0
-            GOOS=windows
-            GOARCH=${EASY_NET_ENGINE_GOARCH}
-            --
-            ${GO_EXECUTABLE} build -trimpath
-            "-ldflags=-s -w -H=windowsgui -X easy-net/client-lite/internal/version.Value=${EASY_NET_ENGINE_VERSION}"
-            -o "${EASY_NET_ENGINE_OUTPUT}"
-            ./cmd/easy-net-engine
-        DEPENDS
-            ${EASY_NET_ENGINE_GO_SOURCES}
-            "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite/go.mod"
-            "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite/go.sum"
-            "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite/VERSION"
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite"
-        COMMENT "Building Easy-Net built-in proxy engine"
-        VERBATIM
-    )
-    add_custom_target(easy_net_engine ALL DEPENDS "${EASY_NET_ENGINE_OUTPUT}")
     add_custom_command(OUTPUT "${EASY_NET_LITE_OUTPUT}"
         COMMAND ${CMAKE_COMMAND} -E make_directory
             "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>"
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite/scripts/generate-windows-resource.ps1"
+            -Architecture ${EASY_NET_LITE_GOARCH}
         COMMAND ${CMAKE_COMMAND} -E env
             CGO_ENABLED=0
             GOOS=windows
-            GOARCH=${EASY_NET_ENGINE_GOARCH}
+            GOARCH=${EASY_NET_LITE_GOARCH}
             --
             ${GO_EXECUTABLE} build -trimpath
-            "-ldflags=-s -w -H=windowsgui -X easy-net/client-lite/internal/version.Value=${EASY_NET_ENGINE_VERSION}"
+            "-ldflags=-s -w -H=windowsgui -X easy-net/client-lite/internal/version.Value=${EASY_NET_LITE_VERSION}"
             -o "${EASY_NET_LITE_OUTPUT}"
             ./cmd/easy-net
+        COMMAND ${CMAKE_COMMAND} -E rm -f
+            "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite/cmd/easy-net/easy_net_lite_windows.syso"
         DEPENDS
-            ${EASY_NET_ENGINE_GO_SOURCES}
+            ${EASY_NET_LITE_GO_SOURCES}
             "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite/go.mod"
             "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite/go.sum"
             "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite/VERSION"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite/assets/easy-net-lite.ico"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite/scripts/generate-windows-resource.ps1"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../client-lite"
         COMMENT "Building full Easy-Net Lite tray application"
         VERBATIM
     )
     add_custom_target(easy_net_lite ALL DEPENDS "${EASY_NET_LITE_OUTPUT}")
-    add_dependencies(easy_net_hook_launcher easy_net_engine easy_net_lite)
+    add_dependencies(easy_net_hook_launcher easy_net_lite)
 else()
-    message(WARNING "Go was not found; easy-net-engine.exe will not be built. "
-                    "Easy-Net-Lite.exe will also be unavailable in the combined package.")
+    message(WARNING "Go was not found; Easy-Net-Lite.exe will be unavailable in the combined package.")
 endif()
 
 if(TARGET proxybridge_core)

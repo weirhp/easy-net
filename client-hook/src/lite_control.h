@@ -11,7 +11,7 @@
 #include <utility>
 #include <vector>
 
-#include "lite_engine.h"
+#include "lite_api.h"
 
 namespace easy_net::lite_control {
 
@@ -38,12 +38,12 @@ inline std::optional<std::wstring> LiteStatusControl() {
     if (body.size() > 64 * 1024) {
         return std::nullopt;
     }
-    const auto application = lite_engine::JsonString(body, "application");
-    const auto control = lite_engine::JsonString(body, "control");
+    const auto application = lite_api::JsonString(body, "application");
+    const auto control = lite_api::JsonString(body, "control");
     if (!application || *application != kApplication || !control) {
         return std::nullopt;
     }
-    const std::wstring wide = lite_engine::Utf8ToWide(*control);
+    const std::wstring wide = lite_api::Utf8ToWide(*control);
     if (!wide.starts_with(L"http://127.0.0.1:")) {
         return std::nullopt;
     }
@@ -51,25 +51,25 @@ inline std::optional<std::wstring> LiteStatusControl() {
 }
 
 inline bool ProbeLiteAt(const std::wstring& control, std::wstring& token) {
-    const auto ping = lite_engine::HttpRequest(
+    const auto ping = lite_api::HttpRequest(
         L"GET", control + L"/api/ping", {}, {});
     if (ping.status != 200) {
         return false;
     }
-    const auto application = lite_engine::JsonString(ping.body, "application");
+    const auto application = lite_api::JsonString(ping.body, "application");
     if (!application || *application != kApplication) {
         return false;
     }
-    const auto state = lite_engine::HttpRequest(
+    const auto state = lite_api::HttpRequest(
         L"GET", control + L"/api/state", {}, {});
     if (state.status != 200) {
         return false;
     }
-    const auto raw_token = lite_engine::JsonString(state.body, "token");
+    const auto raw_token = lite_api::JsonString(state.body, "token");
     if (!raw_token || raw_token->empty()) {
         return false;
     }
-    token = lite_engine::Utf8ToWide(*raw_token);
+    token = lite_api::Utf8ToWide(*raw_token);
     return !token.empty();
 }
 
@@ -146,7 +146,7 @@ inline bool StartLaunch(const std::wstring& id, std::wstring& error) {
         error = L"Easy-Net Lite 未运行";
         return false;
     }
-    const auto result = lite_engine::HttpRequest(
+    const auto result = lite_api::HttpRequest(
         L"POST", control + L"/api/launches/" + id + L"/start", "{}", token);
     if (result.status == 200) {
         return true;
@@ -155,9 +155,9 @@ inline bool StartLaunch(const std::wstring& id, std::wstring& error) {
         error = L"not_found";
         return false;
     }
-    const auto message = lite_engine::JsonString(result.body, "error");
+    const auto message = lite_api::JsonString(result.body, "error");
     if (message && !message->empty()) {
-        error = lite_engine::Utf8ToWide(*message);
+        error = lite_api::Utf8ToWide(*message);
         return false;
     }
     error = L"Easy-Net Lite 无法启动该应用。";

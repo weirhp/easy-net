@@ -356,55 +356,18 @@ func TestProbeRecognizesLegacyInstance(t *testing.T) {
 	}
 }
 
-func TestProbeRequiresMatchingApplication(t *testing.T) {
-	engine := httptest.NewServer(securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestProbeRejectsAnotherApplication(t *testing.T) {
+	other := httptest.NewServer(securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/ping" {
 			http.NotFound(w, r)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"application": "easy-net-engine", "version": "test"})
+		writeJSON(w, http.StatusOK, map[string]string{"application": "another-application", "version": "test"})
 	})))
-	defer engine.Close()
+	defer other.Close()
 
-	if _, ok := probeApplicationServerAt(engine.URL, "easy-net-lite", true); ok {
-		t.Fatal("engine was mistaken for the regular Easy-Net Lite application")
-	}
-	if url, ok := probeApplicationServerAt(engine.URL, "easy-net-engine", false); !ok || url != engine.URL {
-		t.Fatalf("matching engine was not recognized: %q %v", url, ok)
-	}
-}
-
-func TestEngineUsesFallbackPortWhenLiteOwnsPreferredPort(t *testing.T) {
-	lite := httptest.NewServer(securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/ping" {
-			http.NotFound(w, r)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"application": "easy-net-lite", "version": "test"})
-	})))
-	defer lite.Close()
-	liteAddress := strings.TrimPrefix(lite.URL, "http://")
-
-	secrets := &memorySecrets{values: map[string]string{}}
-	svc, err := service.New(config.NewStoreAt(filepath.Join(t.TempDir(), "config.json")), secrets)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manager, err := NewWithOptions(svc, func() {}, Options{
-		ListenAddress: liteAddress, Application: "easy-net-engine", DisableAssets: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = manager.Shutdown(t.Context()) }()
-	if manager.URL() == lite.URL {
-		t.Fatal("engine reused the regular Lite management endpoint")
-	}
-	if !strings.HasPrefix(manager.URL(), "http://127.0.0.1:") {
-		t.Fatalf("engine did not select a loopback fallback: %s", manager.URL())
+	if _, ok := probeServerAt(other.URL); ok {
+		t.Fatal("another local application was mistaken for Easy-Net Lite")
 	}
 }
 
@@ -414,10 +377,9 @@ func TestStatusFileDoesNotPersistManagementToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	statusPath := filepath.Join(t.TempDir(), "engine", "status.json")
+	statusPath := filepath.Join(t.TempDir(), "lite", "status.json")
 	manager, err := NewWithOptions(svc, func() {}, Options{
 		ListenAddress: "127.0.0.1:0", StatusFile: statusPath,
-		Application: "easy-net-engine", DisableAssets: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -436,9 +398,9 @@ func TestStatusFileDoesNotPersistManagementToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, exists := status["token"]; exists {
-		t.Fatal("management token must not be persisted in the engine status file")
+		t.Fatal("management token must not be persisted in the Lite status file")
 	}
-	if status["application"] != "easy-net-engine" || status["control"] != manager.URL() {
+	if status["application"] != "easy-net-lite" || status["control"] != manager.URL() {
 		t.Fatalf("unexpected status file: %#v", status)
 	}
 }
@@ -452,7 +414,7 @@ func TestStatusFileFindsLiteOnFallbackPort(t *testing.T) {
 		t.Fatal(err)
 	}
 	first, err := NewWithOptions(firstService, func() {}, Options{
-		ListenAddress: "127.0.0.1:0", StatusFile: statusPath, Application: "easy-net-lite",
+		ListenAddress: "127.0.0.1:0", StatusFile: statusPath,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -467,7 +429,7 @@ func TestStatusFileFindsLiteOnFallbackPort(t *testing.T) {
 		t.Fatal(err)
 	}
 	second, err := NewWithOptions(secondService, func() {}, Options{
-		ListenAddress: "127.0.0.1:0", StatusFile: statusPath, Application: "easy-net-lite",
+		ListenAddress: "127.0.0.1:0", StatusFile: statusPath,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -479,7 +441,7 @@ func TestStatusFileFindsLiteOnFallbackPort(t *testing.T) {
 	}
 }
 
-func TestEngineImportReportsAutoStartFailure(t *testing.T) {
+func TestImportReportsAutoStartFailure(t *testing.T) {
 	secrets := &memorySecrets{values: map[string]string{}}
 	svc, err := service.New(config.NewStoreAt(filepath.Join(t.TempDir(), "config.json")), secrets)
 	if err != nil {
@@ -511,7 +473,7 @@ func TestEngineImportReportsAutoStartFailure(t *testing.T) {
 	defer occupied.Close()
 	payload.PreferredPort = profile.ListenPort
 
-	manager, err := NewWithOptions(svc, func() {}, Options{Application: "easy-net-engine", DisableAssets: true})
+	manager, err := NewWithOptions(svc, func() {}, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -540,30 +502,19 @@ func TestEngineImportReportsAutoStartFailure(t *testing.T) {
 	}
 }
 
-func TestEngineImportStartsLocalProxy(t *testing.T) {
+func TestImportStartsLocalProxy(t *testing.T) {
 	secrets := &memorySecrets{values: map[string]string{}}
 	svc, err := service.New(config.NewStoreAt(filepath.Join(t.TempDir(), "config.json")), secrets)
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager, err := NewWithOptions(svc, func() {}, Options{
-		Application:   "easy-net-engine",
-		DisableAssets: true,
-	})
+	manager, err := NewWithOptions(svc, func() {}, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(manager.Handler())
 	defer server.Close()
 
-	page, err := http.Get(server.URL + "/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = page.Body.Close()
-	if page.StatusCode != http.StatusNotFound {
-		t.Fatalf("engine should not serve the management UI, got %d", page.StatusCode)
-	}
 	ping, err := http.Get(server.URL + "/api/ping")
 	if err != nil {
 		t.Fatal(err)
@@ -573,8 +524,8 @@ func TestEngineImportStartsLocalProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = ping.Body.Close()
-	if ping.StatusCode != http.StatusOK || pingBody["application"] != "easy-net-engine" {
-		t.Fatalf("unexpected engine ping: %d %#v", ping.StatusCode, pingBody)
+	if ping.StatusCode != http.StatusOK || pingBody["application"] != "easy-net-lite" {
+		t.Fatalf("unexpected Lite ping: %d %#v", ping.StatusCode, pingBody)
 	}
 
 	profile := model.Profile{ID: "source", Name: "hook ws", Type: model.ProxyTypeWebSocket, ListenHost: "127.0.0.1", ListenPort: 18090, WebSocket: &model.WebSocketConfig{URL: "wss://example.com/tunnel"}}

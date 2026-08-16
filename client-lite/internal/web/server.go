@@ -34,8 +34,6 @@ var assets embed.FS
 type Options struct {
 	ListenAddress string
 	StatusFile    string
-	Application   string
-	DisableAssets bool
 	Launches      *launch.Service
 }
 
@@ -48,8 +46,6 @@ type Server struct {
 	onQuit        func()
 	listenAddress string
 	statusFile    string
-	application   string
-	serveAssets   bool
 }
 
 type stateResponse struct {
@@ -155,10 +151,6 @@ func NewWithOptions(svc *service.Service, onQuit func(), options Options) (*Serv
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return nil, fmt.Errorf("生成本地管理令牌：%w", err)
 	}
-	application := strings.TrimSpace(options.Application)
-	if application == "" {
-		application = "easy-net-lite"
-	}
 	listen := strings.TrimSpace(options.ListenAddress)
 	if listen == "" {
 		listen = listenAddress
@@ -166,7 +158,6 @@ func NewWithOptions(svc *service.Service, onQuit func(), options Options) (*Serv
 	s := &Server{
 		service: svc, launches: options.Launches, token: hex.EncodeToString(tokenBytes), onQuit: onQuit,
 		listenAddress: listen, statusFile: strings.TrimSpace(options.StatusFile),
-		application: application, serveAssets: !options.DisableAssets,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleAsset)
@@ -179,6 +170,7 @@ func NewWithOptions(svc *service.Service, onQuit func(), options Options) (*Serv
 	mux.HandleFunc("/api/launches/bulk", s.handleLaunchBulk)
 	mux.HandleFunc("/api/launches/", s.handleLaunchAction)
 	mux.HandleFunc("/api/processes", s.handleProcesses)
+	mux.HandleFunc("/api/application-files/pick", s.handleApplicationFilePick)
 	mux.HandleFunc("/api/export", s.handleExport)
 	mux.HandleFunc("/api/import", s.handleImport)
 	mux.HandleFunc("/api/start-all", s.handleStartAll)
@@ -197,14 +189,12 @@ func NewWithOptions(svc *service.Service, onQuit func(), options Options) (*Serv
 }
 
 func (s *Server) Start() error {
-	if existingURL, ok := probeApplicationStatusFile(s.statusFile, s.application); ok {
+	if existingURL, ok := probeApplicationStatusFile(s.statusFile); ok {
 		return &AlreadyRunningError{URL: existingURL}
 	}
 	listener, err := net.Listen("tcp", s.listenAddress)
 	if err != nil {
-		if existingURL, ok := probeApplicationServerAt(
-			"http://"+s.listenAddress, s.application, s.application == "easy-net-lite",
-		); ok {
+		if existingURL, ok := probeServerAt("http://" + s.listenAddress); ok {
 			return &AlreadyRunningError{URL: existingURL}
 		}
 		log.Printf("[Easy-Net Lite] 管理端口 %s 被占用，将使用随机本地端口：%v", s.listenAddress, err)
@@ -230,7 +220,7 @@ func (s *Server) Start() error {
 	return nil
 }
 
-func probeApplicationStatusFile(path, expectedApplication string) (string, bool) {
+func probeApplicationStatusFile(path string) (string, bool) {
 	if strings.TrimSpace(path) == "" {
 		return "", false
 	}
@@ -243,7 +233,7 @@ func probeApplicationStatusFile(path, expectedApplication string) (string, bool)
 		Application string `json:"application"`
 		Control     string `json:"control"`
 	}
-	if err := json.NewDecoder(io.LimitReader(file, 64*1024)).Decode(&status); err != nil || status.Application != expectedApplication {
+	if err := json.NewDecoder(io.LimitReader(file, 64*1024)).Decode(&status); err != nil || status.Application != "easy-net-lite" {
 		return "", false
 	}
 	parsed, err := url.Parse(status.Control)
@@ -251,7 +241,7 @@ func probeApplicationStatusFile(path, expectedApplication string) (string, bool)
 		return "", false
 	}
 	baseURL := strings.TrimRight(status.Control, "/")
-	return probeApplicationServerAt(baseURL, expectedApplication, expectedApplication == "easy-net-lite")
+	return probeServerAt(baseURL)
 }
 
 func (s *Server) URL() string {
@@ -265,10 +255,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) Handler() http.Handler { return s.http.Handler }
 
 func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
-	if !s.serveAssets {
-		http.NotFound(w, r)
-		return
-	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -329,7 +315,7 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"application": s.application, "version": version.Value})
+	writeJSON(w, http.StatusOK, map[string]string{"application": "easy-net-lite", "version": version.Value})
 }
 
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
@@ -563,6 +549,34 @@ func (s *Server) handleProcesses(w http.ResponseWriter, r *http.Request) {
 		processes = []launch.ProcessInfo{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"processes": processes})
+}
+
+func (s *Server) handleApplicationFilePick(w http.ResponseWriter, r *http.Request) {
+	if s.launches == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.authorized(r) {
+		writeError(w, http.StatusForbidden, "本地管理令牌无效，请刷新页面")
+		return
+	}
+	var body struct {
+		Kind string `json:"kind"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	applications, err := s.launches.PickApplicationFiles(body.Kind)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"applications": applications})
 }
 
 func (s *Server) handleLaunchAction(w http.ResponseWriter, r *http.Request) {
@@ -934,20 +948,20 @@ func (s *Server) writeStatusFile() error {
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(s.statusFile), 0700); err != nil {
-		return fmt.Errorf("创建引擎状态目录：%w", err)
+		return fmt.Errorf("创建 Lite 状态目录：%w", err)
 	}
 	data, err := json.MarshalIndent(map[string]any{
-		"application": s.application,
+		"application": "easy-net-lite",
 		"pid":         os.Getpid(),
 		"control":     s.URL(),
 		"version":     version.Value,
 	}, "", "  ")
 	if err != nil {
-		return fmt.Errorf("序列化引擎状态：%w", err)
+		return fmt.Errorf("序列化 Lite 状态：%w", err)
 	}
 	data = append(data, '\n')
 	if err := os.WriteFile(s.statusFile, data, 0600); err != nil {
-		return fmt.Errorf("写入引擎状态：%w", err)
+		return fmt.Errorf("写入 Lite 状态：%w", err)
 	}
 	return nil
 }
@@ -975,10 +989,6 @@ func (s *Server) profileSummary(id string) (map[string]any, bool) {
 }
 
 func probeServerAt(baseURL string) (string, bool) {
-	return probeApplicationServerAt(baseURL, "easy-net-lite", true)
-}
-
-func probeApplicationServerAt(baseURL, expectedApplication string, allowLegacy bool) (string, bool) {
 	client := &http.Client{
 		Timeout:   750 * time.Millisecond,
 		Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 500 * time.Millisecond}).DialContext},
@@ -993,17 +1003,13 @@ func probeApplicationServerAt(baseURL, expectedApplication string, allowLegacy b
 			_ = json.NewDecoder(io.LimitReader(response.Body, 16*1024)).Decode(&ping)
 		}
 		_ = response.Body.Close()
-		if isCurrent && ping.Application == expectedApplication {
+		if isCurrent && ping.Application == "easy-net-lite" {
 			return baseURL, true
 		}
 		if isCurrent && ping.Application != "" {
 			return "", false
 		}
 	}
-	if !allowLegacy {
-		return "", false
-	}
-
 	// 0.1.1 之前没有 /api/ping 标记；使用旧管理接口的稳定特征识别，避免升级时启动两个实例。
 	response, err = client.Get(baseURL + "/api/state")
 	if err != nil {

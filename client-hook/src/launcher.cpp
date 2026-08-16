@@ -30,9 +30,7 @@
 #include "chatgpt_package.h"
 #include "config_ipc.h"
 #include "dns_resolver.h"
-#include "launcher_gui.h"
 #include "lite_control.h"
-#include "lite_engine.h"
 #include "socks5_health.h"
 #include "tun_config.h"
 #include "wechat_supervisor.h"
@@ -64,8 +62,6 @@ struct Options {
     std::wstring username;
     std::wstring password;
     std::wstring dns;
-    std::wstring share_code;
-    std::wstring engine_profile_id;
     bool inject_children = true;
     bool allow_udp_direct = false;
     bool detach = false;
@@ -121,9 +117,6 @@ void PrintUsage() {
         << L"  easy-net-hook.exe --proxy 127.0.0.1:1080 --windivert [options] -- app.exe [args...]\n\n"
         << L"Options:\n"
         << L"  --gui                  Open Easy-Net Lite's Apps tab (also the default with no arguments)\n"
-        << L"  --legacy-gui           Open the previous Win32 launcher window\n"
-        << L"  --share-code VALUE     Import an Easy-Net share code and start the built-in SOCKS5\n"
-        << L"  --engine-profile ID    Start a previously imported built-in proxy profile\n"
         << L"  --username VALUE       SOCKS5 username (optional)\n"
         << L"  --password VALUE       SOCKS5 password (optional, max 255 bytes)\n"
         << L"  --dns IP[:PORT]        Use a specific DNS server (default: Windows DNS)\n"
@@ -175,7 +168,6 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
             command_started = true;
         } else if (argument == L"--proxy" || argument == L"--username" ||
                    argument == L"--password" || argument == L"--dns" ||
-                   argument == L"--share-code" || argument == L"--engine-profile" ||
                    argument == L"--pid" || argument == L"--browser-path" ||
                    argument == L"--antigravity-path" || argument == L"--cursor-path" ||
                    argument == L"--wechat-path" ||
@@ -252,10 +244,6 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
                 options.app_user_model_id = argv[index];
             } else if (argument == L"--proxy") {
                 options.proxy = argv[index];
-            } else if (argument == L"--share-code") {
-                options.share_code = argv[index];
-            } else if (argument == L"--engine-profile") {
-                options.engine_profile_id = argv[index];
             } else if (argument == L"--username") {
                 options.username = argv[index];
             } else if (argument == L"--dns") {
@@ -311,18 +299,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
         }
     }
 
-    if (options.proxy.empty() && options.share_code.empty() &&
-        options.engine_profile_id.empty()) {
-        std::wcerr << L"--proxy, --share-code, or --engine-profile is required.\n";
-        return false;
-    }
-    if (!options.share_code.empty() && !options.engine_profile_id.empty()) {
-        std::wcerr << L"--share-code and --engine-profile cannot be used together.\n";
-        return false;
-    }
-    if ((!options.share_code.empty() || !options.engine_profile_id.empty()) &&
-        (!options.username.empty() || !options.password.empty())) {
-        std::wcerr << L"--username and --password apply only to an external SOCKS5 proxy.\n";
+    if (options.proxy.empty()) {
+        std::wcerr << L"--proxy is required.\n";
         return false;
     }
     const int target_count = ((!options.command.empty() && !options.antigravity && !options.cursor && !options.chrome && !options.edge && !options.wechat && !options.windivert) ? 1 : 0) +
@@ -424,26 +402,6 @@ bool ParseOptions(int argc, wchar_t** argv, Options& options) {
         std::wcerr << L"--tun-stack applies only to --wechat-backend tun.\n";
         return false;
     }
-    return true;
-}
-
-bool EnsureLauncherProxy(Options& options, const std::wstring& launcher_path, bool use_message_box) {
-    if (options.share_code.empty() && options.engine_profile_id.empty()) {
-        return true;
-    }
-    const auto info = easy_net::lite_engine::EnsureProxy(
-        launcher_path, options.share_code, options.engine_profile_id);
-    if (!info.ok) {
-        const std::wstring message =
-            info.error.empty() ? L"无法启动内置代理。" : info.error;
-        if (use_message_box) {
-            MessageBoxW(nullptr, message.c_str(), L"内置代理启动失败", MB_OK | MB_ICONERROR);
-        } else {
-            std::wcerr << message << L"\n";
-        }
-        return false;
-    }
-    options.proxy = info.listen_address;
     return true;
 }
 
@@ -3449,24 +3407,9 @@ int wmain(int argc, wchar_t** argv) {
         FreeConsole();
         return easy_net::lite_control::OpenLiteApps(std::wstring(module_path.data(), length));
     }
-    if (argc == 2 && std::wstring_view(argv[1]) == L"--legacy-gui") {
-        std::vector<wchar_t> module_path(32768);
-        const DWORD length = GetModuleFileNameW(nullptr, module_path.data(),
-                                                static_cast<DWORD>(module_path.size()));
-        if (length == 0 || length >= static_cast<DWORD>(module_path.size())) {
-            MessageBoxW(nullptr, L"Cannot locate easy-net-hook.exe.", L"Easy-Net Hook",
-                        MB_OK | MB_ICONERROR);
-            return 3;
-        }
-        FreeConsole();
-        return RunLauncherGui(GetModuleHandleW(nullptr),
-                              std::wstring(module_path.data(), length));
-    }
     Options options;
-    bool from_saved_entry = false;
     std::wstring launcher_path;
     if (argc == 3 && std::wstring_view(argv[1]) == L"--launch-entry") {
-        from_saved_entry = true;
         std::vector<wchar_t> module_path(32768);
         const DWORD length = GetModuleFileNameW(nullptr, module_path.data(),
                                                 static_cast<DWORD>(module_path.size()));
@@ -3517,9 +3460,6 @@ int wmain(int argc, wchar_t** argv) {
             return 3;
         }
         launcher_path.assign(module_path.data(), length);
-    }
-    if (!EnsureLauncherProxy(options, launcher_path, from_saved_entry)) {
-        return 4;
     }
     if (options.chatgpt_web) {
         return LaunchChatGptWeb(options);

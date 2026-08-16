@@ -200,26 +200,25 @@ function renderProfiles() {
             ${isExternal ? "" : `<label class="profile-selector" title="选择 ${escapeHTML(profile.name)}"><input class="profile-select" type="checkbox" data-profile-select="${escapeHTML(profile.id)}" aria-label="选择 ${escapeHTML(profile.name)}" ${selected ? "checked" : ""}></label>`}
             <h2 class="card-title">${escapeHTML(profile.name)}</h2>
             <span class="badge">${type}</span>
+            ${connectionStatus}
             <span class="status ${statusClass}">${statusText}</span>
-            ${profile.default ? `<span class="badge default-badge">默认代理</span>` : ""}
             ${profile.autoStart ? `<span class="badge neutral">自动启动</span>` : ""}
             ${profile.bypassPrivate ? `<span class="badge neutral">局域网直连</span>` : ""}
             ${profile.bypassChina ? `<span class="badge neutral">国内直连</span>` : ""}
           </div>
           <p class="endpoint">${localCapabilities} ${escapeHTML(profile.listenHost)}:${profile.listenPort} · ${escapeHTML(endpoint)}</p>
-		  <div class="connection-row">${connectionStatus}</div>
 		  ${item.error ? `<p class="error">启动错误：${escapeHTML(item.error)}</p>` : ""}
 		  ${item.connectionError ? `<p class="error connection-error">连接失败：${escapeHTML(item.connectionError)}</p>` : ""}
         </div>
       </div>
       <div class="card-top-actions">
+        <label class="default-proxy-switch"><input type="checkbox" role="switch" data-profile-default="${escapeHTML(profile.id)}" ${profile.default ? "checked" : ""} ${busy ? "disabled" : ""}><span class="switch-track" aria-hidden="true"></span><span>默认</span></label>
         <div class="card-actions">
           ${isExternal ? "" : `<button class="button compact ${item.running ? "stop" : "start"}" data-profile-action="${primaryAction}" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon(item.running ? "stop" : "play")}${primaryText}</button><button class="button compact secondary icon-only" aria-label="分享 ${escapeHTML(profile.name)}" data-tooltip="分享配置" data-profile-action="share" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("share")}</button>`}
           <button class="button compact secondary icon-only" aria-label="编辑 ${escapeHTML(profile.name)}" data-tooltip="编辑配置" data-profile-action="edit" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("edit")}</button>
         </div>
         <button class="card-delete" aria-label="删除 ${escapeHTML(profile.name)}" data-tooltip="删除配置" data-profile-action="delete" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("close")}</button>
       </div>
-      <label class="default-proxy-switch"><span>设为默认</span><input type="checkbox" role="switch" data-profile-default="${escapeHTML(profile.id)}" ${profile.default ? "checked" : ""} ${busy ? "disabled" : ""}><span class="switch-track" aria-hidden="true"></span></label>
     </article>`;
   }).join("");
   updateSelectionToolbar();
@@ -317,12 +316,8 @@ function renderLaunches() {
           </div>
           <p class="endpoint">${escapeHTML(profileText)}${entry.path ? ` · ${escapeHTML(entry.path)}` : ""}</p>
         </div>
-        <div class="card-actions">
-          <button class="button secondary" data-launch-action="shortcut" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("shortcut")}桌面快捷方式</button>
-          <button class="button secondary" data-launch-action="edit" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("edit")}编辑</button>
-        </div>
       </div>
-      <button class="card-delete" title="删除 ${escapeHTML(entry.name)}" aria-label="删除 ${escapeHTML(entry.name)}" data-launch-action="delete" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("close")}</button>
+      <div class="card-top-actions app-top-actions"><button class="button compact secondary" data-launch-action="shortcut" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("shortcut")}桌面快捷方式</button><button class="button compact secondary icon-only" aria-label="编辑 ${escapeHTML(entry.name)}" data-tooltip="编辑应用" data-launch-action="edit" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("edit")}</button><button class="card-delete" aria-label="删除 ${escapeHTML(entry.name)}" data-tooltip="删除应用" data-launch-action="delete" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("close")}</button></div>
     </article>`;
   }).join("");
 }
@@ -446,6 +441,68 @@ function processApplication(process) {
     processNames: known?.processes || process.name,
     attachExisting: true
   };
+}
+
+function pickedApplication(application) {
+  const lowerName = (application.name || "").toLowerCase();
+  const lowerPath = (application.path || "").toLowerCase();
+  const known = commonApplications.find((item) => {
+    const names = item.processes.toLowerCase().split(";");
+    return names.includes(lowerName) || names.some((name) => lowerPath.endsWith(`\\${name}`)) ||
+      lowerName.includes(item.label.toLowerCase());
+  });
+  const name = known?.name || application.name;
+  return {
+    name,
+    mode: known?.mode || "hook",
+    profileId: "",
+    proxy: "",
+    path: application.path || "",
+    arguments: application.arguments || "",
+    isolated: false,
+    udpMode: "auto",
+    dns: "",
+    processNames: known?.processes || name,
+    attachExisting: true
+  };
+}
+
+async function pickApplicationFiles(kind) {
+  showToast(kind === "shortcut" ? "请选择一个或多个 Windows 快捷方式" : "请选择一个或多个 EXE 程序");
+  try {
+    const picked = await api("/api/application-files/pick", { method: "POST", body: JSON.stringify({ kind }) });
+    const applications = (picked.applications || []).map(pickedApplication)
+      .filter((item) => item.path || item.mode !== "hook");
+    if (!applications.length) {
+      if ((picked.applications || []).length) throw new Error("所选快捷方式没有指向可识别的应用程序");
+      showToast("已取消选择");
+      return;
+    }
+    const data = await api("/api/launches/bulk", { method: "POST", body: JSON.stringify({ entries: applications }) });
+    showToast(data.applyError ? `已添加 ${data.saved} 个应用，但接管未刷新：${data.applyError}` : `已添加 ${data.saved} 个应用，接管规则已刷新`, Boolean(data.applyError));
+    await loadState();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function closeActionMenus(except = null) {
+  document.querySelectorAll("[data-menu]").forEach((menu) => {
+    if (menu === except) return;
+    const panel = menu.querySelector(".action-menu-panel");
+    const trigger = menu.querySelector("[data-menu-trigger]");
+    panel.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+  });
+}
+
+function toggleActionMenu(trigger) {
+  const menu = trigger.closest("[data-menu]");
+  const panel = menu.querySelector(".action-menu-panel");
+  const opening = panel.hidden;
+  closeActionMenus(menu);
+  panel.hidden = !opening;
+  trigger.setAttribute("aria-expanded", opening ? "true" : "false");
 }
 
 async function loadProcessChoices() {
@@ -1078,6 +1135,11 @@ function escapeHTML(value) {
 }
 
 document.addEventListener("click", (event) => {
+  const menuTrigger = event.target.closest("[data-menu-trigger]");
+  if (menuTrigger) { toggleActionMenu(menuTrigger); return; }
+  if (!event.target.closest("[data-menu]")) closeActionMenus();
+  const pickButton = event.target.closest("[data-pick-app]");
+  if (pickButton) { closeActionMenus(); pickApplicationFiles(pickButton.dataset.pickApp); return; }
   const tabButton = event.target.closest("[data-tab]");
   if (tabButton) { setTab(tabButton.dataset.tab); return; }
   const processLaunchButton = event.target.closest("[data-process-launch]");
@@ -1098,11 +1160,15 @@ document.addEventListener("click", (event) => {
   const importButton = event.target.closest("[data-import]");
   if (importButton) { openImportDialog(); return; }
   const addButton = event.target.closest("[data-add]");
-  if (addButton) { openProfileDialog(addButton.dataset.add); return; }
+  if (addButton) { closeActionMenus(); openProfileDialog(addButton.dataset.add); return; }
   const actionButton = event.target.closest("[data-profile-action]");
   if (actionButton) { profileAction(actionButton.dataset.profileAction, actionButton.dataset.id); return; }
   const commandButton = event.target.closest("[data-command]");
   if (commandButton) globalCommand(commandButton.dataset.command);
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeActionMenus();
 });
 
 document.addEventListener("change", (event) => {

@@ -1,6 +1,7 @@
 server-cf/.env
 server-cf/config.json
 client-lite/dist/
+client-lite/cmd/easy-net/easy_net_lite_windows.syso
 client-hook/build*/
 client-hook/package/
 client-hook/dist/

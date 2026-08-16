@@ -14,9 +14,9 @@ Easy-Net Hook 是一个轻量 Windows 应用代理器。普通 Win32 程序通�
 - MSVC v143 工具集。
 - Windows 10/11 SDK。
 - CMake tools for Windows。
-- Go 1.26（仅在仍需编译过渡组件 `easy-net-engine.exe` 时需要；应用启动已改由 Easy-Net Lite 提供本地 SOCKS5）。
+- Go 1.26（用于构建组合包中的 `Easy-Net-Lite.exe`）。
 
-构建 x64 或 Win32 时如果本机已安装 Go，还会同时编译对应架构的 `easy-net-engine.exe`。只安装命令行构建工具时，可以在管理员 PowerShell 中执行：
+构建 x64 或 Win32 组合包时会同时编译对应架构的 `Easy-Net-Lite.exe`。只安装命令行构建工具时，可以在管理员 PowerShell 中执行：
 
 ```powershell
 winget install --id Microsoft.VisualStudio.2022.BuildTools -e `
@@ -52,7 +52,6 @@ D:\work\me-pro\easy-net\client-hook\build-x64\Release
 easy-net-hook.exe
 easy-net-hook.dll
 Easy-Net-Lite.exe
-easy-net-engine.exe
 THIRD-PARTY-LICENSES\Detours-LICENSE.md
 windivert\easy-net-windivert.exe  （仅 x64）
 windivert\ProxyBridgeCore.dll     （仅 x64）
@@ -74,19 +73,11 @@ windivert\WinDivert64.sys         （仅 x64）
 
 会打开 Easy-Net Lite 管理页的「应用」标签（`http://127.0.0.1:18081/#apps`）。如果 Lite 还没运行，会尝试启动同一目录中的 `Easy-Net-Lite.exe`。GitHub Actions 生成的 Hook 组合包已包含完整 Lite，解压后不要拆分这些文件。
 
-旧的 Win32 启动器窗口仍可用：
-
-```powershell
-.\easy-net-hook.exe --legacy-gui
-```
-
-新的启动入口、桌面快捷方式和分享码导入请使用 Lite 网页。旧的 `%LOCALAPPDATA%\EasyNetHook\launcher-entries.tsv` 会在 Lite 首次启动时尝试迁移到 `%AppData%\Easy-Net Lite\launches.json`。
+新的启动入口、桌面快捷方式和分享码导入都在 Lite 管理页中完成。旧的 `%LOCALAPPDATA%\EasyNetHook\launcher-entries.tsv` 会在 Lite 首次启动时尝试迁移到 `%AppData%\Easy-Net Lite\launches.json`。
 
 ### 本地代理
 
-请在 Easy-Net Lite 中导入 `ENL1.` 分享码或手动添加 WebSocket/SSH 配置。应用入口只选择这些配置，启动时由 Lite 打开对应的回环 SOCKS5，再拉起 Hook。不要再把分享码写进 Hook 命令行，除非你明确使用 `--share-code` 的旧路径。
-
-过渡组件 `easy-net-engine.exe` 不是长期控制面；常驻进程应始终是 Easy-Net Lite（`:18081`）。
+请在 Easy-Net Lite 中导入 `ENL1.` 分享码或手动添加 WebSocket/SSH/外部 SOCKS5 配置。应用入口选择其中的配置，启动时由常驻的 Lite 打开对应的回环 SOCKS5，再拉起 Hook。
 
 「桌面快捷方式」由 Lite 应用页创建，目标为 `Easy-Net-Lite.exe --launch-entry <ID>`。旧快捷方式若仍指向 `easy-net-hook.exe --launch-entry`，会先询问 Lite；找不到对应入口时才回退到原来的 tsv。
 
@@ -96,9 +87,7 @@ windivert\WinDivert64.sys         （仅 x64）
 .\easy-net-hook.exe --proxy 127.0.0.1:1080 --chatgpt-app --detach
 ```
 
-`--share-code` 仍可用于一次性导入并启动，但日常请改在 Lite 的「代理」页导入。分享码包含代理认证信息，出现在进程命令行中时请注意本机是否有人能看到。
-
-ChatGPT、Cursor、微信等场景的行为与以前相同：ChatGPT 使用隔离用户目录；Antigravity 默认复用桌面登录状态，也可使用独立配置；微信可接管已运行进程。旧 Win32 窗口里的入口文件仍是 `%LOCALAPPDATA%\EasyNetHook\launcher-entries.tsv`，仅作为迁移来源和 `--legacy-gui` / 旧快捷方式回退。
+ChatGPT、Cursor、微信等场景的行为与以前相同：ChatGPT 使用隔离用户目录；Antigravity 默认复用桌面登录状态，也可使用独立配置；微信可接管已运行进程。旧入口文件仅作为 Lite 首次迁移的数据来源。
 
 ### 通用 Hook 与通用 WinDivert
 
@@ -470,8 +459,6 @@ Chromium 的 SOCKS5 模式不支持用户名密码，因此网页模式只能连
 
 ```text
 --gui               打开图形启动器；不带参数运行时也是此行为
---share-code CODE   导入 Easy-Net 分享码并启动内置 SOCKS5
---engine-profile ID 启动已经导入的内置代理配置
 --no-children       不向子进程加载 Hook
 --pid PID           附加到一个已运行的同架构进程
 --appx AUMID        正式激活打包桌面应用，然后附加返回的进程
@@ -559,7 +546,7 @@ DNS 查询是目标进程到指定 DNS 服务的普通 UDP/TCP 流量，会绕�
 
 ```text
 easy-net-hook.exe
-  ├─ 默认打开 Easy-Net Lite「应用」页（--legacy-gui 仍可打开旧窗口）
+  ├─ 默认打开 Easy-Net Lite「应用」页
   ├─ --chatgpt-app（原生 SOCKS5 参数 + 后端代理环境）
   ├─ --antigravity（默认配置/可选隔离配置 + IDE 原生代理 + LS 兜底 Hook）
   ├─ --cursor（原生 SOCKS5 + Node service 定向 Hook + 同代理多窗口识别）

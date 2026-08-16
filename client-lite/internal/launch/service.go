@@ -165,6 +165,10 @@ func (s *Service) Processes() ([]ProcessInfo, error) {
 	return s.runner.Processes()
 }
 
+func (s *Service) PickApplicationFiles(kind string) ([]PickedApplication, error) {
+	return pickApplicationFiles(kind)
+}
+
 func (s *Service) ProxyUsageCount(profileID string) int {
 	defaultID := ""
 	if s.proxies != nil {

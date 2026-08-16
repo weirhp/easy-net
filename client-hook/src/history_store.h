@@ -22,7 +22,6 @@ struct Entry {
     std::wstring udp_mode;
     bool wechat_existing = false;
     std::wstring id;
-    std::wstring engine_profile_id;
 };
 
 inline std::wstring EscapeField(std::wstring_view value) {
@@ -111,13 +110,11 @@ inline std::vector<Entry> Parse(std::wstring_view text) {
                 std::wstring udp_mode = fields.size() >= 9 ? std::move(fields[8]) : L"";
                 const bool wechat_existing = fields.size() >= 10 && fields[9] == L"1";
                 std::wstring id = fields.size() >= 11 ? std::move(fields[10]) : L"";
-                std::wstring engine_profile_id = fields.size() >= 12 ? std::move(fields[11]) : L"";
                 entries.push_back({std::move(fields[0]), std::move(fields[1]),
                                    std::move(fields[2]), std::move(fields[3]),
                                    std::move(fields[4]), std::move(fields[5]),
                                    std::move(fields[6]), isolated || extended_isolated,
-                                   std::move(udp_mode), wechat_existing, std::move(id),
-                                   std::move(engine_profile_id)});
+                                   std::move(udp_mode), wechat_existing, std::move(id)});
             }
         }
         start = end + 1;
@@ -133,7 +130,7 @@ inline std::wstring Serialize(const std::vector<Entry>& entries) {
         const std::wstring_view fields[]{entry.mode,      entry.name, entry.path,
                                          entry.arguments, entry.proxy, entry.dns,
                                          entry.last_used, isolated,   entry.udp_mode,
-                                         wechat_existing, entry.id,   entry.engine_profile_id};
+                                         wechat_existing, entry.id};
         for (std::size_t index = 0; index < std::size(fields); ++index) {
             if (index != 0) {
                 result.push_back(L'\t');
@@ -155,8 +152,7 @@ inline bool SameLaunch(const Entry& left, const Entry& right) {
            CaseInsensitiveEquals(left.proxy, right.proxy) &&
            CaseInsensitiveEquals(left.dns, right.dns) && left.isolated == right.isolated &&
            CaseInsensitiveEquals(left.udp_mode, right.udp_mode) &&
-           left.wechat_existing == right.wechat_existing &&
-           left.engine_profile_id == right.engine_profile_id;
+           left.wechat_existing == right.wechat_existing;
 }
 
 inline std::size_t SaveEntry(std::vector<Entry>& entries, Entry entry,

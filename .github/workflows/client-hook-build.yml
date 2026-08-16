@@ -72,7 +72,6 @@ jobs:
           Copy-Item client-hook/build/Release/easy-net-hook.exe -Destination $package
           Copy-Item client-hook/build/Release/easy-net-hook.dll -Destination $package
           Copy-Item client-hook/build/Release/Easy-Net-Lite.exe -Destination $package
-          Copy-Item client-hook/build/Release/easy-net-engine.exe -Destination $package
           Copy-Item client-hook/build/Release/THIRD-PARTY-LICENSES -Destination $package -Recurse
           Copy-Item client-hook/README.md -Destination $package
 
@@ -85,7 +84,6 @@ jobs:
           Copy-Item client-hook/build/Release/easy-net-hook.exe -Destination $package
           Copy-Item client-hook/build/Release/easy-net-hook.dll -Destination $package
           Copy-Item client-hook/build/Release/Easy-Net-Lite.exe -Destination $package
-          Copy-Item client-hook/build/Release/easy-net-engine.exe -Destination $package
           Copy-Item client-hook/build/Release/THIRD-PARTY-LICENSES -Destination $package -Recurse
           Copy-Item client-hook/README.md -Destination $package
           Copy-Item client-hook/build/Release/windivert -Destination $package -Recurse

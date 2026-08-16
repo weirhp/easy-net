@@ -59,12 +59,13 @@ func (e *AlreadyRunningError) Error() string {
 }
 
 type Service struct {
-	mu      sync.Mutex
-	startMu sync.Mutex
-	store   *store
-	file    *model.LaunchFile
-	proxies *service.Service
-	runner  Runner
+	mu       sync.Mutex
+	startMu  sync.Mutex
+	pickerMu sync.Mutex
+	store    *store
+	file     *model.LaunchFile
+	proxies  *service.Service
+	runner   Runner
 }
 
 type View struct {
@@ -166,6 +167,10 @@ func (s *Service) Processes() ([]ProcessInfo, error) {
 }
 
 func (s *Service) PickApplicationFiles(kind string) ([]PickedApplication, error) {
+	if !s.pickerMu.TryLock() {
+		return nil, fmt.Errorf("文件选择窗口已经打开，请先完成或取消当前选择")
+	}
+	defer s.pickerMu.Unlock()
 	return pickApplicationFiles(kind)
 }
 

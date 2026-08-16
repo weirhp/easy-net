@@ -34,6 +34,7 @@ const processFormElement = $("#process-form");
 const commonDialogElement = $("#common-dialog");
 const commonFormElement = $("#common-form");
 let actionDialogResolver = null;
+let applicationPickerBusy = false;
 
 const commonApplications = [
   { name: "Cursor.exe", label: "Cursor", mode: "cursor", processes: "Cursor.exe" },
@@ -468,6 +469,13 @@ function pickedApplication(application) {
 }
 
 async function pickApplicationFiles(kind) {
+  if (applicationPickerBusy) {
+    showToast("文件选择窗口已经打开，请先完成或取消当前选择", true);
+    return;
+  }
+  applicationPickerBusy = true;
+  const pickButtons = [...document.querySelectorAll("[data-pick-app]")];
+  pickButtons.forEach((button) => { button.disabled = true; });
   showToast(kind === "shortcut" ? "请选择一个或多个 Windows 快捷方式" : "请选择一个或多个 EXE 程序");
   try {
     const picked = await api("/api/application-files/pick", { method: "POST", body: JSON.stringify({ kind }) });
@@ -483,6 +491,9 @@ async function pickApplicationFiles(kind) {
     await loadState();
   } catch (error) {
     showToast(error.message, true);
+  } finally {
+    applicationPickerBusy = false;
+    pickButtons.forEach((button) => { button.disabled = false; });
   }
 }
 

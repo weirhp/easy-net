@@ -11,9 +11,9 @@ if (-not $Output) {
     $Output = Join-Path $projectDir "cmd\easy-net\easy_net_lite_windows.syso"
 }
 if (-not (Test-Path -LiteralPath $icon -PathType Leaf)) {
-    throw "缺少 Easy-Net Lite 图标资源：$icon"
+    throw "Easy-Net Lite icon resource is missing: $icon"
 }
 
 go run github.com/akavel/rsrc@v0.10.2 -arch $Architecture -ico $icon -o $Output
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-Write-Host "Windows 图标资源已生成：$Output"
+Write-Host "Windows icon resource generated: $Output"

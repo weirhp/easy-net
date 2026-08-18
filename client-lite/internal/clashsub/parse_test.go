@@ -63,7 +63,7 @@ func TestWriteMihomoConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{"mixed-port: 17890", "mode: global", "name: 香港 1", "type: ss"} {
+	for _, want := range []string{"mixed-port: 17890", "mode: global", "name: 香港 1", "type: ss", "redir-host", "proxy-server-nameserver", "global-client-fingerprint: chrome"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("config missing %q:\n%s", want, text)
 		}

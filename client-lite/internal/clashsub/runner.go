@@ -45,10 +45,17 @@ func (r *mihomoRunner) Start(subscriptionID string, listenPort int, proxy map[st
 	if err := WriteMihomoConfig(configPath, listenPort, proxy); err != nil {
 		return err
 	}
+	logFile, err := os.OpenFile(filepath.Join(workDir, "mihomo.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("创建 mihomo 日志：%w", err)
+	}
 	cmd := exec.Command(exe, "-d", workDir, "-f", configPath)
 	cmd.Dir = workDir
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 	hideWindow(cmd)
 	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
 		return fmt.Errorf("启动 mihomo：%w", err)
 	}
 	r.mu.Lock()
@@ -56,6 +63,7 @@ func (r *mihomoRunner) Start(subscriptionID string, listenPort int, proxy map[st
 	r.mu.Unlock()
 	go func() {
 		_ = cmd.Wait()
+		_ = logFile.Close()
 		r.mu.Lock()
 		if r.commands[subscriptionID] == cmd {
 			delete(r.commands, subscriptionID)

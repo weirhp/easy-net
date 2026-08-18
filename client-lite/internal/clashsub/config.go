@@ -16,22 +16,25 @@ func WriteMihomoConfig(path string, listenPort int, proxy map[string]any) error 
 	if proxy == nil || strings.TrimSpace(asString(proxy["name"])) == "" {
 		return fmt.Errorf("Clash 节点无效")
 	}
+	node := normalizeMap(proxy)
 	document := map[string]any{
-		"mixed-port":   listenPort,
-		"bind-address": "127.0.0.1",
-		"allow-lan":    false,
-		"mode":         "global",
-		"log-level":    "warning",
-		"ipv6":         true,
+		"mixed-port":                listenPort,
+		"bind-address":              "127.0.0.1",
+		"allow-lan":                 false,
+		"mode":                      "global",
+		"log-level":                 "info",
+		"ipv6":                      false,
+		"tcp-concurrent":            true,
+		"global-client-fingerprint": "chrome",
 		"dns": map[string]any{
-			"enable":             true,
-			"ipv6":               true,
-			"enhanced-mode":      "fake-ip",
-			"fake-ip-range":      "198.18.0.1/16",
-			"default-nameserver": []any{"223.5.5.5", "8.8.8.8"},
-			"nameserver":         []any{"8.8.8.8", "1.1.1.1"},
+			"enable":                  true,
+			"ipv6":                    false,
+			"enhanced-mode":           "redir-host",
+			"default-nameserver":      []any{"223.5.5.5", "119.29.29.29"},
+			"proxy-server-nameserver": []any{"https://dns.alidns.com/dns-query", "https://doh.pub/dns-query", "223.5.5.5"},
+			"nameserver":              []any{"https://dns.alidns.com/dns-query", "https://doh.pub/dns-query"},
 		},
-		"proxies": []any{normalizeMap(proxy)},
+		"proxies": []any{node},
 	}
 	data, err := yaml.Marshal(document)
 	if err != nil {

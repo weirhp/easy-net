@@ -235,7 +235,7 @@ func (windowsRunner) Processes() ([]ProcessInfo, error) {
 	seen := make(map[string]struct{})
 	internalNames := map[string]struct{}{
 		"easy-net-lite.exe": {}, "easy-net-hook.exe": {},
-		"easy-net-windivert.exe": {}, "sing-box.exe": {},
+		"easy-net-windivert.exe": {}, "sing-box.exe": {}, "mihomo.exe": {},
 	}
 	for {
 		name := windows.UTF16ToString(process.ExeFile[:])

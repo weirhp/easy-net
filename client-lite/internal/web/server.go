@@ -19,6 +19,7 @@ import (
 	"time"
 	"unicode"
 
+	"easy-net/client-lite/internal/clashsub"
 	"easy-net/client-lite/internal/launch"
 	"easy-net/client-lite/internal/model"
 	"easy-net/client-lite/internal/service"
@@ -49,13 +50,14 @@ type Server struct {
 }
 
 type stateResponse struct {
-	Profiles   []profileView `json:"profiles"`
-	Launches   []launch.View `json:"launches,omitempty"`
-	Features   featuresView  `json:"features"`
-	ConfigPath string        `json:"configPath"`
-	Token      string        `json:"token"`
-	Version    string        `json:"version"`
-	Warnings   []string      `json:"warnings,omitempty"`
+	Profiles      []profileView   `json:"profiles"`
+	Subscriptions []clashsub.View `json:"subscriptions,omitempty"`
+	Launches      []launch.View   `json:"launches,omitempty"`
+	Features      featuresView    `json:"features"`
+	ConfigPath    string          `json:"configPath"`
+	Token         string          `json:"token"`
+	Version       string          `json:"version"`
+	Warnings      []string        `json:"warnings,omitempty"`
 }
 
 type featuresView struct {
@@ -119,6 +121,12 @@ type publicProfile struct {
 	BypassChina   bool             `json:"bypassChina"`
 	WebSocket     *publicWebSocket `json:"websocket,omitempty"`
 	SSH           *publicSSH       `json:"ssh,omitempty"`
+	Clash         *publicClash     `json:"clash,omitempty"`
+}
+
+type publicClash struct {
+	SubscriptionID string `json:"subscriptionId"`
+	NodeName       string `json:"nodeName,omitempty"`
 }
 
 type publicWebSocket struct {
@@ -173,6 +181,8 @@ func NewWithOptions(svc *service.Service, onQuit func(), options Options) (*Serv
 	mux.HandleFunc("/api/application-files/pick", s.handleApplicationFilePick)
 	mux.HandleFunc("/api/export", s.handleExport)
 	mux.HandleFunc("/api/import", s.handleImport)
+	mux.HandleFunc("/api/subscriptions", s.handleSubscriptions)
+	mux.HandleFunc("/api/subscriptions/", s.handleSubscriptionAction)
 	mux.HandleFunc("/api/start-all", s.handleStartAll)
 	mux.HandleFunc("/api/stop-all", s.handleStopAll)
 	mux.HandleFunc("/api/app/quit", s.handleQuit)
@@ -294,8 +304,11 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		profiles = append(profiles, toProfileView(state))
 	}
 	response := stateResponse{
-		Profiles: profiles, Features: s.features(), ConfigPath: s.service.ConfigPath(),
+		Profiles: profiles, Subscriptions: s.service.ClashViews(), Features: s.features(), ConfigPath: s.service.ConfigPath(),
 		Token: s.token, Version: version.Value, Warnings: s.service.ConfigWarnings(),
+	}
+	if response.Subscriptions == nil {
+		response.Subscriptions = []clashsub.View{}
 	}
 	if s.launches != nil {
 		response.Launches = s.launches.Views()
@@ -346,6 +359,10 @@ func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if request.Profile.Type == model.ProxyTypeClash {
+		writeError(w, http.StatusBadRequest, "Clash 订阅请使用订阅导入，不能当作普通配置保存")
+		return
+	}
 	err := s.service.Upsert(request.Profile.modelProfile(), service.SecretValues{
 		WebSocketSecret: request.WebSocketSecret,
 		SSHPassword:     request.SSHPassword,
@@ -376,6 +393,14 @@ func (s *Server) handleProfileAction(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusConflict, fmt.Sprintf("该代理正被 %d 个应用使用，请先为这些应用更换代理", count))
 				return
 			}
+		}
+		if profile, ok := s.service.Profile(id); ok && profile.Type == model.ProxyTypeClash && profile.Clash != nil {
+			if err := s.service.DeleteClash(profile.Clash.SubscriptionID); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+			return
 		}
 		if err := s.service.Delete(id); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -675,6 +700,116 @@ func (s *Server) handleLaunchAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": path})
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *Server) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.authorized(r) {
+		writeError(w, http.StatusForbidden, "本地管理令牌无效，请刷新页面")
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+		URL  string `json:"url"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	sub, err := s.service.ImportClash(body.Name, body.URL)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": sub.ID, "name": sub.Name, "nodes": len(sub.Nodes)})
+}
+
+func (s *Server) handleSubscriptionAction(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		writeError(w, http.StatusForbidden, "本地管理令牌无效，请刷新页面")
+		return
+	}
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/subscriptions/"), "/"), "/")
+	if len(parts) < 1 || parts[0] == "" {
+		http.NotFound(w, r)
+		return
+	}
+	id := parts[0]
+	if len(parts) == 1 && r.Method == http.MethodDelete {
+		if s.launches != nil {
+			if count := s.launches.ProxyUsageCount(clashsub.ProfileID(id)); count > 0 {
+				writeError(w, http.StatusConflict, fmt.Sprintf("该订阅正被 %d 个应用使用，请先为这些应用更换代理", count))
+				return
+			}
+		}
+		if err := s.service.DeleteClash(id); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
+	if len(parts) != 2 || r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	switch parts[1] {
+	case "refresh":
+		sub, err := s.service.RefreshClash(id)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "nodes": len(sub.Nodes)})
+	case "stop":
+		s.service.Stop(clashsub.ProfileID(id))
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	case "start":
+		var body struct {
+			Node string `json:"node"`
+		}
+		if err := decodeJSON(w, r, &body); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.service.StartClashNode(id, body.Node); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	case "default":
+		var body struct {
+			Node    string `json:"node"`
+			Enabled bool   `json:"enabled"`
+		}
+		if err := decodeJSON(w, r, &body); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !body.Enabled {
+			current, isDefault := s.service.Profile(clashsub.ProfileID(id))
+			if isDefault && current.Default && s.launches != nil && s.launches.DefaultProxyUsageCount() > 0 {
+				writeError(w, http.StatusBadRequest, "仍有应用继承默认代理；请直接把另一个代理设为默认")
+				return
+			}
+		}
+		if err := s.service.SetClashNodeDefault(id, body.Node, body.Enabled); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		result := map[string]any{"ok": true, "applyError": ""}
+		if s.launches != nil {
+			if applyErr := s.launches.ApplySharedRules(); applyErr != nil {
+				result["applyError"] = applyErr.Error()
+			}
+		}
+		writeJSON(w, http.StatusOK, result)
 	default:
 		http.NotFound(w, r)
 	}
@@ -1063,6 +1198,9 @@ func toProfileView(state service.ProfileState) profileView {
 	}
 	if profile.SSH != nil {
 		view.SSH = &publicSSH{Host: profile.SSH.Host, Port: profile.SSH.Port, Username: profile.SSH.Username, AuthType: profile.SSH.AuthType, HasPassword: profile.SSH.AuthType == model.AuthTypePassword && profile.SSH.PasswordRef != "", HasPrivateKey: profile.SSH.PrivateKeyPath != "", HasPassphrase: profile.SSH.AuthType == model.AuthTypePrivateKey && profile.SSH.PassphraseRef != ""}
+	}
+	if profile.Clash != nil {
+		view.Clash = &publicClash{SubscriptionID: profile.Clash.SubscriptionID, NodeName: profile.Clash.NodeName}
 	}
 	connectionAt := ""
 	if !state.ConnectionAt.IsZero() {

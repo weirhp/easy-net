@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -254,6 +255,20 @@ func TestNewRejectsInsecureAndCredentialURLs(t *testing.T) {
 	}
 	if _, err := New(Config{URL: "wss://example.com/tunnel?secret=leaked", Secret: "token"}); err == nil {
 		t.Fatal("expected query secret rejection")
+	}
+}
+
+func TestNormalizeProxyURLAcceptsSocks5H(t *testing.T) {
+	original, err := url.Parse("socks5h://user:password@proxy.example:1080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyURL := normalizeProxyURL(original)
+	if proxyURL == nil || proxyURL.String() != "socks5://user:password@proxy.example:1080" {
+		t.Fatalf("unexpected normalized proxy URL: %v", proxyURL)
+	}
+	if original.Scheme != "socks5h" {
+		t.Fatalf("normalization mutated the environment URL: %s", original)
 	}
 }
 

@@ -114,7 +114,7 @@ func (t *Transport) OpenPacketContext(ctx context.Context) (transport.PacketConn
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
 		TLSClientConfig:  &tls.Config{MinVersion: tls.VersionTLS12},
-		Proxy:            http.ProxyFromEnvironment,
+		Proxy:            proxyFromEnvironment,
 	}
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+t.secret)
@@ -207,7 +207,7 @@ func (t *Transport) DialContext(ctx context.Context, network, address string) (n
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
 		TLSClientConfig:  &tls.Config{MinVersion: tls.VersionTLS12},
-		Proxy:            http.ProxyFromEnvironment,
+		Proxy:            proxyFromEnvironment,
 	}
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+t.secret)
@@ -265,6 +265,28 @@ func (t *Transport) DialContext(ctx context.Context, network, address string) (n
 	t.mu.Unlock()
 	go stream.heartbeat()
 	return stream, nil
+}
+
+// proxyFromEnvironment keeps the standard HTTP_PROXY/HTTPS_PROXY and NO_PROXY
+// behavior, while accepting the curl-style socks5h scheme used by applications
+// such as ChatGPT and Cursor. Gorilla's WebSocket dialer understands socks5 but
+// rejects socks5h; for a hostname destination its SOCKS5 dialer still sends the
+// hostname to the proxy, so remote DNS resolution is preserved.
+func proxyFromEnvironment(request *http.Request) (*url.URL, error) {
+	proxyURL, err := http.ProxyFromEnvironment(request)
+	if err != nil {
+		return proxyURL, err
+	}
+	return normalizeProxyURL(proxyURL), nil
+}
+
+func normalizeProxyURL(proxyURL *url.URL) *url.URL {
+	if proxyURL == nil || !strings.EqualFold(proxyURL.Scheme, "socks5h") {
+		return proxyURL
+	}
+	normalized := *proxyURL
+	normalized.Scheme = "socks5"
+	return &normalized
 }
 
 func (t *Transport) Close() error {

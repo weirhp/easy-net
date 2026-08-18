@@ -22,3 +22,18 @@ func TestExternalProxyUsesConfiguredEndpoint(t *testing.T) {
 		t.Fatalf("unexpected external proxy: %#v", profile)
 	}
 }
+
+func TestClashProfileRequiresSubscription(t *testing.T) {
+	profile := Profile{ID: "clash-abc", Name: "机场", Type: ProxyTypeClash, ListenHost: "127.0.0.1", ListenPort: 17890, AutoStart: true, Clash: &ClashConfig{SubscriptionID: "abc", NodeName: "香港"}}
+	profile.Normalize()
+	if err := profile.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if profile.AutoStart || profile.Clash.SubscriptionID != "abc" {
+		t.Fatalf("unexpected clash profile: %#v", profile)
+	}
+	profile.Clash = nil
+	if err := profile.Validate(); err == nil {
+		t.Fatal("expected clash profile without subscription id to fail")
+	}
+}

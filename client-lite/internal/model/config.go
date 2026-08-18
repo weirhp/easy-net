@@ -15,6 +15,7 @@ const (
 	ProxyTypeWebSocket ProxyType = "websocket"
 	ProxyTypeSSH       ProxyType = "ssh"
 	ProxyTypeExternal  ProxyType = "external"
+	ProxyTypeClash     ProxyType = "clash"
 )
 
 type AuthType string
@@ -44,6 +45,12 @@ type Profile struct {
 	BypassChina bool             `json:"bypassChina,omitempty"`
 	WebSocket   *WebSocketConfig `json:"websocket,omitempty"`
 	SSH         *SSHConfig       `json:"ssh,omitempty"`
+	Clash       *ClashConfig     `json:"clash,omitempty"`
+}
+
+type ClashConfig struct {
+	SubscriptionID string `json:"subscriptionId"`
+	NodeName       string `json:"nodeName,omitempty"`
 }
 
 type WebSocketConfig struct {
@@ -74,6 +81,10 @@ func (p Profile) Clone() Profile {
 		ssh := *p.SSH
 		clone.SSH = &ssh
 	}
+	if p.Clash != nil {
+		clash := *p.Clash
+		clone.Clash = &clash
+	}
 	return clone
 }
 
@@ -97,12 +108,16 @@ func (p *Profile) Normalize() {
 			p.SSH.AuthType = AuthTypePassword
 		}
 	}
-	if p.Type == ProxyTypeExternal {
+	if p.Type == ProxyTypeExternal || p.Type == ProxyTypeClash {
 		p.AutoStart = false
 		p.BypassPrivate = false
 		p.BypassChina = false
 		p.WebSocket = nil
 		p.SSH = nil
+	}
+	if p.Clash != nil {
+		p.Clash.SubscriptionID = strings.TrimSpace(p.Clash.SubscriptionID)
+		p.Clash.NodeName = strings.TrimSpace(p.Clash.NodeName)
 	}
 }
 
@@ -122,8 +137,15 @@ func (p Profile) Validate() error {
 	}
 	switch p.Type {
 	case ProxyTypeExternal:
-		if p.WebSocket != nil || p.SSH != nil {
+		if p.WebSocket != nil || p.SSH != nil || p.Clash != nil {
 			return fmt.Errorf("外部 SOCKS5 配置不能包含 Lite 隧道参数")
+		}
+	case ProxyTypeClash:
+		if p.WebSocket != nil || p.SSH != nil {
+			return fmt.Errorf("Clash 订阅代理不能包含 Lite 隧道参数")
+		}
+		if p.Clash == nil || strings.TrimSpace(p.Clash.SubscriptionID) == "" {
+			return fmt.Errorf("Clash 订阅 ID 不能为空")
 		}
 	case ProxyTypeWebSocket:
 		if p.WebSocket == nil || strings.TrimSpace(p.WebSocket.URL) == "" {
@@ -179,7 +201,7 @@ func (p Profile) Validate() error {
 
 func (p Profile) Endpoint() string {
 	switch p.Type {
-	case ProxyTypeExternal:
+	case ProxyTypeExternal, ProxyTypeClash:
 		return p.ListenAddress()
 	case ProxyTypeWebSocket:
 		if p.WebSocket != nil {

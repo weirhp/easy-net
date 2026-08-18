@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"easy-net/client-lite/internal/clashsub"
 	"easy-net/client-lite/internal/config"
 	"easy-net/client-lite/internal/launch"
 	"easy-net/client-lite/internal/model"
@@ -77,7 +78,7 @@ func TestManagementPageAndProfileAPI(t *testing.T) {
 	if !strings.Contains(string(page), `data-tab="apps"`) || !strings.Contains(string(page), "添加被代理应用") {
 		t.Fatal("management page is missing the apps tab markup")
 	}
-	for _, marker := range []string{`id="batch-export"`, `id="select-all-profiles"`, `id="test-profile"`, "粘贴一个或多个分享码"} {
+	for _, marker := range []string{`id="batch-export"`, `id="select-all-profiles"`, `id="test-profile"`, `id="process-filter"`, `data-process-launch`, "粘贴一个或多个分享码", `data-import-clash`, `id="source-tabs"`, "导入 Clash 订阅"} {
 		if !strings.Contains(string(page), marker) {
 			t.Fatalf("management page is missing redesigned control %q", marker)
 		}
@@ -796,6 +797,152 @@ func TestLaunchAPIReportsSavedRuleApplyFailure(t *testing.T) {
 	applyError, _ := payload["applyError"].(string)
 	if response.StatusCode != http.StatusOK || !strings.Contains(applyError, "WinDivert") {
 		t.Fatalf("unexpected response: %d %#v", response.StatusCode, payload)
+	}
+}
+
+type testClashRunner struct {
+	mu      sync.Mutex
+	running map[string]bool
+}
+
+func (r *testClashRunner) Start(subscriptionID string, listenPort int, proxy map[string]any) error {
+	_ = listenPort
+	_ = proxy
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.running == nil {
+		r.running = map[string]bool{}
+	}
+	r.running[subscriptionID] = true
+	return nil
+}
+
+func (r *testClashRunner) Stop(subscriptionID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.running, subscriptionID)
+	return nil
+}
+
+func (r *testClashRunner) Running(subscriptionID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.running[subscriptionID]
+}
+
+func TestClashSubscriptionAPI(t *testing.T) {
+	secrets := &memorySecrets{values: map[string]string{}}
+	dir := t.TempDir()
+	svc, err := service.New(config.NewStoreAt(filepath.Join(dir, "config.json")), secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clashMgr, err := clashsub.New(dir, &testClashRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clashMgr.SetFetcher(func(string) ([]byte, error) {
+		return []byte("proxies:\n  - {name: hk-1, type: ss, server: 1.2.3.4, port: 8388, password: super-secret}\n  - {name: jp-2, type: vmess, server: jp.example.com, port: 443}\n"), nil
+	})
+	svc.AttachClash(clashMgr)
+	manager, err := New(svc, func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(manager.Handler())
+	defer server.Close()
+	state := getState(t, server.URL)
+
+	unauthorized, err := http.Post(server.URL+"/api/subscriptions", "application/json", strings.NewReader(`{"name":"机场","url":"https://example.com/clash.yaml"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = unauthorized.Body.Close()
+	if unauthorized.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", unauthorized.StatusCode)
+	}
+
+	importReq, _ := http.NewRequest(http.MethodPost, server.URL+"/api/subscriptions", strings.NewReader(`{"name":"机场 A","url":"https://example.com/clash.yaml"}`))
+	importReq.Header.Set("Content-Type", "application/json")
+	importReq.Header.Set("X-Easy-Net-Token", state.Token)
+	importResp, err := http.DefaultClient.Do(importReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var imported struct {
+		OK    bool   `json:"ok"`
+		ID    string `json:"id"`
+		Name  string `json:"name"`
+		Nodes int    `json:"nodes"`
+	}
+	if err := json.NewDecoder(importResp.Body).Decode(&imported); err != nil {
+		t.Fatal(err)
+	}
+	_ = importResp.Body.Close()
+	if importResp.StatusCode != http.StatusOK || !imported.OK || imported.ID == "" || imported.Nodes != 2 {
+		t.Fatalf("unexpected import: %d %#v", importResp.StatusCode, imported)
+	}
+
+	state = getState(t, server.URL)
+	if len(state.Subscriptions) != 1 || state.Subscriptions[0].Name != "机场 A" || len(state.Subscriptions[0].Nodes) != 2 {
+		t.Fatalf("unexpected subscriptions: %#v", state.Subscriptions)
+	}
+	raw, _ := json.Marshal(state.Subscriptions)
+	if strings.Contains(string(raw), "super-secret") || strings.Contains(strings.ToLower(string(raw)), `"raw"`) {
+		t.Fatalf("subscription view leaked node secrets: %s", raw)
+	}
+	var clashProfile *publicProfile
+	for i := range state.Profiles {
+		if state.Profiles[i].Profile.Type == model.ProxyTypeClash {
+			clashProfile = &state.Profiles[i].Profile
+			break
+		}
+	}
+	if clashProfile == nil || clashProfile.Clash == nil || clashProfile.Clash.SubscriptionID != imported.ID {
+		t.Fatalf("missing backing clash profile: %#v", state.Profiles)
+	}
+
+	startReq, _ := http.NewRequest(http.MethodPost, server.URL+"/api/subscriptions/"+imported.ID+"/start", strings.NewReader(`{"node":"hk-1"}`))
+	startReq.Header.Set("Content-Type", "application/json")
+	startReq.Header.Set("X-Easy-Net-Token", state.Token)
+	startResp, err := http.DefaultClient.Do(startReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = startResp.Body.Close()
+	if startResp.StatusCode != http.StatusOK {
+		t.Fatalf("start failed: %d", startResp.StatusCode)
+	}
+
+	defaultReq, _ := http.NewRequest(http.MethodPost, server.URL+"/api/subscriptions/"+imported.ID+"/default", strings.NewReader(`{"node":"jp-2","enabled":true}`))
+	defaultReq.Header.Set("Content-Type", "application/json")
+	defaultReq.Header.Set("X-Easy-Net-Token", state.Token)
+	defaultResp, err := http.DefaultClient.Do(defaultReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = defaultResp.Body.Close()
+	if defaultResp.StatusCode != http.StatusOK {
+		t.Fatalf("default failed: %d", defaultResp.StatusCode)
+	}
+	state = getState(t, server.URL)
+	if !state.Subscriptions[0].Running || state.Subscriptions[0].SelectedNode != "jp-2" || !state.Subscriptions[0].ProfileDefault {
+		t.Fatalf("expected running default node, got %#v", state.Subscriptions[0])
+	}
+
+	deleteReq, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/subscriptions/"+imported.ID, nil)
+	deleteReq.Header.Set("X-Easy-Net-Token", state.Token)
+	deleteResp, err := http.DefaultClient.Do(deleteReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = deleteResp.Body.Close()
+	if deleteResp.StatusCode != http.StatusOK {
+		t.Fatalf("delete failed: %d", deleteResp.StatusCode)
+	}
+	state = getState(t, server.URL)
+	if len(state.Subscriptions) != 0 {
+		t.Fatalf("expected subscription removed, got %#v", state.Subscriptions)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"easy-net/client-lite/internal/clashsub"
 	"easy-net/client-lite/internal/config"
 	"easy-net/client-lite/internal/model"
 	"easy-net/client-lite/internal/proxy"
@@ -55,6 +56,7 @@ type Service struct {
 	profileLocks map[string]*sync.Mutex
 	connections  map[string]connectionHealth
 	revisions    map[string]uint64
+	clash        *clashsub.Manager
 }
 
 type connectionHealth struct {
@@ -88,8 +90,12 @@ func (s *Service) States() []ProfileState {
 		server := s.instances[profile.ID]
 		_, starting := s.starting[profile.ID]
 		connection := s.connections[profile.ID]
+		running := server != nil && server.Running()
+		if profile.Type == model.ProxyTypeClash {
+			running = s.clashRunningLocked(profile)
+		}
 		states = append(states, ProfileState{
-			Profile: profile.Clone(), Running: server != nil && server.Running(), Starting: starting, Error: s.errors[profile.ID],
+			Profile: profile.Clone(), Running: running, Starting: starting, Error: s.errors[profile.ID],
 			ConnectionStatus: connection.Status, ConnectionError: connection.Error, ConnectionAt: connection.CheckedAt,
 		})
 	}
@@ -446,6 +452,13 @@ func (s *Service) prepareProfile(incoming model.Profile, old *model.Profile, val
 	if profile.Type == model.ProxyTypeExternal {
 		profile.WebSocket = nil
 		profile.SSH = nil
+		profile.Clash = nil
+	} else if profile.Type == model.ProxyTypeClash {
+		profile.WebSocket = nil
+		profile.SSH = nil
+		if profile.Clash == nil {
+			profile.Clash = &model.ClashConfig{}
+		}
 	} else if profile.Type == model.ProxyTypeWebSocket {
 		profile.SSH = nil
 		if profile.WebSocket == nil {
@@ -561,6 +574,17 @@ func (s *Service) Start(id string) error {
 		s.mu.Unlock()
 		return nil
 	}
+	if profile.Type == model.ProxyTypeClash {
+		s.errors[id] = ""
+		s.mu.Unlock()
+		if err := s.startClash(profile); err != nil {
+			s.mu.Lock()
+			s.errors[id] = err.Error()
+			s.mu.Unlock()
+			return err
+		}
+		return nil
+	}
 	s.revisions[id]++
 	revision := s.revisions[id]
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -607,6 +631,10 @@ func (s *Service) Stop(id string) {
 	defer op.Unlock()
 	s.mu.Lock()
 	server := s.instances[id]
+	profile := model.Profile{}
+	if index := profileIndex(s.cfg, id); index >= 0 {
+		profile = s.cfg.Profiles[index].Clone()
+	}
 	delete(s.instances, id)
 	delete(s.starting, id)
 	s.revisions[id]++
@@ -614,6 +642,9 @@ func (s *Service) Stop(id string) {
 	s.mu.Unlock()
 	if server != nil {
 		server.Stop()
+	}
+	if profile.Type == model.ProxyTypeClash {
+		s.stopClash(profile)
 	}
 }
 
@@ -631,7 +662,7 @@ func (s *Service) TestConnection(id string) error {
 	profile := s.cfg.Profiles[index].Clone()
 	s.mu.Unlock()
 
-	if profile.Type == model.ProxyTypeExternal {
+	if profile.Type == model.ProxyTypeExternal || profile.Type == model.ProxyTypeClash {
 		err := socksprobe.Check(profile.ListenAddress())
 		result := newConnectionHealth(profile, err)
 		s.mu.Lock()
@@ -767,7 +798,7 @@ func websocketProbeTarget(rawURL string) (string, error) {
 
 func (s *Service) StartAuto() {
 	for _, state := range s.States() {
-		if state.Profile.AutoStart && state.Profile.Type != model.ProxyTypeExternal {
+		if state.Profile.AutoStart && state.Profile.Type != model.ProxyTypeExternal && state.Profile.Type != model.ProxyTypeClash {
 			_ = s.Start(state.Profile.ID)
 		}
 	}
@@ -775,7 +806,7 @@ func (s *Service) StartAuto() {
 
 func (s *Service) StartAll() {
 	for _, state := range s.States() {
-		if state.Profile.Type != model.ProxyTypeExternal {
+		if state.Profile.Type != model.ProxyTypeExternal && state.Profile.Type != model.ProxyTypeClash {
 			_ = s.Start(state.Profile.ID)
 		}
 	}
@@ -818,6 +849,8 @@ func (s *Service) buildTransport(profile model.Profile) (transport.Transport, er
 	switch profile.Type {
 	case model.ProxyTypeExternal:
 		return nil, fmt.Errorf("外部 SOCKS5 由其他软件提供，Lite 不会创建本地监听")
+	case model.ProxyTypeClash:
+		return nil, fmt.Errorf("Clash 订阅节点由 mihomo 提供本地监听")
 	case model.ProxyTypeWebSocket:
 		secret, err := s.getSecret(profile.WebSocket.SecretRef, "WebSocket 密钥")
 		if err != nil {

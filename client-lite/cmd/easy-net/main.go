@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"easy-net/client-lite/internal/clashsub"
 	"easy-net/client-lite/internal/config"
 	"easy-net/client-lite/internal/launch"
 	"easy-net/client-lite/internal/logging"
@@ -39,6 +40,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	clashMgr, err := clashsub.New(store.Dir(), nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	svc.AttachClash(clashMgr)
 	launches, err := launch.New(store.Dir(), svc, nil)
 	if err != nil {
 		log.Fatal(err)

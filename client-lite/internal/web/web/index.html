@@ -29,6 +29,7 @@
     <header class="page-header">
       <div><p class="eyebrow" id="page-eyebrow">LOCAL PROXY</p><h2 id="page-title">网络代理管理</h2><p class="page-subtitle" id="summary">正在读取配置…</p></div>
       <div class="header-actions" data-actions="proxies">
+        <button class="button secondary" type="button" data-import-clash><svg class="icon" aria-hidden="true"><use href="#icon-globe"></use></svg>导入 Clash 订阅</button>
         <button class="button secondary" type="button" data-import><svg class="icon" aria-hidden="true"><use href="#icon-import"></use></svg>导入配置</button>
         <button class="button secondary" type="button" data-command="stop-all"><svg class="icon" aria-hidden="true"><use href="#icon-stop"></use></svg>停止全部</button>
         <button class="button secondary" type="button" data-command="start-all"><svg class="icon" aria-hidden="true"><use href="#icon-play"></use></svg>启动全部</button>
@@ -37,7 +38,7 @@
           <div class="action-menu-panel" role="menu" hidden><button type="button" role="menuitem" data-add="websocket"><strong>WebSocket 代理</strong><small>连接 Easy-Net WebSocket 服务</small></button><button type="button" role="menuitem" data-add="ssh"><strong>SSH 代理</strong><small>通过 SSH 建立本地代理</small></button><button type="button" role="menuitem" data-add="external"><strong>外部代理</strong><small>接入 Clash、v2rayN 等 SOCKS5</small></button></div>
         </div>
       </div>
-      <div class="header-actions" data-actions="apps" hidden><button class="button secondary" type="button" data-common-launch><svg class="icon" aria-hidden="true"><use href="#icon-apps"></use></svg>导入常见应用</button><div class="action-menu" data-menu><button class="button secondary menu-trigger" type="button" data-menu-trigger aria-haspopup="menu" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#icon-file"></use></svg>从文件添加<svg class="icon menu-chevron" aria-hidden="true"><use href="#icon-chevron"></use></svg></button><div class="action-menu-panel" role="menu" hidden><button type="button" role="menuitem" data-pick-app="shortcut"><strong>选择桌面快捷方式</strong><small>支持多选 .lnk 文件并解析目标程序</small></button><button type="button" role="menuitem" data-pick-app="exe"><strong>选择 EXE 程序</strong><small>支持一次选择多个可执行文件</small></button></div></div><button class="button primary" type="button" data-process-launch><svg class="icon" aria-hidden="true"><use href="#icon-target"></use></svg>从运行进程添加</button></div>
+      <div class="header-actions" data-actions="apps" hidden><button class="button secondary" type="button" data-common-launch><svg class="icon" aria-hidden="true"><use href="#icon-apps"></use></svg>导入常见应用</button><div class="action-menu" data-menu><button class="button primary menu-trigger" type="button" data-menu-trigger aria-haspopup="menu" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#icon-plus"></use></svg>添加应用<svg class="icon menu-chevron" aria-hidden="true"><use href="#icon-chevron"></use></svg></button><div class="action-menu-panel" role="menu" hidden><button type="button" role="menuitem" data-process-launch><strong>从运行进程添加</strong><small>读取当前进程，可筛选并批量添加</small></button><button type="button" role="menuitem" data-pick-app="shortcut"><strong>选择桌面快捷方式</strong><small>支持多选 .lnk 文件并解析目标程序</small></button><button type="button" role="menuitem" data-pick-app="exe"><strong>选择 EXE 程序</strong><small>支持一次选择多个可执行文件</small></button></div></div></div>
     </header>
 
     <section class="notice" aria-labelledby="notice-title">
@@ -45,6 +46,14 @@
       <div><h3 id="notice-title">使用说明</h3><p id="overview-note">配置并启动代理后，本机流量会通过加密通道传输。关闭此窗口不会停止代理运行。</p></div>
     </section>
 
+    <nav class="source-tabs" id="source-tabs" hidden aria-label="代理来源"></nav>
+    <section class="subscription-toolbar" id="subscription-toolbar" hidden>
+      <label class="field node-filter-field"><span class="visually-hidden">筛选节点</span><input id="node-filter" type="search" autocomplete="off" placeholder="筛选节点名称、类型或地址"></label>
+      <span class="subscription-meta" id="subscription-meta"></span>
+      <button type="button" class="button secondary compact" data-clash-action="refresh"><svg class="icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>更新订阅</button>
+      <button type="button" class="button secondary compact" data-clash-action="stop"><svg class="icon" aria-hidden="true"><use href="#icon-stop"></use></svg>停止节点</button>
+      <button type="button" class="button secondary compact" data-clash-action="delete"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg>删除订阅</button>
+    </section>
     <section class="selection-toolbar" id="selection-toolbar" hidden aria-live="polite">
       <label class="selection-check"><input type="checkbox" id="select-all-profiles"><span>全选</span></label>
       <span id="selection-count">已选择 0 项</span>
@@ -103,7 +112,7 @@
   </dialog>
 
   <dialog id="process-dialog" class="wide-dialog" aria-labelledby="process-dialog-title">
-    <form id="process-form" class="dialog-shell"><div class="dialog-header"><div><p class="eyebrow">批量接管</p><h2 id="process-dialog-title">从运行进程添加应用</h2></div><button type="button" class="icon-button" data-close-process aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button></div><div class="dialog-body"><div class="bulk-toolbar"><label class="field"><span>这些应用使用的代理</span><select id="process-profile"></select></label><button type="button" class="button secondary compact" id="refresh-process-list"><svg class="icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>刷新进程</button></div><p class="share-note">可多选。名称直接使用进程文件名；保存后会更新共享 WinDivert 接管规则，只影响新建连接。</p><div class="choice-list" id="process-choice-list" aria-live="polite"></div><p class="form-error" id="process-error" role="alert" hidden></p></div><div class="dialog-actions"><button type="button" class="button secondary" data-close-process>取消</button><button type="submit" class="button primary" id="save-processes">添加所选应用</button></div></form>
+    <form id="process-form" class="dialog-shell"><div class="dialog-header"><div><p class="eyebrow">批量接管</p><h2 id="process-dialog-title">从运行进程添加应用</h2></div><button type="button" class="icon-button" data-close-process aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button></div><div class="dialog-body"><div class="bulk-toolbar process-toolbar"><label class="field"><span>这些应用使用的代理</span><select id="process-profile"></select></label><label class="field"><span>按进程名称筛选</span><input id="process-filter" type="search" autocomplete="off" aria-controls="process-choice-list" placeholder="例如 Cursor 或 chrome"></label><button type="button" class="button secondary toolbar-button" id="refresh-process-list" aria-controls="process-choice-list"><svg class="icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>刷新进程</button></div><p class="share-note">可多选。名称直接使用进程文件名；筛选不会取消已选项。保存后会更新共享 WinDivert 接管规则，只影响新建连接。</p><div class="choice-list" id="process-choice-list" aria-live="polite"></div><div class="empty-state compact-empty process-filter-empty" id="process-filter-empty" role="status" hidden><p>没有匹配的运行进程</p></div><p class="form-error" id="process-error" role="alert" hidden></p></div><div class="dialog-actions"><button type="button" class="button secondary" data-close-process>取消</button><button type="submit" class="button primary" id="save-processes">添加所选应用</button></div></form>
   </dialog>
 
   <dialog id="common-dialog" class="wide-dialog" aria-labelledby="common-dialog-title">
@@ -116,6 +125,21 @@
 
   <dialog id="share-dialog" aria-labelledby="share-dialog-title">
     <div class="dialog-shell"><div class="dialog-header"><div><p class="eyebrow">分享配置</p><h2 id="share-dialog-title">复制加密分享码</h2></div><button type="button" class="icon-button" id="close-share-dialog" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button></div><div class="dialog-body"><label class="field full"><span id="share-code-label">加密分享码</span><textarea id="share-code" rows="9" readonly spellcheck="false"></textarea></label><p class="share-warning">分享码包含连接密钥、SSH 密码或私钥。请只发送给可信的人；批量分享码每行一个。</p></div><div class="dialog-actions"><button type="button" class="button secondary" id="dismiss-share-dialog">关闭</button><button type="button" class="button primary" id="copy-share-code"><svg class="icon" aria-hidden="true"><use href="#icon-copy"></use></svg>复制分享码</button></div></div>
+  </dialog>
+
+  <dialog id="clash-import-dialog" aria-labelledby="clash-import-dialog-title">
+    <form id="clash-import-form" class="dialog-shell">
+      <div class="dialog-header"><div><p class="eyebrow">Clash 订阅</p><h2 id="clash-import-dialog-title">导入订阅并新增 Tab</h2></div><button type="button" class="icon-button" id="close-clash-import-dialog" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button></div>
+      <div class="dialog-body">
+        <div class="form-grid single-column">
+          <label class="field full"><span>Tab 名称</span><input id="clash-import-name" required maxlength="40" placeholder="例如：机场 A"></label>
+          <label class="field full"><span>订阅地址</span><input id="clash-import-url" required type="url" placeholder="https://example.com/clash.yaml"><small>支持 Clash / Mihomo YAML，或 base64 后的 YAML。名称会显示为网络代理页的 Tab。</small></label>
+        </div>
+        <p class="share-note">导入后可在对应 Tab 中选择节点启动本地 SOCKS5。启动节点需要把 mihomo 放到 Lite 同一目录，或设置 EASY_NET_MIHOMO。</p>
+        <p class="form-error" id="clash-import-error" role="alert" hidden></p>
+      </div>
+      <div class="dialog-actions"><button type="button" class="button secondary" id="cancel-clash-import-dialog">取消</button><button type="submit" class="button primary" id="import-clash-subscription">导入订阅</button></div>
+    </form>
   </dialog>
 
   <dialog id="import-dialog" aria-labelledby="import-dialog-title">

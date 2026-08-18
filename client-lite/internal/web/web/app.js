@@ -2,11 +2,14 @@
 
 const appState = {
   profiles: [],
+  subscriptions: [],
   launches: [],
   runningProcesses: [],
   commonPaths: new Map(),
   features: { appLaunches: false },
   tab: location.hash === "#apps" ? "apps" : "proxies",
+  proxySource: "manual",
+  nodeFilter: "",
   token: "",
   busy: new Set(),
   selectedProfiles: new Set(),
@@ -29,6 +32,8 @@ const actionDialogElement = $("#action-dialog");
 const shareDialogElement = $("#share-dialog");
 const importDialogElement = $("#import-dialog");
 const importFormElement = $("#import-form");
+const clashImportDialogElement = $("#clash-import-dialog");
+const clashImportFormElement = $("#clash-import-form");
 const processDialogElement = $("#process-dialog");
 const processFormElement = $("#process-form");
 const commonDialogElement = $("#common-dialog");
@@ -112,6 +117,7 @@ async function loadState(silent = false) {
     const data = await api("/api/state");
 	const previousProfiles = appState.profiles;
     appState.profiles = data.profiles || [];
+    appState.subscriptions = data.subscriptions || [];
     appState.launches = data.launches || [];
     appState.features = data.features || { appLaunches: false };
     appState.token = data.token;
@@ -120,6 +126,7 @@ async function loadState(silent = false) {
 	const validIDs = new Set(appState.profiles.map((item) => item.profile.id));
 	for (const id of appState.selectedProfiles) if (!validIDs.has(id)) appState.selectedProfiles.delete(id);
     syncTabs();
+    renderSourceTabs();
     renderProfiles();
     renderLaunches();
 	if (appState.initialized) notifyConnectionFailures(previousProfiles, appState.profiles);
@@ -162,21 +169,77 @@ function formatConnectionTime(value) {
 		: { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
+function manualProfiles() {
+  return appState.profiles.filter((item) => item.profile.type !== "clash");
+}
+
+function currentSubscription() {
+  return (appState.subscriptions || []).find((item) => item.id === appState.proxySource) || null;
+}
+
+function proxyDisplayName(profile) {
+  if (profile.type === "clash" && profile.clash?.nodeName) {
+    return `${profile.name} · ${profile.clash.nodeName}`;
+  }
+  return profile.name;
+}
+
+function renderSourceTabs() {
+  const tabs = $("#source-tabs");
+  const toolbar = $("#subscription-toolbar");
+  const isProxies = appState.tab === "proxies";
+  if (!isProxies) {
+    tabs.hidden = true;
+    toolbar.hidden = true;
+    return;
+  }
+  const subs = appState.subscriptions || [];
+  if (appState.proxySource !== "manual" && !subs.some((item) => item.id === appState.proxySource)) {
+    appState.proxySource = "manual";
+  }
+  tabs.hidden = false;
+  const buttons = [`<button type="button" class="source-tab${appState.proxySource === "manual" ? " active" : ""}" data-proxy-source="manual">手动添加</button>`];
+  for (const sub of subs) {
+    const running = sub.running ? " running" : "";
+    buttons.push(`<button type="button" class="source-tab${appState.proxySource === sub.id ? " active" : ""}${running}" data-proxy-source="${escapeHTML(sub.id)}">${escapeHTML(sub.name)}</button>`);
+  }
+  tabs.innerHTML = buttons.join("");
+  const isManual = appState.proxySource === "manual";
+  toolbar.hidden = isManual;
+  document.querySelectorAll("[data-actions='proxies'] [data-import], [data-actions='proxies'] [data-command='start-all'], [data-actions='proxies'] [data-menu]").forEach((element) => {
+    element.hidden = !isManual;
+  });
+  if (!isManual) {
+    const sub = currentSubscription();
+    const filter = $("#node-filter");
+    if (filter && filter.value !== appState.nodeFilter) filter.value = appState.nodeFilter;
+    $("#subscription-meta").textContent = sub
+      ? `${sub.nodes?.length || 0} 个节点 · ${sub.listenAddress}${sub.selectedNode ? ` · 当前 ${sub.selectedNode}` : ""}`
+      : "";
+  }
+}
+
 function renderProfiles() {
   if (appState.tab !== "proxies") return;
-  const running = appState.profiles.filter((item) => item.running).length;
-  const external = appState.profiles.filter((item) => item.profile.type === "external").length;
-  $("#summary").textContent = `${appState.profiles.length} 个代理 · ${running} 个本地监听${external ? ` · ${external} 个外部代理` : ""}`;
+  renderSourceTabs();
+  if (appState.proxySource !== "manual") {
+    renderClashNodes();
+    return;
+  }
+  const profiles = manualProfiles();
+  const running = profiles.filter((item) => item.running).length;
+  const external = profiles.filter((item) => item.profile.type === "external").length;
+  $("#summary").textContent = `${profiles.length} 个代理 · ${running} 个本地监听${external ? ` · ${external} 个外部代理` : ""}`;
   $("#page-eyebrow").textContent = "LOCAL PROXY";
   $("#page-title").textContent = "网络代理管理";
   $("#notice-title").textContent = "使用说明";
-  $("#overview-note").textContent = "配置并启动代理后，本机流量会通过加密通道传输。关闭此窗口不会停止代理运行，你可以在系统托盘中继续管理。";
-  if (!appState.profiles.length) {
-    profilesElement.innerHTML = `<div class="empty-state"><h2>还没有代理配置</h2><p>使用右上角按钮添加 WebSocket 或 SSH 代理。</p></div>`;
+  $("#overview-note").textContent = "配置并启动代理后，本机流量会通过加密通道传输。关闭此窗口不会停止代理运行，你可以在系统托盘中继续管理。Clash 订阅请用上方 Tab 切换。";
+  if (!profiles.length) {
+    profilesElement.innerHTML = `<div class="empty-state"><h2>还没有代理配置</h2><p>使用右上角按钮添加 WebSocket、SSH、外部 SOCKS5，或导入 Clash 订阅。</p></div>`;
     updateSelectionToolbar();
     return;
   }
-  profilesElement.innerHTML = appState.profiles.map((item) => {
+  profilesElement.innerHTML = profiles.map((item) => {
     const profile = item.profile;
     const busy = appState.busy.has(profile.id);
     const isExternal = profile.type === "external";
@@ -213,12 +276,71 @@ function renderProfiles() {
         </div>
       </div>
       <div class="card-top-actions">
-        <label class="default-proxy-switch"><input type="checkbox" role="switch" data-profile-default="${escapeHTML(profile.id)}" ${profile.default ? "checked" : ""} ${busy ? "disabled" : ""}><span class="switch-track" aria-hidden="true"></span><span>默认</span></label>
         <div class="card-actions">
           ${isExternal ? "" : `<button class="button compact ${item.running ? "stop" : "start"}" data-profile-action="${primaryAction}" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon(item.running ? "stop" : "play")}${primaryText}</button><button class="button compact secondary icon-only" aria-label="分享 ${escapeHTML(profile.name)}" data-tooltip="分享配置" data-profile-action="share" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("share")}</button>`}
           <button class="button compact secondary icon-only" aria-label="编辑 ${escapeHTML(profile.name)}" data-tooltip="编辑配置" data-profile-action="edit" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("edit")}</button>
         </div>
+        <label class="default-proxy-switch"><input type="checkbox" role="switch" data-profile-default="${escapeHTML(profile.id)}" ${profile.default ? "checked" : ""} ${busy ? "disabled" : ""}><span class="switch-track" aria-hidden="true"></span><span>默认</span></label>
         <button class="card-delete" aria-label="删除 ${escapeHTML(profile.name)}" data-tooltip="删除配置" data-profile-action="delete" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("close")}</button>
+      </div>
+    </article>`;
+  }).join("");
+  updateSelectionToolbar();
+}
+
+function renderClashNodes() {
+  const sub = currentSubscription();
+  $("#page-eyebrow").textContent = "CLASH SUBSCRIPTION";
+  $("#page-title").textContent = sub ? sub.name : "Clash 订阅";
+  $("#notice-title").textContent = "订阅节点";
+  $("#overview-note").textContent = "选择一个节点启动本地 SOCKS5。设为默认后，未单独指定代理的应用会使用该节点。同一订阅同时只运行一个节点。";
+  if (!sub) {
+    $("#summary").textContent = "订阅不存在";
+    profilesElement.innerHTML = `<div class="empty-state"><h2>找不到这个订阅</h2><p>请切换回「手动添加」，或重新导入 Clash 订阅。</p></div>`;
+    updateSelectionToolbar();
+    return;
+  }
+  const busy = appState.busy.has(`clash:${sub.id}`);
+  const nodes = (sub.nodes || []).filter((node) => {
+    const keyword = appState.nodeFilter.trim().toLowerCase();
+    if (!keyword) return true;
+    return [node.name, node.type, node.server, String(node.port || "")].join(" ").toLowerCase().includes(keyword);
+  });
+  $("#summary").textContent = `${sub.nodes?.length || 0} 个节点 · ${sub.running ? "本地监听中" : "未启动"} · ${sub.listenAddress}`;
+  if (sub.error) {
+    $("#overview-note").textContent = `启动错误：${sub.error}`;
+  }
+  if (!sub.nodes?.length) {
+    profilesElement.innerHTML = `<div class="empty-state"><h2>订阅里还没有节点</h2><p>点击“更新订阅”重新拉取，或删除后重新导入。</p></div>`;
+    updateSelectionToolbar();
+    return;
+  }
+  if (!nodes.length) {
+    profilesElement.innerHTML = `<div class="empty-state"><h2>没有匹配的节点</h2><p>请调整筛选关键词。</p></div>`;
+    updateSelectionToolbar();
+    return;
+  }
+  profilesElement.innerHTML = nodes.map((node) => {
+    const active = sub.selectedNode === node.name;
+    const running = Boolean(sub.running && active);
+    const endpoint = node.server ? `${node.server}${node.port ? `:${node.port}` : ""}` : "地址未提供";
+    return `<article class="profile-card node-card${active ? " selected" : ""}">
+      <div class="card-main">
+        <div class="card-content">
+          <div class="card-title-row">
+            <h2 class="card-title">${escapeHTML(node.name)}</h2>
+            <span class="badge">${escapeHTML(node.type || "proxy")}</span>
+            <span class="status ${running ? "running" : busy ? "busy" : ""}">${running ? "本地监听中" : active ? "已选择" : "未启动"}</span>
+            ${sub.profileDefault && active ? `<span class="badge default-badge">默认代理</span>` : ""}
+          </div>
+          <p class="endpoint">${escapeHTML(endpoint)} · 本地 ${escapeHTML(sub.listenAddress)}</p>
+        </div>
+      </div>
+      <div class="card-top-actions">
+        <div class="card-actions">
+          <button class="button compact ${running ? "stop" : "start"}" data-clash-node="${running ? "stop" : "start"}" data-id="${escapeHTML(sub.id)}" data-node="${escapeHTML(node.name)}" ${busy ? "disabled" : ""}>${icon(running ? "stop" : "play")}${running ? "停止" : "启动"}</button>
+        </div>
+        <label class="default-proxy-switch"><input type="checkbox" role="switch" data-clash-default="${escapeHTML(sub.id)}" data-node="${escapeHTML(node.name)}" ${sub.profileDefault && active ? "checked" : ""} ${busy ? "disabled" : ""}><span class="switch-track" aria-hidden="true"></span><span>默认</span></label>
       </div>
     </article>`;
   }).join("");
@@ -227,8 +349,8 @@ function renderProfiles() {
 
 function updateSelectionToolbar() {
   const count = appState.selectedProfiles.size;
-  const selectable = appState.profiles.filter((item) => item.profile.type !== "external").length;
-  $("#selection-toolbar").hidden = appState.tab !== "proxies" || selectable === 0;
+  const selectable = manualProfiles().filter((item) => item.profile.type !== "external").length;
+  $("#selection-toolbar").hidden = appState.tab !== "proxies" || appState.proxySource !== "manual" || selectable === 0;
   $("#selection-count").textContent = `已选择 ${count} 项`;
   $("#batch-export").disabled = count === 0;
   const allSelected = selectable > 0 && count === selectable;
@@ -250,6 +372,7 @@ function syncTabs() {
   });
   profilesElement.hidden = appState.tab !== "proxies";
   launchesElement.hidden = appState.tab !== "apps";
+  renderSourceTabs();
   updateSelectionToolbar();
   if (appState.tab === "apps") {
     const hash = "#apps";
@@ -296,7 +419,7 @@ function renderLaunches() {
   $("#notice-title").textContent = "应用代理说明";
   $("#overview-note").textContent = "这里维护持续生效的进程接管规则。启动新应用请创建桌面快捷方式；快捷方式会读取最新的默认或单独指定代理。";
   if (!appState.launches.length) {
-    launchesElement.innerHTML = `<div class="empty-state"><h2>还没有接管应用</h2><p>可从当前运行进程批量添加，或快速导入常见应用。</p></div>`;
+    launchesElement.innerHTML = `<div class="empty-state"><h2>还没有接管应用</h2><p>点击“添加应用”，可从运行进程、桌面快捷方式或 EXE 程序批量添加。</p></div>`;
     return;
   }
   launchesElement.innerHTML = appState.launches.map((entry) => {
@@ -331,7 +454,7 @@ function fillProxySelect(select, selectedId = "") {
   const options = appState.profiles.map((item) => {
     const profile = item.profile;
     const selected = profile.id === selectedId ? "selected" : "";
-    return `<option value="${escapeHTML(profile.id)}" ${selected}>${escapeHTML(profile.name)}（${escapeHTML(profile.listenHost)}:${profile.listenPort}）</option>`;
+    return `<option value="${escapeHTML(profile.id)}" ${selected}>${escapeHTML(proxyDisplayName(profile))}（${escapeHTML(profile.listenHost)}:${profile.listenPort}）</option>`;
   });
   options.unshift(`<option value="" ${!selectedId ? "selected" : ""}>使用网络代理页的默认代理</option>`);
   select.innerHTML = options.join("");
@@ -526,11 +649,25 @@ async function loadProcessChoices() {
     appState.runningProcesses = data.processes || [];
     list.innerHTML = appState.runningProcesses.length ? appState.runningProcesses.map((process, index) => `
       <label class="choice-item"><input type="checkbox" name="running-process" value="${index}"><span class="choice-icon">${icon("apps")}</span><span class="choice-copy"><strong>${escapeHTML(process.name)}</strong><small>${escapeHTML(process.path)} · PID ${process.pid}</small></span></label>`).join("") : `<div class="empty-state compact-empty"><p>没有读取到可添加的桌面进程</p></div>`;
+    filterProcessChoices();
   } catch (error) {
     list.innerHTML = `<p class="form-error" role="alert">${escapeHTML(error.message)}</p>`;
+    $("#process-filter-empty").hidden = true;
   } finally {
     refresh.disabled = false;
   }
+}
+
+function filterProcessChoices() {
+  const query = $("#process-filter").value.trim().toLocaleLowerCase();
+  let visible = 0;
+  document.querySelectorAll('#process-choice-list input[name="running-process"]').forEach((input) => {
+    const process = appState.runningProcesses[Number(input.value)];
+    const matches = !query || (process?.name || "").toLocaleLowerCase().includes(query);
+    input.closest(".choice-item").hidden = !matches;
+    if (matches) visible += 1;
+  });
+  $("#process-filter-empty").hidden = !appState.runningProcesses.length || visible > 0;
 }
 
 async function openProcessDialog() {
@@ -1048,8 +1185,123 @@ async function exportSelectedProfiles() {
 
 function setAllProfilesSelected(selected) {
   appState.selectedProfiles.clear();
-  if (selected) for (const item of appState.profiles) if (item.profile.type !== "external") appState.selectedProfiles.add(item.profile.id);
+  if (selected) for (const item of manualProfiles()) if (item.profile.type !== "external") appState.selectedProfiles.add(item.profile.id);
   renderProfiles();
+}
+
+function openClashImportDialog() {
+  clashImportFormElement.reset();
+  $("#clash-import-error").hidden = true;
+  clashImportDialogElement.showModal();
+  $("#clash-import-name").focus();
+}
+
+function closeClashImportDialog() {
+  if (clashImportDialogElement.open) clashImportDialogElement.close();
+  clashImportFormElement.reset();
+  $("#clash-import-error").hidden = true;
+}
+
+async function importClashSubscription(event) {
+  event.preventDefault();
+  const button = $("#import-clash-subscription");
+  const errorElement = $("#clash-import-error");
+  errorElement.hidden = true;
+  if (!clashImportFormElement.reportValidity()) return;
+  button.disabled = true;
+  button.textContent = "导入中…";
+  try {
+    const data = await api("/api/subscriptions", {
+      method: "POST",
+      body: JSON.stringify({ name: $("#clash-import-name").value.trim(), url: $("#clash-import-url").value.trim() })
+    });
+    closeClashImportDialog();
+    appState.proxySource = data.id;
+    appState.nodeFilter = "";
+    showToast(`已导入「${data.name}」，共 ${data.nodes || 0} 个节点`);
+    await loadState();
+  } catch (error) {
+    errorElement.textContent = error.message;
+    errorElement.hidden = false;
+  } finally {
+    button.disabled = false;
+    button.textContent = "导入订阅";
+  }
+}
+
+async function clashSubscriptionAction(action, id) {
+  const key = `clash:${id}`;
+  if (appState.busy.has(key)) return;
+  const sub = (appState.subscriptions || []).find((item) => item.id === id);
+  if (action === "delete") {
+    const confirmed = await showConfirmModal({
+      kind: "删除订阅",
+      title: "删除这个 Clash 订阅？",
+      message: `「${sub?.name || "订阅"}」及其节点列表会从 Lite 中移除。`,
+      details: "正在运行的 mihomo 节点也会停止。此操作无法撤销。",
+      confirmText: "删除订阅",
+      danger: true
+    });
+    if (!confirmed) return;
+  }
+  appState.busy.add(key);
+  renderProfiles();
+  try {
+    if (action === "delete") {
+      await api(`/api/subscriptions/${encodeURIComponent(id)}`, { method: "DELETE" });
+      appState.proxySource = "manual";
+      showToast("Clash 订阅已删除");
+    } else if (action === "refresh") {
+      const data = await api(`/api/subscriptions/${encodeURIComponent(id)}/refresh`, { method: "POST" });
+      showToast(`订阅已更新，共 ${data.nodes || 0} 个节点`);
+    } else if (action === "stop") {
+      await api(`/api/subscriptions/${encodeURIComponent(id)}/stop`, { method: "POST" });
+      showToast("订阅节点已停止");
+    }
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    appState.busy.delete(key);
+    await loadState(true);
+  }
+}
+
+async function clashNodeAction(action, id, nodeName) {
+  const key = `clash:${id}`;
+  if (appState.busy.has(key) || !nodeName) return;
+  appState.busy.add(key);
+  renderProfiles();
+  try {
+    if (action === "stop") {
+      await api(`/api/subscriptions/${encodeURIComponent(id)}/stop`, { method: "POST" });
+      showToast("订阅节点已停止");
+    } else {
+      await api(`/api/subscriptions/${encodeURIComponent(id)}/start`, { method: "POST", body: JSON.stringify({ node: nodeName }) });
+      showToast(`已启动节点「${nodeName}」`);
+    }
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    appState.busy.delete(key);
+    await loadState(true);
+  }
+}
+
+async function setClashNodeDefault(id, nodeName, enabled) {
+  const key = `clash:${id}`;
+  if (appState.busy.has(key) || !nodeName) return;
+  appState.busy.add(key);
+  renderProfiles();
+  try {
+    const data = await api(`/api/subscriptions/${encodeURIComponent(id)}/default`, { method: "POST", body: JSON.stringify({ node: nodeName, enabled }) });
+    const message = enabled ? `已将「${nodeName}」设为默认代理` : "已取消默认代理";
+    showToast(data.applyError ? `${message}，但接管规则刷新失败：${data.applyError}` : message, Boolean(data.applyError));
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    appState.busy.delete(key);
+    await loadState(true);
+  }
 }
 
 function openImportDialog() {
@@ -1153,8 +1405,23 @@ document.addEventListener("click", (event) => {
   if (pickButton) { closeActionMenus(); pickApplicationFiles(pickButton.dataset.pickApp); return; }
   const tabButton = event.target.closest("[data-tab]");
   if (tabButton) { setTab(tabButton.dataset.tab); return; }
+  const sourceButton = event.target.closest("[data-proxy-source]");
+  if (sourceButton) {
+    appState.proxySource = sourceButton.dataset.proxySource || "manual";
+    appState.nodeFilter = "";
+    renderProfiles();
+    return;
+  }
+  const clashAction = event.target.closest("[data-clash-action]");
+  if (clashAction) {
+    const sub = currentSubscription();
+    if (sub) clashSubscriptionAction(clashAction.dataset.clashAction, sub.id);
+    return;
+  }
+  const clashNode = event.target.closest("[data-clash-node]");
+  if (clashNode) { clashNodeAction(clashNode.dataset.clashNode, clashNode.dataset.id, clashNode.dataset.node); return; }
   const processLaunchButton = event.target.closest("[data-process-launch]");
-  if (processLaunchButton) { openProcessDialog(); return; }
+  if (processLaunchButton) { closeActionMenus(); openProcessDialog(); return; }
   const commonLaunchButton = event.target.closest("[data-common-launch]");
   if (commonLaunchButton) { openCommonDialog(); return; }
   const presetButton = event.target.closest("[data-external-preset]");
@@ -1168,6 +1435,8 @@ document.addEventListener("click", (event) => {
   }
   const launchButton = event.target.closest("[data-launch-action]");
   if (launchButton) { launchAction(launchButton.dataset.launchAction, launchButton.dataset.id); return; }
+  const importClashButton = event.target.closest("[data-import-clash]");
+  if (importClashButton) { openClashImportDialog(); return; }
   const importButton = event.target.closest("[data-import]");
   if (importButton) { openImportDialog(); return; }
   const addButton = event.target.closest("[data-add]");
@@ -1183,6 +1452,8 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  const clashDefault = event.target.closest("[data-clash-default]");
+  if (clashDefault) { setClashNodeDefault(clashDefault.dataset.clashDefault, clashDefault.dataset.node, clashDefault.checked); return; }
   const defaultSwitch = event.target.closest("[data-profile-default]");
   if (defaultSwitch) { setDefaultProfile(defaultSwitch.dataset.profileDefault, defaultSwitch.checked); return; }
   const checkbox = event.target.closest("[data-profile-select]");
@@ -1210,6 +1481,13 @@ $("#close-import-dialog").addEventListener("click", closeImportDialog);
 $("#cancel-import-dialog").addEventListener("click", closeImportDialog);
 $("#paste-share-code").addEventListener("click", pasteShareCode);
 importFormElement.addEventListener("submit", importProfile);
+$("#close-clash-import-dialog").addEventListener("click", closeClashImportDialog);
+$("#cancel-clash-import-dialog").addEventListener("click", closeClashImportDialog);
+clashImportFormElement.addEventListener("submit", importClashSubscription);
+$("#node-filter").addEventListener("input", (event) => {
+  appState.nodeFilter = event.target.value;
+  if (appState.proxySource !== "manual") renderClashNodes();
+});
 formElement.addEventListener("submit", saveProfile);
 launchFormElement.addEventListener("submit", saveLaunch);
 $("#launch-mode").addEventListener("change", () => {
@@ -1220,6 +1498,7 @@ $("#launch-mode").addEventListener("change", () => {
 });
 $("#launch-profile").addEventListener("change", syncLaunchFields);
 $("#refresh-process-list").addEventListener("click", loadProcessChoices);
+$("#process-filter").addEventListener("input", filterProcessChoices);
 processFormElement.addEventListener("submit", saveProcesses);
 commonFormElement.addEventListener("submit", saveCommonApps);
 document.querySelectorAll("[data-close-process]").forEach((button) => button.addEventListener("click", closeProcessDialog));
@@ -1244,13 +1523,15 @@ actionDialogElement.addEventListener("close", () => {
 actionDialogElement.addEventListener("click", (event) => { if (event.target === actionDialogElement) finishActionDialog(false); });
 shareDialogElement.addEventListener("click", (event) => { if (event.target === shareDialogElement) closeShareDialog(); });
 importDialogElement.addEventListener("click", (event) => { if (event.target === importDialogElement) closeImportDialog(); });
+clashImportDialogElement.addEventListener("click", (event) => { if (event.target === clashImportDialogElement) closeClashImportDialog(); });
 processDialogElement.addEventListener("click", (event) => { if (event.target === processDialogElement) closeProcessDialog(); });
 commonDialogElement.addEventListener("click", (event) => { if (event.target === commonDialogElement) closeCommonDialog(); });
 shareDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); closeShareDialog(); });
 importDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); closeImportDialog(); });
+clashImportDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); closeClashImportDialog(); });
 processDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); closeProcessDialog(); });
 commonDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); closeCommonDialog(); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loadState(true); });
 
 loadState();
-appState.poll = setInterval(() => { if (!document.hidden && !dialogElement.open && !shareDialogElement.open && !importDialogElement.open && !launchDialogElement.open && !processDialogElement.open && !commonDialogElement.open) loadState(true); }, 2500);
+appState.poll = setInterval(() => { if (!document.hidden && !dialogElement.open && !shareDialogElement.open && !importDialogElement.open && !clashImportDialogElement.open && !launchDialogElement.open && !processDialogElement.open && !commonDialogElement.open) loadState(true); }, 2500);

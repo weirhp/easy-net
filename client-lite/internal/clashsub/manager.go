@@ -1,0 +1,236 @@
+package clashsub
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"easy-net/client-lite/internal/model"
+)
+
+type Fetcher func(url string) ([]byte, error)
+
+type Manager struct {
+	mu     sync.Mutex
+	store  *store
+	file   *model.SubscriptionFile
+	runner Runner
+	fetch  Fetcher
+}
+
+func New(dir string, runner Runner) (*Manager, error) {
+	if runner == nil {
+		runner = DefaultRunner(dir)
+	}
+	manager := &Manager{store: newStore(dir), runner: runner, fetch: Fetch}
+	file, err := manager.store.Load()
+	if err != nil {
+		return nil, err
+	}
+	manager.file = file
+	return manager, nil
+}
+
+func (m *Manager) SetFetcher(fetch Fetcher) {
+	if fetch != nil {
+		m.fetch = fetch
+	}
+}
+
+func (m *Manager) List() []model.Subscription {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]model.Subscription, 0, len(m.file.Subscriptions))
+	for _, item := range m.file.Subscriptions {
+		out = append(out, item.Clone())
+	}
+	return out
+}
+
+func (m *Manager) Get(id string) (model.Subscription, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	index := m.indexLocked(id)
+	if index < 0 {
+		return model.Subscription{}, false
+	}
+	return m.file.Subscriptions[index].Clone(), true
+}
+
+func (m *Manager) Import(name, rawURL string, listenPort int) (model.Subscription, error) {
+	name = strings.TrimSpace(name)
+	rawURL = strings.TrimSpace(rawURL)
+	if name == "" || len([]rune(name)) > 40 {
+		return model.Subscription{}, fmt.Errorf("订阅名称无效")
+	}
+	if rawURL == "" {
+		return model.Subscription{}, fmt.Errorf("订阅地址不能为空")
+	}
+	nodes, err := m.downloadNodes(rawURL)
+	if err != nil {
+		return model.Subscription{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.file.Subscriptions) >= model.MaxClashSubscriptions {
+		return model.Subscription{}, fmt.Errorf("Clash 订阅最多 %d 个", model.MaxClashSubscriptions)
+	}
+	for _, existing := range m.file.Subscriptions {
+		if strings.EqualFold(existing.Name, name) {
+			return model.Subscription{}, fmt.Errorf("已存在同名订阅 Tab「%s」", name)
+		}
+		if existing.URL == rawURL {
+			return model.Subscription{}, fmt.Errorf("该订阅地址已经导入")
+		}
+	}
+	sub := model.Subscription{
+		ID: newID(), Name: name, URL: rawURL, ListenPort: listenPort,
+		Nodes: nodes, UpdatedAt: time.Now(),
+	}
+	sub.Normalize()
+	if err := sub.Validate(); err != nil {
+		return model.Subscription{}, err
+	}
+	m.file.Subscriptions = append(m.file.Subscriptions, sub)
+	if err := m.store.Save(m.file); err != nil {
+		return model.Subscription{}, err
+	}
+	return sub.Clone(), nil
+}
+
+func (m *Manager) Refresh(id string) (model.Subscription, error) {
+	sub, ok := m.Get(id)
+	if !ok {
+		return model.Subscription{}, fmt.Errorf("Clash 订阅不存在")
+	}
+	nodes, err := m.downloadNodes(sub.URL)
+	if err != nil {
+		return model.Subscription{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	index := m.indexLocked(id)
+	if index < 0 {
+		return model.Subscription{}, fmt.Errorf("Clash 订阅不存在")
+	}
+	current := m.file.Subscriptions[index]
+	current.Nodes = nodes
+	current.UpdatedAt = time.Now()
+	current.Normalize()
+	if current.SelectedNode == "" {
+		_ = m.runner.Stop(current.ID)
+	}
+	m.file.Subscriptions[index] = current
+	if err := m.store.Save(m.file); err != nil {
+		return model.Subscription{}, err
+	}
+	return current.Clone(), nil
+}
+
+func (m *Manager) Delete(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	index := m.indexLocked(id)
+	if index < 0 {
+		return fmt.Errorf("Clash 订阅不存在")
+	}
+	_ = m.runner.Stop(id)
+	m.file.Subscriptions = append(m.file.Subscriptions[:index], m.file.Subscriptions[index+1:]...)
+	return m.store.Save(m.file)
+}
+
+func (m *Manager) StartNode(id, nodeName string) error {
+	sub, ok := m.Get(id)
+	if !ok {
+		return fmt.Errorf("Clash 订阅不存在")
+	}
+	node, ok := sub.Node(nodeName)
+	if !ok {
+		return fmt.Errorf("订阅中找不到节点 %q", nodeName)
+	}
+	if err := m.runner.Start(sub.ID, sub.ListenPort, node.Raw); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	index := m.indexLocked(id)
+	if index < 0 {
+		return fmt.Errorf("Clash 订阅不存在")
+	}
+	m.file.Subscriptions[index].SelectedNode = node.Name
+	return m.store.Save(m.file)
+}
+
+func (m *Manager) Stop(id string) error {
+	return m.runner.Stop(id)
+}
+
+func (m *Manager) Running(id string) bool {
+	return m.runner.Running(strings.TrimPrefix(strings.TrimSpace(id), "clash-"))
+}
+
+func (m *Manager) downloadNodes(rawURL string) ([]model.ClashNode, error) {
+	fetch := m.fetch
+	if fetch == nil {
+		fetch = Fetch
+	}
+	data, err := fetch(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	nodes, err := Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	if len(nodes) == 0 {
+		return nil, fmt.Errorf("订阅中没有可用的 Clash 节点")
+	}
+	return nodes, nil
+}
+
+func (m *Manager) indexLocked(id string) int {
+	id = strings.TrimSpace(id)
+	for index, item := range m.file.Subscriptions {
+		if item.ID == id {
+			return index
+		}
+	}
+	return -1
+}
+
+func ProfileID(subscriptionID string) string {
+	return "clash-" + subscriptionID
+}
+
+type View struct {
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	URL            string     `json:"url"`
+	ListenAddress  string     `json:"listenAddress"`
+	SelectedNode   string     `json:"selectedNode,omitempty"`
+	UpdatedAt      string     `json:"updatedAt,omitempty"`
+	Running        bool       `json:"running"`
+	ProfileID      string     `json:"profileId"`
+	ProfileDefault bool       `json:"profileDefault"`
+	Error          string     `json:"error,omitempty"`
+	Nodes          []NodeView `json:"nodes"`
+}
+
+type NodeView struct {
+	Name   string `json:"name"`
+	Type   string `json:"type"`
+	Server string `json:"server,omitempty"`
+	Port   int    `json:"port,omitempty"`
+}
+
+func newID() string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err == nil {
+		return hex.EncodeToString(buf)
+	}
+	return strconv.FormatInt(time.Now().UnixNano(), 36)
+}

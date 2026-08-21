@@ -4,6 +4,7 @@ const appState = {
   profiles: [],
   subscriptions: [],
   launches: [],
+	takeover: { enabled: false, state: "stopped", message: "" },
   runningProcesses: [],
   commonPaths: new Map(),
   features: { appLaunches: false },
@@ -20,6 +21,8 @@ const appState = {
   warningsShown: false,
   initialized: false,
   notifiedFailures: new Map(),
+	notifiedTakeoverError: "",
+  nodeMetrics: {},
 };
 const $ = (selector) => document.querySelector(selector);
 const profilesElement = $("#profiles");
@@ -116,9 +119,11 @@ async function loadState(silent = false) {
   try {
     const data = await api("/api/state");
 	const previousProfiles = appState.profiles;
+	const previousTakeover = appState.takeover;
     appState.profiles = data.profiles || [];
     appState.subscriptions = data.subscriptions || [];
     appState.launches = data.launches || [];
+	appState.takeover = data.takeover || { enabled: false, state: "stopped", message: "" };
     appState.features = data.features || { appLaunches: false };
     appState.token = data.token;
 	$("#app-version").textContent = `v${data.version || "dev"}`;
@@ -129,7 +134,17 @@ async function loadState(silent = false) {
     renderSourceTabs();
     renderProfiles();
     renderLaunches();
+	renderTakeover();
 	if (appState.initialized) notifyConnectionFailures(previousProfiles, appState.profiles);
+	if (appState.initialized && appState.takeover.state === "error") {
+		const message = appState.takeover.message || "应用网络接管服务异常，正在自动恢复";
+		if (previousTakeover?.state !== "error" || appState.notifiedTakeoverError !== message) {
+			appState.notifiedTakeoverError = message;
+			showToast(message, true);
+		}
+	} else if (appState.takeover.state !== "error") {
+		appState.notifiedTakeoverError = "";
+	}
 	appState.initialized = true;
     if (!silent && !appState.warningsShown && data.warnings?.length) {
       appState.warningsShown = true;
@@ -185,19 +200,19 @@ function proxyDisplayName(profile) {
 }
 
 function renderSourceTabs() {
+  const sticky = $("#clash-sticky");
   const tabs = $("#source-tabs");
   const toolbar = $("#subscription-toolbar");
   const isProxies = appState.tab === "proxies";
+  if (sticky) sticky.hidden = !isProxies;
   if (!isProxies) {
-    tabs.hidden = true;
-    toolbar.hidden = true;
+    if (toolbar) toolbar.hidden = true;
     return;
   }
   const subs = appState.subscriptions || [];
   if (appState.proxySource !== "manual" && !subs.some((item) => item.id === appState.proxySource)) {
     appState.proxySource = "manual";
   }
-  tabs.hidden = false;
   const buttons = [`<button type="button" class="source-tab${appState.proxySource === "manual" ? " active" : ""}" data-proxy-source="manual">手动添加</button>`];
   for (const sub of subs) {
     const running = sub.running ? " running" : "";
@@ -213,9 +228,17 @@ function renderSourceTabs() {
     const sub = currentSubscription();
     const filter = $("#node-filter");
     if (filter && filter.value !== appState.nodeFilter) filter.value = appState.nodeFilter;
-    $("#subscription-meta").textContent = sub
-      ? `${sub.nodes?.length || 0} 个节点 · ${sub.listenAddress}${sub.selectedNode ? ` · 当前 ${sub.selectedNode}` : ""}`
-      : "";
+    const meta = $("#subscription-meta");
+    if (!sub) {
+      meta.textContent = "";
+    } else {
+      const current = sub.selectedNode ? ` · <span class="current-node">当前 ${escapeHTML(sub.selectedNode)}</span>` : "";
+      meta.innerHTML = `${sub.nodes?.length || 0} 个节点 · ${escapeHTML(sub.listenAddress)}${current}`;
+    }
+    const testing = Boolean(sub && appState.busy.has(`clash-test:${sub.id}`));
+    document.querySelectorAll("[data-clash-action='delay'], [data-clash-action='speed']").forEach((button) => {
+      button.disabled = testing;
+    });
   }
 }
 
@@ -226,6 +249,7 @@ function renderProfiles() {
     renderClashNodes();
     return;
   }
+  profilesElement.classList.remove("node-grid");
   const profiles = manualProfiles();
   const running = profiles.filter((item) => item.running).length;
   const external = profiles.filter((item) => item.profile.type === "external").length;
@@ -300,11 +324,14 @@ function renderClashNodes() {
     updateSelectionToolbar();
     return;
   }
+  profilesElement.classList.add("node-grid");
   const busy = appState.busy.has(`clash:${sub.id}`);
+  const testing = appState.busy.has(`clash-test:${sub.id}`);
+  const metrics = appState.nodeMetrics[sub.id] || {};
   const nodes = (sub.nodes || []).filter((node) => {
     const keyword = appState.nodeFilter.trim().toLowerCase();
     if (!keyword) return true;
-    return [node.name, node.type, node.server, String(node.port || "")].join(" ").toLowerCase().includes(keyword);
+    return [node.name, node.type].join(" ").toLowerCase().includes(keyword);
   });
   $("#summary").textContent = `${sub.nodes?.length || 0} 个节点 · ${sub.running ? "本地监听中" : "未启动"} · ${sub.listenAddress}`;
   if (sub.error) {
@@ -323,7 +350,9 @@ function renderClashNodes() {
   profilesElement.innerHTML = nodes.map((node) => {
     const active = sub.selectedNode === node.name;
     const running = Boolean(sub.running && active);
-    const endpoint = node.server ? `${node.server}${node.port ? `:${node.port}` : ""}` : "地址未提供";
+    const metric = metrics[node.name] || {};
+    const delayText = metric.delayError ? "延迟 超时" : metric.delayMs ? `延迟 ${metric.delayMs} ms` : "";
+    const speedText = metric.speedError ? "速度 失败" : metric.speedMbps ? `速度 ${Number(metric.speedMbps).toFixed(1)} Mbps` : "";
     return `<article class="profile-card node-card${active ? " selected" : ""}">
       <div class="card-main">
         <div class="card-content">
@@ -333,14 +362,21 @@ function renderClashNodes() {
             <span class="status ${running ? "running" : busy ? "busy" : ""}">${running ? "本地监听中" : active ? "已选择" : "未启动"}</span>
             ${sub.profileDefault && active ? `<span class="badge default-badge">默认代理</span>` : ""}
           </div>
-          <p class="endpoint">${escapeHTML(endpoint)} · 本地 ${escapeHTML(sub.listenAddress)}</p>
+          <div class="node-metrics">
+            ${delayText ? `<span class="node-metric ${delayClassFor(metric.delayMs, metric.delayError)}">${delayText}</span>` : ""}
+            ${speedText ? `<span class="node-metric ${metric.speedError ? "bad" : "good"}">${speedText}</span>` : ""}
+          </div>
         </div>
       </div>
-      <div class="card-top-actions">
-        <div class="card-actions">
-          <button class="button compact ${running ? "stop" : "start"}" data-clash-node="${running ? "stop" : "start"}" data-id="${escapeHTML(sub.id)}" data-node="${escapeHTML(node.name)}" ${busy ? "disabled" : ""}>${icon(running ? "stop" : "play")}${running ? "停止" : "启动"}</button>
+      <div class="node-card-footer">
+        <div class="node-card-tools">
+          <button class="button compact secondary icon-only" aria-label="测试 ${escapeHTML(node.name)} 延迟" data-tooltip="延迟测试" data-clash-test="delay" data-id="${escapeHTML(sub.id)}" data-node="${escapeHTML(node.name)}" ${testing ? "disabled" : ""}>${icon("delay")}</button>
+          <button class="button compact secondary icon-only" aria-label="测试 ${escapeHTML(node.name)} 速度" data-tooltip="速度测试" data-clash-test="speed" data-id="${escapeHTML(sub.id)}" data-node="${escapeHTML(node.name)}" ${testing ? "disabled" : ""}>${icon("speed")}</button>
         </div>
-        <label class="default-proxy-switch"><input type="checkbox" role="switch" data-clash-default="${escapeHTML(sub.id)}" data-node="${escapeHTML(node.name)}" ${sub.profileDefault && active ? "checked" : ""} ${busy ? "disabled" : ""}><span class="switch-track" aria-hidden="true"></span><span>默认</span></label>
+        <div class="node-card-primary">
+          <button class="button compact ${running ? "stop" : "start"}" data-clash-node="${running ? "stop" : "start"}" data-id="${escapeHTML(sub.id)}" data-node="${escapeHTML(node.name)}" ${busy ? "disabled" : ""}>${icon(running ? "stop" : "play")}${running ? "停止" : "启动"}</button>
+          <label class="default-proxy-switch"><input type="checkbox" role="switch" data-clash-default="${escapeHTML(sub.id)}" data-node="${escapeHTML(node.name)}" ${sub.profileDefault && active ? "checked" : ""} ${busy ? "disabled" : ""}><span class="switch-track" aria-hidden="true"></span><span>默认</span></label>
+        </div>
       </div>
     </article>`;
   }).join("");
@@ -372,6 +408,7 @@ function syncTabs() {
   });
   profilesElement.hidden = appState.tab !== "proxies";
   launchesElement.hidden = appState.tab !== "apps";
+	$("#takeover-panel").hidden = appState.tab !== "apps";
   renderSourceTabs();
   updateSelectionToolbar();
   if (appState.tab === "apps") {
@@ -380,6 +417,41 @@ function syncTabs() {
   } else if (location.hash === "#apps") {
     history.replaceState(null, "", location.pathname + location.search);
   }
+}
+
+function renderTakeover() {
+	const panel = $("#takeover-panel");
+	if (!panel) return;
+	panel.hidden = appState.tab !== "apps";
+	const status = appState.takeover || {};
+	const checkbox = $("#takeover-enabled");
+	checkbox.checked = Boolean(status.enabled);
+	checkbox.disabled = appState.busy.has("takeover");
+	const labels = { healthy: "运行正常", starting: "正在启动", restarting: "正在恢复", error: "运行异常", idle: "等待应用", stopped: status.enabled ? "等待应用" : "未开启" };
+	const badge = $("#takeover-status");
+	badge.textContent = labels[status.state] || "状态未知";
+	badge.className = `status ${status.state === "healthy" ? "running" : status.state === "starting" || status.state === "restarting" ? "busy" : ""}`;
+	$("#takeover-switch-label").textContent = status.enabled ? "已启用" : "启用接管";
+	const error = $("#takeover-error");
+	error.hidden = status.state !== "error";
+	error.textContent = status.state === "error" ? `错误：${status.message || "后台接管服务意外退出，正在等待自动恢复"}${status.restartCount ? `（已尝试 ${status.restartCount} 次）` : ""}` : "";
+}
+
+async function toggleTakeover(enabled) {
+	if (appState.busy.has("takeover")) return;
+	appState.busy.add("takeover");
+	renderTakeover();
+	try {
+		const data = await api("/api/app-takeover", { method: "POST", body: JSON.stringify({ enabled }) });
+		appState.takeover = data.takeover || { enabled, state: enabled ? "starting" : "stopped", message: "" };
+		showToast(enabled ? "应用网络接管已开启；管理员授权完成后将自动代理列表中的应用" : "应用网络接管已关闭；桌面快捷方式仍可独立使用");
+	} catch (error) {
+		showToast(error.message, true);
+		await loadState(true);
+	} finally {
+		appState.busy.delete("takeover");
+		renderTakeover();
+	}
 }
 
 function setTab(tab) {
@@ -1393,6 +1465,54 @@ function nextPort() {
   return 1080;
 }
 
+function delayClassFor(ms, error) {
+  if (error) return "bad";
+  if (!ms) return "";
+  if (ms < 150) return "good";
+  if (ms < 400) return "mid";
+  return "bad";
+}
+
+function applyNodeMetrics(id, results, kind) {
+  const bag = appState.nodeMetrics[id] || {};
+  for (const item of results || []) {
+    const prev = bag[item.name] || {};
+    if (kind === "delay") {
+      prev.delayMs = item.delayMs || 0;
+      prev.delayError = item.error || "";
+    } else {
+      prev.speedMbps = item.speedMbps || 0;
+      prev.speedError = item.error || "";
+    }
+    bag[item.name] = prev;
+  }
+  appState.nodeMetrics[id] = bag;
+}
+
+async function clashMetricTest(kind, id, nodeName) {
+  const key = `clash-test:${id}`;
+  if (appState.busy.has(key) || !id) return;
+  appState.busy.add(key);
+  renderProfiles();
+  const label = kind === "delay" ? "延迟" : "速度";
+  showToast(nodeName ? `正在测试「${nodeName}」${label}` : `正在测试全部节点${label}`);
+  try {
+    const data = await api(`/api/subscriptions/${encodeURIComponent(id)}/${kind}`, {
+      method: "POST",
+      body: JSON.stringify(nodeName ? { node: nodeName } : {})
+    });
+    applyNodeMetrics(id, data.results || [], kind);
+    const results = data.results || [];
+    const failed = results.filter((item) => item.error).length;
+    showToast(failed ? `${label}测试完成：${results.length - failed}/${results.length} 可用` : `${label}测试完成`);
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    appState.busy.delete(key);
+    renderProfiles();
+  }
+}
+
 function escapeHTML(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]);
 }
@@ -1415,7 +1535,18 @@ document.addEventListener("click", (event) => {
   const clashAction = event.target.closest("[data-clash-action]");
   if (clashAction) {
     const sub = currentSubscription();
-    if (sub) clashSubscriptionAction(clashAction.dataset.clashAction, sub.id);
+    if (!sub) return;
+    const action = clashAction.dataset.clashAction;
+    if (action === "delay" || action === "speed") {
+      clashMetricTest(action, sub.id, "");
+      return;
+    }
+    clashSubscriptionAction(action, sub.id);
+    return;
+  }
+  const clashTest = event.target.closest("[data-clash-test]");
+  if (clashTest) {
+    clashMetricTest(clashTest.dataset.clashTest, clashTest.dataset.id, clashTest.dataset.node);
     return;
   }
   const clashNode = event.target.closest("[data-clash-node]");
@@ -1452,6 +1583,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("change", (event) => {
+	if (event.target.id === "takeover-enabled") { toggleTakeover(event.target.checked); return; }
   const clashDefault = event.target.closest("[data-clash-default]");
   if (clashDefault) { setClashNodeDefault(clashDefault.dataset.clashDefault, clashDefault.dataset.node, clashDefault.checked); return; }
   const defaultSwitch = event.target.closest("[data-profile-default]");

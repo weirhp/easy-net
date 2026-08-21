@@ -185,7 +185,7 @@ func TestApplyTakeoverRulesDoesNotRequireRunningApplication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := launches.ApplySharedRules(); err != nil {
+	if err := launches.SetTakeoverEnabled(true); err != nil {
 		t.Fatalf("future process rules should apply without a running target: %v", err)
 	}
 	if got := runner.lastArgs(); !containsArgument(got, "--windivert-existing") {
@@ -213,7 +213,7 @@ func TestAttachExistingReportsWinDivertPermissionFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = saved
-	if err := launches.ApplySharedRules(); err == nil {
+	if err := launches.SetTakeoverEnabled(true); err == nil {
 		t.Fatal("expected a WinDivert startup error")
 	} else {
 		var permission *WinDivertStartError
@@ -439,7 +439,7 @@ func TestStartWinDivertUsesLiteSharedProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = saved
-	if err := launches.ApplySharedRules(); err != nil {
+	if err := launches.SetTakeoverEnabled(true); err != nil {
 		t.Fatal(err)
 	}
 	args := runner.lastArgs()

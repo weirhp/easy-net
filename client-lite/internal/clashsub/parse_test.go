@@ -63,9 +63,72 @@ func TestWriteMihomoConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{"mixed-port: 17890", "mode: global", "name: 香港 1", "type: ss", "redir-host", "proxy-server-nameserver", "global-client-fingerprint: chrome"} {
+	for _, want := range []string{"mixed-port: 17890", "mode: rule", "name: 香港 1", "type: ss", "MATCH,PROXY", "redir-host", "proxy-server-nameserver", "tcp://223.5.5.5:53", "https://8.8.8.8/dns-query"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("config missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestWriteMihomoConfigKeepsRawFingerprintOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	err := WriteMihomoConfig(path, 17890, map[string]any{
+		"name": "日本 07", "type": "trojan", "server": "jp.example.com", "port": 443, "password": "x",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"name: PROXY", "MATCH,PROXY", "日本 07"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("config missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "client-fingerprint") {
+		t.Fatal("fingerprint should only be written when the subscription node has it")
+	}
+}
+
+func TestWriteMihomoConfigPreservesNodeFingerprint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	err := WriteMihomoConfig(path, 17890, map[string]any{
+		"name": "日本 07", "type": "trojan", "server": "jp.example.com", "port": 443, "password": "x",
+		"client-fingerprint": "chrome",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "client-fingerprint: chrome") {
+		t.Fatal(string(data))
+	}
+}
+
+func TestLastMihomoConnectError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mihomo.log")
+	err := os.WriteFile(path, []byte("time=1 level=warning msg=\"dial PROXY error: example.com:443 connect error: EOF\"\n"), 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lastMihomoConnectError(path); got != "入口连接被断开" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestWithoutProxyEnv(t *testing.T) {
+	out := withoutProxyEnv([]string{"PATH=C:\\Windows", "HTTPS_PROXY=socks5://127.0.0.1:10808", "http_proxy=http://127.0.0.1:9", "HOME=C:\\Users\\me"})
+	text := strings.Join(out, ";")
+	if strings.Contains(strings.ToLower(text), "proxy") {
+		t.Fatalf("proxy env leaked: %v", out)
+	}
+	if !strings.Contains(text, "PATH=") || !strings.Contains(text, "HOME=") {
+		t.Fatalf("kept env missing: %v", out)
 	}
 }

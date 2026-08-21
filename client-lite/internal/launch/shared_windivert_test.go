@@ -27,6 +27,9 @@ func TestSharedWinDivertProfileCombinesApplicationsAndProxies(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := launches.SetTakeoverEnabled(true); err != nil {
+		t.Fatal(err)
+	}
 	path, err := launches.writeSharedWinDivertProfile()
 	if err != nil {
 		t.Fatal(err)
@@ -105,6 +108,9 @@ func TestSharedWinDivertProfileIncludesRunningBrowser(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := launches.SetTakeoverEnabled(true); err != nil {
+		t.Fatal(err)
+	}
 	path, err := launches.writeSharedWinDivertProfile()
 	if err != nil {
 		t.Fatal(err)
@@ -115,5 +121,62 @@ func TestSharedWinDivertProfileIncludesRunningBrowser(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"ProcessName": "chrome.exe"`) {
 		t.Fatalf("shared profile does not contain Chrome: %s", data)
+	}
+}
+
+func TestSharedWinDivertProfileDeduplicatesSharedHelper(t *testing.T) {
+	dir := t.TempDir()
+	launches, err := New(dir, testService(t, dir), &fakeRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range []model.LaunchEntry{
+		{Name: "编辑器一", Mode: model.LaunchModeWinDivert, Proxy: "127.0.0.1:1082", Path: `D:\One\one.exe`, ProcessNames: "shared-helper.exe", UDPMode: "proxy"},
+		{Name: "编辑器二", Mode: model.LaunchModeWinDivert, Proxy: "127.0.0.1:1083", Path: `D:\Two\two.exe`, ProcessNames: "shared-helper.exe", UDPMode: "proxy"},
+	} {
+		if _, err := launches.Upsert(entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := launches.SetTakeoverEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	path, err := launches.writeSharedWinDivertProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var profile bridgeProfile
+	if err := json.Unmarshal(data, &profile); err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range profile.ProxyRules {
+		if strings.Count(strings.ToLower(rule.ProcessName), "shared-helper.exe") > 1 {
+			t.Fatalf("shared helper was duplicated in one rule: %#v", rule)
+		}
+	}
+	if !strings.Contains(strings.ToLower(string(data)), "shared-helper.exe") {
+		t.Fatalf("shared helper missing: %s", data)
+	}
+}
+
+func TestTakeoverSettingPersists(t *testing.T) {
+	dir := t.TempDir()
+	launches, err := New(dir, testService(t, dir), &fakeRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := launches.SetTakeoverEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := New(dir, testService(t, dir), &fakeRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.TakeoverEnabled() {
+		t.Fatal("takeover setting was not persisted")
 	}
 }

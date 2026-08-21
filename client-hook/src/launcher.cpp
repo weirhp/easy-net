@@ -1407,6 +1407,33 @@ std::optional<std::string> SharedProfileRevision(const std::filesystem::path& pa
     return revision.str();
 }
 
+void WriteSharedWinDivertStatus(const std::filesystem::path& path,
+                                std::string_view state,
+                                std::string_view message,
+                                unsigned int restart_count) {
+    FILETIME file_time{};
+    GetSystemTimeAsFileTime(&file_time);
+    ULARGE_INTEGER ticks{};
+    ticks.LowPart = file_time.dwLowDateTime;
+    ticks.HighPart = file_time.dwHighDateTime;
+    constexpr unsigned long long kUnixEpochTicks = 116444736000000000ULL;
+    const unsigned long long unix_ms =
+        ticks.QuadPart > kUnixEpochTicks ? (ticks.QuadPart - kUnixEpochTicks) / 10000ULL : 0;
+    std::ostringstream json;
+    json << "{\n"
+         << "  \"State\": \"" << state << "\",\n"
+         << "  \"Message\": \"" << message << "\",\n"
+         << "  \"RestartCount\": " << restart_count << ",\n"
+         << "  \"ProcessId\": " << GetCurrentProcessId() << ",\n"
+         << "  \"UpdatedAtUnixMs\": " << unix_ms << "\n"
+         << "}\n";
+    const std::filesystem::path temporary = path.wstring() + L".tmp";
+    if (WriteUtf8File(temporary, json.str())) {
+        MoveFileExW(temporary.c_str(), path.c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    }
+}
+
 int WatchSharedWinDivert(DWORD root_process_id,
                          const std::filesystem::path& engine_path,
                          const std::filesystem::path& config_path,
@@ -1423,6 +1450,8 @@ int WatchSharedWinDivert(DWORD root_process_id,
         return 2;
     }
     const std::filesystem::path ready_path = config_path.wstring() + L".ready";
+    const std::filesystem::path status_path =
+        config_path.parent_path() / L"shared-windivert-status.json";
     std::error_code ignored;
     std::filesystem::remove(ready_path, ignored);
 
@@ -1430,6 +1459,10 @@ int WatchSharedWinDivert(DWORD root_process_id,
     std::thread log_relay;
     std::optional<std::string> active_revision;
     unsigned int restart_failures = 0;
+    unsigned int total_restarts = 0;
+    ULONGLONG last_heartbeat = 0;
+	WriteSharedWinDivertStatus(status_path, "starting",
+	                          "Starting the shared application proxy service", 0);
     const auto finish_engine = [&]() {
         if (engine.get() != nullptr && WaitForSingleObject(engine.get(), 0) == WAIT_TIMEOUT) {
             TerminateProcess(engine.get(), 0);
@@ -1460,6 +1493,9 @@ int WatchSharedWinDivert(DWORD root_process_id,
             L"--profile", config_path.wstring(), L"--verbose", L"1",
         };
         if (!StartHiddenProcess(engine_path, arguments, write_pipe.get(), process)) {
+			WriteSharedWinDivertStatus(status_path, "error",
+			                          "Unable to start easy-net-windivert.exe; retrying",
+			                          total_restarts);
             return false;
         }
         CloseHandle(process.hThread);
@@ -1468,6 +1504,9 @@ int WatchSharedWinDivert(DWORD root_process_id,
         log_relay = std::thread(RelayBoundedTunLog, read_pipe.release(), log_path);
         if (WaitForSingleObject(engine.get(), 1500) == WAIT_OBJECT_0) {
             finish_engine();
+			WriteSharedWinDivertStatus(status_path, "error",
+			                          "The application proxy engine exited during startup; retrying",
+			                          total_restarts);
             return false;
         }
         active_revision = revision;
@@ -1476,6 +1515,8 @@ int WatchSharedWinDivert(DWORD root_process_id,
             active_revision.reset();
             return false;
         }
+		WriteSharedWinDivertStatus(status_path, "healthy",
+		                          "Application proxy service is running", total_restarts);
         return true;
     };
 
@@ -1483,6 +1524,9 @@ int WatchSharedWinDivert(DWORD root_process_id,
         if (WaitForSingleObject(root.get(), 0) == WAIT_OBJECT_0) {
             finish_engine();
             std::filesystem::remove(ready_path, ignored);
+			WriteSharedWinDivertStatus(status_path, "stopped",
+			                          "Easy-Net Lite exited; application proxy service stopped",
+			                          total_restarts);
             return 0;
         }
         const auto current_revision = SharedProfileRevision(config_path);
@@ -1493,16 +1537,27 @@ int WatchSharedWinDivert(DWORD root_process_id,
             if (profile && profile->find("\"ProxyRules\": []") != std::string::npos) {
                 finish_engine();
                 std::filesystem::remove(ready_path, ignored);
+				WriteSharedWinDivertStatus(status_path, "stopped",
+				                          "Application proxy service was disabled", total_restarts);
                 return 0;
             }
         }
         const bool engine_stopped =
             engine.get() == nullptr || WaitForSingleObject(engine.get(), 0) != WAIT_TIMEOUT;
         if (configuration_changed || engine_stopped) {
+			if (engine_stopped && active_revision) {
+				++total_restarts;
+			}
+			WriteSharedWinDivertStatus(
+				status_path, "restarting",
+				configuration_changed ? "Application rules changed; reloading the proxy engine"
+				                      : "Application proxy engine exited unexpectedly; restarting",
+				total_restarts);
             finish_engine();
             active_revision.reset();
             std::filesystem::remove(ready_path, ignored);
             if (!start_engine()) {
+                ++total_restarts;
                 const unsigned int delay = 250U << std::min(restart_failures, 5U);
                 ++restart_failures;
                 for (unsigned int waited = 0; waited < delay; waited += 250) {
@@ -1514,6 +1569,11 @@ int WatchSharedWinDivert(DWORD root_process_id,
             }
             restart_failures = 0;
         }
+		if (GetTickCount64() - last_heartbeat >= 1000) {
+			last_heartbeat = GetTickCount64();
+			WriteSharedWinDivertStatus(status_path, "healthy",
+			                          "Application proxy service is running", total_restarts);
+		}
         Sleep(250);
     }
 }

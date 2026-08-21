@@ -770,6 +770,7 @@ func TestLaunchAPIReportsSavedRuleApplyFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_ = launches.SetTakeoverEnabled(true)
 	entry := model.LaunchEntry{
 		Name: "接管应用", Mode: model.LaunchModeWinDivert, Proxy: "127.0.0.1:1082",
 		Path: `D:\App\app.exe`, ProcessNames: "app.exe", AttachExisting: true, UDPMode: "auto",
@@ -797,6 +798,36 @@ func TestLaunchAPIReportsSavedRuleApplyFailure(t *testing.T) {
 	applyError, _ := payload["applyError"].(string)
 	if response.StatusCode != http.StatusOK || !strings.Contains(applyError, "WinDivert") {
 		t.Fatalf("unexpected response: %d %#v", response.StatusCode, payload)
+	}
+}
+
+func TestTakeoverAPIStoresEnabledState(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := service.New(config.NewStoreAt(filepath.Join(dir, "config.json")), &memorySecrets{values: map[string]string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	launches, err := launch.New(dir, svc, &recordingHookRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewWithOptions(svc, func() {}, Options{Launches: launches})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(manager.Handler())
+	defer server.Close()
+	state := getState(t, server.URL)
+	request, _ := http.NewRequest(http.MethodPost, server.URL+"/api/app-takeover", bytes.NewReader([]byte(`{"enabled":true}`)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Easy-Net-Token", state.Token)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || !launches.TakeoverEnabled() {
+		t.Fatalf("takeover toggle was not stored: status=%d enabled=%v", response.StatusCode, launches.TakeoverEnabled())
 	}
 }
 
@@ -860,6 +891,15 @@ func TestClashSubscriptionAPI(t *testing.T) {
 	_ = unauthorized.Body.Close()
 	if unauthorized.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", unauthorized.StatusCode)
+	}
+
+	delayUnauthorized, err := http.Post(server.URL+"/api/subscriptions/x/delay", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = delayUnauthorized.Body.Close()
+	if delayUnauthorized.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected delay 403, got %d", delayUnauthorized.StatusCode)
 	}
 
 	importReq, _ := http.NewRequest(http.MethodPost, server.URL+"/api/subscriptions", strings.NewReader(`{"name":"机场 A","url":"https://example.com/clash.yaml"}`))

@@ -1,6 +1,7 @@
 package clashsub
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -16,6 +17,7 @@ type Fetcher func(url string) ([]byte, error)
 
 type Manager struct {
 	mu     sync.Mutex
+	dir    string
 	store  *store
 	file   *model.SubscriptionFile
 	runner Runner
@@ -26,7 +28,7 @@ func New(dir string, runner Runner) (*Manager, error) {
 	if runner == nil {
 		runner = DefaultRunner(dir)
 	}
-	manager := &Manager{store: newStore(dir), runner: runner, fetch: Fetch}
+	manager := &Manager{dir: dir, store: newStore(dir), runner: runner, fetch: Fetch}
 	file, err := manager.store.Load()
 	if err != nil {
 		return nil, err
@@ -123,6 +125,7 @@ func (m *Manager) Refresh(id string) (model.Subscription, error) {
 	current.Normalize()
 	if current.SelectedNode == "" {
 		_ = m.runner.Stop(current.ID)
+		current.Active = false
 	}
 	m.file.Subscriptions[index] = current
 	if err := m.store.Save(m.file); err != nil {
@@ -162,15 +165,71 @@ func (m *Manager) StartNode(id, nodeName string) error {
 		return fmt.Errorf("Clash 订阅不存在")
 	}
 	m.file.Subscriptions[index].SelectedNode = node.Name
-	return m.store.Save(m.file)
+	m.file.Subscriptions[index].Active = true
+	if err := m.store.Save(m.file); err != nil {
+		_ = m.runner.Stop(id)
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) Stop(id string) error {
-	return m.runner.Stop(id)
+	id = strings.TrimPrefix(strings.TrimSpace(id), "clash-")
+	if err := m.runner.Stop(id); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	index := m.indexLocked(id)
+	if index < 0 {
+		return nil
+	}
+	m.file.Subscriptions[index].Active = false
+	return m.store.Save(m.file)
 }
 
 func (m *Manager) Running(id string) bool {
 	return m.runner.Running(strings.TrimPrefix(strings.TrimSpace(id), "clash-"))
+}
+
+// StartMonitor restores nodes that were active before Lite restarted and
+// restarts a node if its owned mihomo process exits unexpectedly. Manual Stop
+// clears Active, so it is never mistaken for a crash.
+func (m *Manager) StartMonitor(ctx context.Context, report func(string, ...any)) {
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		lastAttempt := make(map[string]time.Time)
+		failures := make(map[string]int)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				for _, sub := range m.List() {
+					if !sub.Active || sub.SelectedNode == "" || m.Running(sub.ID) {
+						continue
+					}
+					delay := 5 * time.Second
+					if failures[sub.ID] > 0 {
+						delay = time.Duration(1<<min(failures[sub.ID], 5)) * 5 * time.Second
+					}
+					if time.Since(lastAttempt[sub.ID]) < delay {
+						continue
+					}
+					lastAttempt[sub.ID] = time.Now()
+					if err := m.StartNode(sub.ID, sub.SelectedNode); err != nil {
+						failures[sub.ID]++
+						if report != nil {
+							report("[Easy-Net Lite] 自动恢复 Clash 节点 %s 失败：%v", sub.Name, err)
+						}
+					} else {
+						failures[sub.ID] = 0
+					}
+				}
+			}
+		}
+	}()
 }
 
 func (m *Manager) downloadNodes(rawURL string) ([]model.ClashNode, error) {

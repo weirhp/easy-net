@@ -46,14 +46,23 @@
       <div><h3 id="notice-title">使用说明</h3><p id="overview-note">配置并启动代理后，本机流量会通过加密通道传输。关闭此窗口不会停止代理运行。</p></div>
     </section>
 
-    <nav class="source-tabs" id="source-tabs" hidden aria-label="代理来源"></nav>
-    <section class="subscription-toolbar" id="subscription-toolbar" hidden>
-      <label class="field node-filter-field"><span class="visually-hidden">筛选节点</span><input id="node-filter" type="search" autocomplete="off" placeholder="筛选节点名称、类型或地址"></label>
-      <span class="subscription-meta" id="subscription-meta"></span>
-      <button type="button" class="button secondary compact" data-clash-action="refresh"><svg class="icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>更新订阅</button>
-      <button type="button" class="button secondary compact" data-clash-action="stop"><svg class="icon" aria-hidden="true"><use href="#icon-stop"></use></svg>停止节点</button>
-      <button type="button" class="button secondary compact" data-clash-action="delete"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg>删除订阅</button>
+    <section class="takeover-panel" id="takeover-panel" hidden aria-labelledby="takeover-title">
+      <div class="takeover-copy"><div class="takeover-heading"><h3 id="takeover-title">自动接管应用网络</h3><span class="status" id="takeover-status">未开启</span></div><p>开启后会启动需要管理员权限的后台网络接管服务。下方列表中的应用，无论已经运行还是稍后启动，其<strong>新建连接</strong>都会按配置走代理；服务异常退出时会自动重启。</p><p class="takeover-comparison"><strong>与桌面快捷方式的区别：</strong>快捷方式只负责以 Hook 或浏览器原生代理参数启动单个应用，不要求本页接管服务常驻；自动接管无需从快捷方式启动。两者可以同时开启，连接到代理服务器的流量会被直连放行，不会形成重复代理。</p><p class="takeover-error" id="takeover-error" role="alert" hidden></p></div>
+      <label class="takeover-switch"><input id="takeover-enabled" type="checkbox" role="switch" aria-describedby="takeover-title"><span class="switch-track" aria-hidden="true"></span><span id="takeover-switch-label">启用接管</span></label>
     </section>
+
+    <div class="clash-sticky" id="clash-sticky" hidden>
+      <nav class="source-tabs" id="source-tabs" aria-label="代理来源"></nav>
+      <section class="subscription-toolbar" id="subscription-toolbar" hidden>
+        <label class="field node-filter-field"><span class="visually-hidden">筛选节点</span><input id="node-filter" type="search" autocomplete="off" placeholder="筛选节点名称或类型"></label>
+        <span class="subscription-meta" id="subscription-meta"></span>
+        <button type="button" class="button secondary compact" data-clash-action="delay"><svg class="icon" aria-hidden="true"><use href="#icon-delay"></use></svg>延迟测试</button>
+        <button type="button" class="button secondary compact" data-clash-action="speed"><svg class="icon" aria-hidden="true"><use href="#icon-speed"></use></svg>速度测试</button>
+        <button type="button" class="button secondary compact" data-clash-action="refresh"><svg class="icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>更新订阅</button>
+        <button type="button" class="button secondary compact" data-clash-action="stop"><svg class="icon" aria-hidden="true"><use href="#icon-stop"></use></svg>停止节点</button>
+        <button type="button" class="button secondary compact" data-clash-action="delete"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg>删除订阅</button>
+      </section>
+    </div>
     <section class="selection-toolbar" id="selection-toolbar" hidden aria-live="polite">
       <label class="selection-check"><input type="checkbox" id="select-all-profiles"><span>全选</span></label>
       <span id="selection-count">已选择 0 项</span>
@@ -180,6 +189,8 @@
     <symbol id="icon-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></symbol>
     <symbol id="icon-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3"/></symbol>
     <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 6v5h-5M4 18v-5h5M18.5 9A7 7 0 0 0 6 6.5L4 9m16 6-2 2.5A7 7 0 0 1 5.5 15"/></symbol>
+    <symbol id="icon-delay" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></symbol>
+    <symbol id="icon-speed" viewBox="0 0 24 24"><path d="M5 19a8.5 8.5 0 0 1 14.5-7.2"/><path d="m13 12 4.5-2.5"/><circle cx="12" cy="19" r="1.4" fill="currentColor" stroke="none"/></symbol>
     <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m7 9 5 5 5-5"/></symbol>
     <symbol id="icon-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v5h5"/></symbol>
   </svg>

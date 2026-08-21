@@ -80,6 +80,10 @@ func main() {
 	}
 	defer os.Remove(statusPath)
 	log.Printf("[Easy-Net Lite %s] 管理界面：%s", version.Value, manager.URL())
+	monitorContext, stopTakeoverMonitor := context.WithCancel(context.Background())
+	defer stopTakeoverMonitor()
+	launches.StartTakeoverMonitor(monitorContext, log.Printf)
+	clashMgr.StartMonitor(monitorContext, log.Printf)
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt)

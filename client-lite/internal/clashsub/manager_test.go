@@ -59,8 +59,18 @@ func TestManagerImportStartAndRefresh(t *testing.T) {
 		t.Fatal("expected node to be running")
 	}
 	got, ok := manager.Get(sub.ID)
-	if !ok || got.SelectedNode != "日本 2" {
+	if !ok || got.SelectedNode != "日本 2" || !got.Active {
 		t.Fatalf("selected node not persisted: %#v", got)
+	}
+	if err := manager.Stop(sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	stopped, _ := manager.Get(sub.ID)
+	if stopped.Active || manager.Running(sub.ID) {
+		t.Fatalf("manual stop must disable automatic recovery: %#v", stopped)
+	}
+	if err := manager.StartNode(sub.ID, "日本 2"); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := manager.Import("机场 A", "https://example.com/other.yaml", 17891); err == nil {
 		t.Fatal("expected duplicate tab name to fail")

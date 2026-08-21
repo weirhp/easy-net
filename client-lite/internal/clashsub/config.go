@@ -17,24 +17,29 @@ func WriteMihomoConfig(path string, listenPort int, proxy map[string]any) error 
 		return fmt.Errorf("Clash 节点无效")
 	}
 	node := normalizeMap(proxy)
+	name := asString(node["name"])
 	document := map[string]any{
-		"mixed-port":                listenPort,
-		"bind-address":              "127.0.0.1",
-		"allow-lan":                 false,
-		"mode":                      "global",
-		"log-level":                 "info",
-		"ipv6":                      false,
-		"tcp-concurrent":            true,
-		"global-client-fingerprint": "chrome",
+		"mixed-port":     listenPort,
+		"bind-address":   "127.0.0.1",
+		"allow-lan":      false,
+		"mode":           "rule",
+		"log-level":      "info",
+		"ipv6":           false,
+		"tcp-concurrent": false,
 		"dns": map[string]any{
 			"enable":                  true,
 			"ipv6":                    false,
 			"enhanced-mode":           "redir-host",
-			"default-nameserver":      []any{"223.5.5.5", "119.29.29.29"},
-			"proxy-server-nameserver": []any{"https://dns.alidns.com/dns-query", "https://doh.pub/dns-query", "223.5.5.5"},
-			"nameserver":              []any{"https://dns.alidns.com/dns-query", "https://doh.pub/dns-query"},
+			"respect-rules":           true,
+			"default-nameserver":      []any{"tcp://223.5.5.5:53", "tcp://119.29.29.29:53"},
+			"proxy-server-nameserver": []any{"https://223.5.5.5/dns-query", "https://1.12.0.1/dns-query", "tls://223.5.5.5"},
+			"nameserver":              []any{"https://8.8.8.8/dns-query", "tls://8.8.8.8"},
 		},
 		"proxies": []any{node},
+		"proxy-groups": []any{
+			map[string]any{"name": "PROXY", "type": "select", "proxies": []any{name}},
+		},
+		"rules": []any{"MATCH,PROXY"},
 	}
 	data, err := yaml.Marshal(document)
 	if err != nil {
@@ -43,8 +48,13 @@ func WriteMihomoConfig(path string, listenPort int, proxy map[string]any) error 
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return fmt.Errorf("创建 Clash 运行目录：%w", err)
 	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	temporary := path + ".tmp"
+	if err := os.WriteFile(temporary, data, 0600); err != nil {
 		return fmt.Errorf("写入 Clash 运行配置：%w", err)
+	}
+	if err := replaceRuntimeFile(temporary, path); err != nil {
+		_ = os.Remove(temporary)
+		return fmt.Errorf("替换 Clash 运行配置：%w", err)
 	}
 	return nil
 }

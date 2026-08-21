@@ -20,13 +20,14 @@ const (
 	LaunchModeWeChatWinDivert LaunchMode = "wechat-windivert"
 	LaunchModeHook            LaunchMode = "hook"
 	LaunchModeWinDivert       LaunchMode = "windivert"
-	CurrentLaunchFileVersion             = 2
+	CurrentLaunchFileVersion             = 3
 	MaxLaunchEntries                     = 30
 )
 
 type LaunchFile struct {
-	Version int           `json:"version"`
-	Entries []LaunchEntry `json:"entries"`
+	Version         int           `json:"version"`
+	TakeoverEnabled bool          `json:"takeoverEnabled"`
+	Entries         []LaunchEntry `json:"entries"`
 }
 
 type LaunchEntry struct {

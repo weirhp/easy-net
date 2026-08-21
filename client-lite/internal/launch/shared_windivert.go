@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"easy-net/client-lite/internal/model"
@@ -51,15 +52,28 @@ var privateTargetRanges = []string{
 
 func (s *Service) writeSharedWinDivertProfile() (string, error) {
 	entries := s.List()
+	if !s.TakeoverEnabled() {
+		entries = nil
+	}
 	profile := bridgeProfile{
 		Version: "1.0", ProxyConfigs: []bridgeProxyConfig{}, ProxyRules: []bridgeProxyRule{},
 	}
 	proxyIDs := make(map[string]int)
-	processOwners := make(map[string]string)
+	type route struct {
+		host      string
+		port      string
+		proxyID   int
+		udpAction string
+	}
+	type assignment struct {
+		name     string
+		routeKey string
+		priority int
+	}
+	routes := make(map[string]route)
+	assignments := make(map[string]assignment)
+	routeOrder := make([]string, 0)
 	for _, entry := range entries {
-		if !usesSharedWinDivert(entry) {
-			continue
-		}
 		proxyAddress, err := s.entryProxyAddress(entry)
 		if err != nil {
 			return "", fmt.Errorf("%s：%w", entry.Name, err)
@@ -76,33 +90,59 @@ func (s *Service) writeSharedWinDivertProfile() (string, error) {
 				ID: proxyID, Type: "socks5", Host: host, Port: port,
 			})
 		}
-		processes, err := winDivertProcessNames(entry)
-		if err != nil {
-			return "", fmt.Errorf("%s：%w", entry.Name, err)
-		}
-		processList := strings.Join(processes, ";")
-		for _, process := range processes {
-			key := strings.ToLower(process)
-			if owner, exists := processOwners[key]; exists && owner != entry.ID {
-				return "", fmt.Errorf("进程 %s 同时出现在多个 WinDivert 应用中，请合并或删除重复规则", process)
-			}
-			processOwners[key] = entry.ID
-		}
-		// A shortcut-launched application may also use the native Chromium or
-		// DLL Hook path. Its connection to the configured SOCKS5 server must
-		// bypass WinDivert, otherwise a non-loopback proxy can be proxied again.
-		profile.ProxyRules = append(profile.ProxyRules, newBridgeEndpointRule(processList, host, port, proxyID))
-		for _, target := range privateTargetRanges {
-			profile.ProxyRules = append(profile.ProxyRules, newBridgeRule(processList, target, "BOTH", "DIRECT", proxyID))
-		}
-		profile.ProxyRules = append(profile.ProxyRules, newBridgeRule(processList, "*", "TCP", "PROXY", proxyID))
 		udpAction := "PROXY"
 		if entry.UDPMode == "block" {
 			udpAction = "BLOCK"
 		} else if entry.UDPMode == "direct" {
 			udpAction = "DIRECT"
 		}
-		profile.ProxyRules = append(profile.ProxyRules, newBridgeRule(processList, "*", "UDP", udpAction, proxyID))
+		routeKey := strings.ToLower(proxyAddress) + "\x00" + udpAction
+		if _, exists := routes[routeKey]; !exists {
+			routes[routeKey] = route{host: host, port: port, proxyID: proxyID, udpAction: udpAction}
+			routeOrder = append(routeOrder, routeKey)
+		}
+		processes, err := winDivertProcessNames(entry)
+		if err != nil {
+			return "", fmt.Errorf("%s：%w", entry.Name, err)
+		}
+		for index, process := range processes {
+			key := strings.ToLower(process)
+			priority := 1
+			if index == 0 {
+				priority = 2
+			}
+			current, exists := assignments[key]
+			// Electron applications often share helper names. Identical routes are
+			// deduplicated. If routes disagree, a primary executable wins over a
+			// helper; otherwise the first stable entry wins because one process
+			// cannot use two SOCKS routes simultaneously.
+			if !exists || current.routeKey == routeKey || priority > current.priority {
+				assignments[key] = assignment{name: process, routeKey: routeKey, priority: priority}
+			}
+		}
+	}
+	for _, routeKey := range routeOrder {
+		currentRoute := routes[routeKey]
+		processes := make([]string, 0)
+		for _, item := range assignments {
+			if item.routeKey == routeKey {
+				processes = append(processes, item.name)
+			}
+		}
+		if len(processes) == 0 {
+			continue
+		}
+		slices.SortFunc(processes, func(a, b string) int { return strings.Compare(strings.ToLower(a), strings.ToLower(b)) })
+		processList := strings.Join(processes, ";")
+		// A shortcut-launched application may also use the native Chromium or
+		// DLL Hook path. Its connection to the configured SOCKS5 server must
+		// bypass WinDivert, otherwise a non-loopback proxy can be proxied again.
+		profile.ProxyRules = append(profile.ProxyRules, newBridgeEndpointRule(processList, currentRoute.host, currentRoute.port, currentRoute.proxyID))
+		for _, target := range privateTargetRanges {
+			profile.ProxyRules = append(profile.ProxyRules, newBridgeRule(processList, target, "BOTH", "DIRECT", currentRoute.proxyID))
+		}
+		profile.ProxyRules = append(profile.ProxyRules, newBridgeRule(processList, "*", "TCP", "PROXY", currentRoute.proxyID))
+		profile.ProxyRules = append(profile.ProxyRules, newBridgeRule(processList, "*", "UDP", currentRoute.udpAction, currentRoute.proxyID))
 	}
 	data, err := json.MarshalIndent(profile, "", "  ")
 	if err != nil {

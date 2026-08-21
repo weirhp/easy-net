@@ -88,6 +88,20 @@ func (s *Service) DeleteClash(id string) error {
 	return nil
 }
 
+func (s *Service) TestClashDelay(id, nodeName string) ([]clashsub.NodeMetric, error) {
+	if s.clash == nil {
+		return nil, fmt.Errorf("Clash 订阅不可用")
+	}
+	return s.clash.TestDelay(id, nodeName)
+}
+
+func (s *Service) TestClashSpeed(id, nodeName string) ([]clashsub.NodeMetric, error) {
+	if s.clash == nil {
+		return nil, fmt.Errorf("Clash 订阅不可用")
+	}
+	return s.clash.TestSpeed(id, nodeName)
+}
+
 func (s *Service) StartClashNode(id, nodeName string) error {
 	if s.clash == nil {
 		return fmt.Errorf("Clash 订阅不可用")

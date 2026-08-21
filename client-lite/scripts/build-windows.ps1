@@ -1,3 +1,5 @@
+$env:GOPROXY = "https://goproxy.cn,direct"
+
 $ErrorActionPreference = "Stop"
 
 $projectDir = Split-Path -Parent $PSScriptRoot

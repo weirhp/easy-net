@@ -36,6 +36,14 @@ func (s *store) Load() (*model.LaunchFile, error) {
 		return nil, fmt.Errorf("解析启动入口：%w", err)
 	}
 	legacy := file.Version < model.CurrentLaunchFileVersion
+	if legacy {
+		for _, entry := range file.Entries {
+			if entry.AttachExisting || entry.Mode == model.LaunchModeWinDivert {
+				file.TakeoverEnabled = true
+				break
+			}
+		}
+	}
 	valid := make([]model.LaunchEntry, 0, len(file.Entries))
 	seen := make(map[string]struct{}, len(file.Entries))
 	for _, entry := range file.Entries {
@@ -63,7 +71,10 @@ func (s *store) Save(file *model.LaunchFile) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0700); err != nil {
 		return fmt.Errorf("创建启动入口目录：%w", err)
 	}
-	copyFile := &model.LaunchFile{Version: model.CurrentLaunchFileVersion, Entries: append([]model.LaunchEntry(nil), file.Entries...)}
+	copyFile := &model.LaunchFile{
+		Version: model.CurrentLaunchFileVersion, TakeoverEnabled: file.TakeoverEnabled,
+		Entries: append([]model.LaunchEntry(nil), file.Entries...),
+	}
 	data, err := json.MarshalIndent(copyFile, "", "  ")
 	if err != nil {
 		return fmt.Errorf("序列化启动入口：%w", err)

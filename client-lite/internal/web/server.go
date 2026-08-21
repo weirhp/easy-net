@@ -50,14 +50,15 @@ type Server struct {
 }
 
 type stateResponse struct {
-	Profiles      []profileView   `json:"profiles"`
-	Subscriptions []clashsub.View `json:"subscriptions,omitempty"`
-	Launches      []launch.View   `json:"launches,omitempty"`
-	Features      featuresView    `json:"features"`
-	ConfigPath    string          `json:"configPath"`
-	Token         string          `json:"token"`
-	Version       string          `json:"version"`
-	Warnings      []string        `json:"warnings,omitempty"`
+	Profiles      []profileView          `json:"profiles"`
+	Subscriptions []clashsub.View        `json:"subscriptions,omitempty"`
+	Launches      []launch.View          `json:"launches,omitempty"`
+	Takeover      *launch.TakeoverStatus `json:"takeover,omitempty"`
+	Features      featuresView           `json:"features"`
+	ConfigPath    string                 `json:"configPath"`
+	Token         string                 `json:"token"`
+	Version       string                 `json:"version"`
+	Warnings      []string               `json:"warnings,omitempty"`
 }
 
 type featuresView struct {
@@ -177,6 +178,7 @@ func NewWithOptions(svc *service.Service, onQuit func(), options Options) (*Serv
 	mux.HandleFunc("/api/launches", s.handleLaunches)
 	mux.HandleFunc("/api/launches/bulk", s.handleLaunchBulk)
 	mux.HandleFunc("/api/launches/", s.handleLaunchAction)
+	mux.HandleFunc("/api/app-takeover", s.handleAppTakeover)
 	mux.HandleFunc("/api/processes", s.handleProcesses)
 	mux.HandleFunc("/api/application-files/pick", s.handleApplicationFilePick)
 	mux.HandleFunc("/api/export", s.handleExport)
@@ -312,11 +314,40 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.launches != nil {
 		response.Launches = s.launches.Views()
+		status := s.launches.TakeoverStatus()
+		response.Takeover = &status
 		if response.Launches == nil {
 			response.Launches = []launch.View{}
 		}
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleAppTakeover(w http.ResponseWriter, r *http.Request) {
+	if s.launches == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.authorized(r) {
+		writeError(w, http.StatusForbidden, "本地管理令牌无效，请刷新页面")
+		return
+	}
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.launches.SetTakeoverEnabled(body.Enabled); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "takeover": s.launches.TakeoverStatus()})
 }
 
 func (s *Server) features() featuresView {
@@ -511,7 +542,7 @@ func (s *Server) handleLaunches(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		applyError := ""
-		if saved.AttachExisting {
+		if s.launches.TakeoverEnabled() {
 			if err := s.launches.ApplySharedRules(); err != nil {
 				applyError = err.Error()
 			}
@@ -770,6 +801,30 @@ func (s *Server) handleSubscriptionAction(w http.ResponseWriter, r *http.Request
 	case "stop":
 		s.service.Stop(clashsub.ProfileID(id))
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	case "delay", "speed":
+		var body struct {
+			Node string `json:"node"`
+		}
+		if r.ContentLength > 0 {
+			if err := decodeJSON(w, r, &body); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		var (
+			results []clashsub.NodeMetric
+			err     error
+		)
+		if parts[1] == "delay" {
+			results, err = s.service.TestClashDelay(id, body.Node)
+		} else {
+			results, err = s.service.TestClashSpeed(id, body.Node)
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "results": results})
 	case "start":
 		var body struct {
 			Node string `json:"node"`

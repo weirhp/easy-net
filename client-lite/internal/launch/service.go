@@ -1,6 +1,8 @@
 package launch
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"easy-net/client-lite/internal/model"
 	"easy-net/client-lite/internal/service"
@@ -66,6 +69,23 @@ type Service struct {
 	file     *model.LaunchFile
 	proxies  *service.Service
 	runner   Runner
+	statusMu sync.Mutex
+	status   TakeoverStatus
+}
+
+type TakeoverStatus struct {
+	Enabled      bool   `json:"enabled"`
+	State        string `json:"state"`
+	Message      string `json:"message"`
+	RestartCount int    `json:"restartCount"`
+	UpdatedAt    string `json:"updatedAt,omitempty"`
+}
+
+type sharedSupervisorStatus struct {
+	State        string `json:"State"`
+	Message      string `json:"Message"`
+	RestartCount int    `json:"RestartCount"`
+	UpdatedAtMS  int64  `json:"UpdatedAtUnixMs"`
 }
 
 type View struct {
@@ -105,6 +125,7 @@ func New(dir string, proxies *service.Service, runner Runner) (*Service, error) 
 		}
 	}
 	s.file = file
+	s.status = TakeoverStatus{Enabled: file.TakeoverEnabled, State: "stopped", Message: "应用网络接管未开启"}
 	return s, nil
 }
 
@@ -116,6 +137,143 @@ func (s *Service) List() []model.LaunchEntry {
 	out := make([]model.LaunchEntry, len(s.file.Entries))
 	copy(out, s.file.Entries)
 	return out
+}
+
+func (s *Service) TakeoverEnabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.file.TakeoverEnabled
+}
+
+func (s *Service) SetTakeoverEnabled(enabled bool) error {
+	s.mu.Lock()
+	updated := &model.LaunchFile{
+		Version: s.file.Version, TakeoverEnabled: enabled,
+		Entries: append([]model.LaunchEntry(nil), s.file.Entries...),
+	}
+	if err := s.store.Save(updated); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.file = updated
+	s.mu.Unlock()
+	s.setTakeoverStatus(TakeoverStatus{Enabled: enabled, State: map[bool]string{true: "starting", false: "stopped"}[enabled], Message: map[bool]string{true: "正在启动应用网络接管", false: "应用网络接管已关闭"}[enabled]})
+	return s.ApplySharedRules()
+}
+
+func (s *Service) TakeoverStatus() TakeoverStatus {
+	enabled := s.TakeoverEnabled()
+	status := s.readSharedSupervisorStatus()
+	s.statusMu.Lock()
+	local := s.status
+	s.statusMu.Unlock()
+	if !enabled {
+		return TakeoverStatus{Enabled: false, State: "stopped", Message: "应用网络接管已关闭"}
+	}
+	if status != nil {
+		age := time.Since(time.UnixMilli(status.UpdatedAtMS))
+		if age >= 0 && age <= 12*time.Second {
+			message := status.Message
+			switch status.State {
+			case "healthy":
+				message = "接管服务运行正常；列表内应用的新连接会自动走代理"
+			case "starting":
+				message = "正在启动应用网络接管"
+			case "restarting":
+				message = "接管引擎意外退出或规则已更新，正在自动重启"
+			case "error":
+				message = "接管引擎启动失败，后台仍在自动重试：" + status.Message + "；日志：" + filepath.Join(filepath.Dir(s.store.Path()), "shared-windivert.log")
+			case "stopped":
+				message = "应用网络接管已停止"
+			}
+			return TakeoverStatus{
+				Enabled: true, State: status.State, Message: message,
+				RestartCount: status.RestartCount, UpdatedAt: time.UnixMilli(status.UpdatedAtMS).Format(time.RFC3339),
+			}
+		}
+	}
+	local.Enabled = true
+	if local.State == "starting" && local.UpdatedAt != "" {
+		if started, err := time.Parse(time.RFC3339, local.UpdatedAt); err == nil && time.Since(started) > 15*time.Second {
+			local.State = "error"
+			local.Message = "接管服务启动超时，Lite 将自动尝试恢复"
+		}
+	}
+	if local.State == "healthy" || local.State == "restarting" {
+		local.State = "error"
+		local.Message = "接管服务状态已失联，Lite 将自动尝试恢复"
+	}
+	return local
+}
+
+func (s *Service) StartTakeoverMonitor(ctx context.Context, report func(string, ...any)) {
+	go func() {
+		ticker := time.NewTicker(3 * time.Second)
+		defer ticker.Stop()
+		failures := 0
+		lastAttempt := time.Time{}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if !s.TakeoverEnabled() {
+					failures = 0
+					continue
+				}
+				status := s.TakeoverStatus()
+				if status.State == "healthy" || status.State == "starting" || status.State == "restarting" || status.State == "idle" {
+					continue
+				}
+				if status.State == "error" && status.UpdatedAt != "" {
+					if updated, err := time.Parse(time.RFC3339, status.UpdatedAt); err == nil && time.Since(updated) < 12*time.Second {
+						// The elevated C++ supervisor is alive and performs its own
+						// bounded restart loop. Avoid launching a competing supervisor.
+						continue
+					}
+				}
+				delay := 10 * time.Second
+				if failures > 0 {
+					delay = time.Duration(1<<min(failures, 5)) * 10 * time.Second
+				}
+				if time.Since(lastAttempt) < delay {
+					continue
+				}
+				lastAttempt = time.Now()
+				if err := s.ApplySharedRules(); err != nil {
+					failures++
+					s.setTakeoverStatus(TakeoverStatus{Enabled: true, State: "error", Message: err.Error(), RestartCount: failures, UpdatedAt: time.Now().Format(time.RFC3339)})
+					if report != nil {
+						report("[Easy-Net Lite] 自动恢复应用网络接管失败：%v", err)
+					}
+				} else {
+					failures = 0
+				}
+			}
+		}
+	}()
+}
+
+func (s *Service) setTakeoverStatus(status TakeoverStatus) {
+	s.statusMu.Lock()
+	s.status = status
+	s.statusMu.Unlock()
+}
+
+func (s *Service) sharedStatusPath() string {
+	return filepath.Join(filepath.Dir(s.store.Path()), "shared-windivert-status.json")
+}
+
+func (s *Service) readSharedSupervisorStatus() *sharedSupervisorStatus {
+	data, err := os.ReadFile(s.sharedStatusPath())
+	if err != nil {
+		return nil
+	}
+	var status sharedSupervisorStatus
+	if json.Unmarshal(data, &status) != nil || status.State == "" || status.UpdatedAtMS <= 0 {
+		return nil
+	}
+	return &status
 }
 
 func (s *Service) Views() []View {
@@ -241,7 +399,7 @@ func (s *Service) UpsertMany(entries []model.LaunchEntry) ([]model.LaunchEntry, 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	updated := &model.LaunchFile{Version: s.file.Version, Entries: append([]model.LaunchEntry(nil), s.file.Entries...)}
+	updated := &model.LaunchFile{Version: s.file.Version, TakeoverEnabled: s.file.TakeoverEnabled, Entries: append([]model.LaunchEntry(nil), s.file.Entries...)}
 	saved := make([]model.LaunchEntry, 0, len(entries))
 	for _, entry := range entries {
 		entry.Normalize()
@@ -356,7 +514,7 @@ func (s *Service) StartWithOptions(id string, options StartOptions) (View, error
 	if err := s.runner.CheckProxy(proxyAddress); err != nil {
 		return View{}, &ProxyUnavailableError{ProfileName: profileName, Address: proxyAddress, Cause: err}
 	}
-	if usesSharedWinDivert(entry) {
+	if s.TakeoverEnabled() {
 		if err := s.applySharedRulesLocked(); err != nil {
 			return View{}, err
 		}
@@ -388,21 +546,31 @@ func (s *Service) StartWithOptions(id string, options StartOptions) (View, error
 func (s *Service) ApplySharedRules() error {
 	s.startMu.Lock()
 	defer s.startMu.Unlock()
-	return s.applySharedRulesLocked()
+	err := s.applySharedRulesLocked()
+	if err != nil && s.TakeoverEnabled() {
+		s.setTakeoverStatus(TakeoverStatus{Enabled: true, State: "error", Message: err.Error(), UpdatedAt: time.Now().Format(time.RFC3339)})
+	}
+	return err
 }
 
 func (s *Service) applySharedRulesLocked() error {
-	entries := s.List()
-	rules := make([]model.LaunchEntry, 0, len(entries))
-	for _, entry := range entries {
-		if usesSharedWinDivert(entry) {
-			rules = append(rules, entry)
+	if !s.TakeoverEnabled() {
+		if _, err := s.writeSharedWinDivertProfile(); err != nil {
+			return err
 		}
+		s.setTakeoverStatus(TakeoverStatus{Enabled: false, State: "stopped", Message: "应用网络接管已关闭", UpdatedAt: time.Now().Format(time.RFC3339)})
+		return nil
 	}
+	entries := s.List()
+	rules := append([]model.LaunchEntry(nil), entries...)
 	if len(rules) == 0 {
 		_, err := s.writeSharedWinDivertProfile()
+		if err == nil {
+			s.setTakeoverStatus(TakeoverStatus{Enabled: true, State: "idle", Message: "已开启；添加应用后将自动接管", UpdatedAt: time.Now().Format(time.RFC3339)})
+		}
 		return err
 	}
+	s.setTakeoverStatus(TakeoverStatus{Enabled: true, State: "starting", Message: "正在启动应用网络接管", UpdatedAt: time.Now().Format(time.RFC3339)})
 	firstProxy := ""
 	checked := make(map[string]struct{})
 	for _, entry := range rules {
@@ -438,6 +606,7 @@ func (s *Service) applySharedRulesLocked() error {
 		}
 		return err
 	}
+	s.setTakeoverStatus(TakeoverStatus{Enabled: true, State: "healthy", Message: "接管服务运行中；列表内应用的新连接将自动走代理", UpdatedAt: time.Now().Format(time.RFC3339)})
 	return nil
 }
 

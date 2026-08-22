@@ -751,17 +751,41 @@ func friendlyConnectionError(profile model.Profile, err error) string {
 	}
 }
 
+const (
+	webSocketProbeAttemptTimeout = 6 * time.Second
+	webSocketProbeReadTimeout    = 900 * time.Millisecond
+)
+
 func testWebSocketConnection(ctx context.Context, profile model.Profile, outbound transport.Transport) error {
-	target, err := websocketProbeTarget(profile.WebSocket.URL)
+	targets, err := websocketProbeTargets(profile.WebSocket.URL)
 	if err != nil {
 		return err
 	}
+
+	errs := make([]error, 0, len(targets))
+	for _, target := range targets {
+		attemptCtx, cancel := context.WithTimeout(ctx, webSocketProbeAttemptTimeout)
+		err = testWebSocketTarget(attemptCtx, outbound, target)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		errs = append(errs, fmt.Errorf("探测 %s：%w", target, err))
+	}
+	return fmt.Errorf("所有 WebSocket 探测目标均失败：%w", errors.Join(errs...))
+}
+
+func testWebSocketTarget(ctx context.Context, outbound transport.Transport, target string) error {
 	conn, err := outbound.DialContext(ctx, "tcp", target)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	if err := conn.SetReadDeadline(time.Now().Add(900 * time.Millisecond)); err != nil {
+	deadline := time.Now().Add(webSocketProbeReadTimeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err := conn.SetReadDeadline(deadline); err != nil {
 		return err
 	}
 	probe := make([]byte, 1)
@@ -776,14 +800,14 @@ func testWebSocketConnection(ctx context.Context, profile model.Profile, outboun
 	return fmt.Errorf("连接建立后被服务端关闭：%w", err)
 }
 
-func websocketProbeTarget(rawURL string) (string, error) {
+func websocketProbeTargets(rawURL string) ([]string, error) {
 	rawURL = strings.TrimSpace(rawURL)
 	if !strings.Contains(rawURL, "://") {
 		rawURL = "wss://" + rawURL
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Hostname() == "" {
-		return "", fmt.Errorf("WebSocket 地址无效")
+		return nil, fmt.Errorf("WebSocket 地址无效")
 	}
 	port := u.Port()
 	if port == "" {
@@ -793,7 +817,15 @@ func websocketProbeTarget(rawURL string) (string, error) {
 			port = "443"
 		}
 	}
-	return net.JoinHostPort(u.Hostname(), port), nil
+
+	// Microsoft is reachable from most domestic and overseas networks and checks
+	// the complete tunnel path. The WebSocket server itself is a dependency-free
+	// fallback; current Worker servers recognize this compatibility probe without
+	// trying to create a prohibited Cloudflare-to-Cloudflare TCP loop.
+	return []string{
+		"www.microsoft.com:443",
+		net.JoinHostPort(u.Hostname(), port),
+	}, nil
 }
 
 func (s *Service) StartAuto() {

@@ -124,6 +124,91 @@ func TestSharedWinDivertProfileIncludesRunningBrowser(t *testing.T) {
 	}
 }
 
+func TestDisabledApplicationIsExcludedFromSharedWinDivert(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "launches.json"), []byte(`{"version":3,"entries":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	launches, err := New(dir, testService(t, dir), &fakeRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := launches.Upsert(model.LaunchEntry{
+		Name: "启用应用", Mode: model.LaunchModeWinDivert, Proxy: "127.0.0.1:1082",
+		Path: `D:\Enabled\enabled.exe`, AttachExisting: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := launches.Upsert(model.LaunchEntry{
+		Name: "关闭应用", Mode: model.LaunchModeWinDivert, Proxy: "127.0.0.1:1083",
+		Path: `D:\Disabled\disabled.exe`, AttachExisting: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := launches.SetEntryTakeover(disabled.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := launches.SetTakeoverEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	path, err := launches.writeSharedWinDivertProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.ToLower(string(data))
+	if !strings.Contains(text, "enabled.exe") || strings.Contains(text, "disabled.exe") {
+		t.Fatalf("per-application takeover was not applied: %s", data)
+	}
+	if got, ok := launches.Get(enabled.ID); !ok || got.TakeoverDisabled {
+		t.Fatalf("new applications must default to takeover enabled: %#v", got)
+	}
+	reloaded, err := New(dir, testService(t, dir), &fakeRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := reloaded.Get(disabled.ID); !ok || !got.TakeoverDisabled {
+		t.Fatalf("disabled takeover setting was not persisted: %#v", got)
+	}
+}
+
+func TestAllApplicationsCanDisableTakeoverWithoutAProxy(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "launches.json"), []byte(`{"version":3,"entries":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	launches, err := New(dir, testService(t, dir), &fakeRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := launches.Upsert(model.LaunchEntry{
+		Name: "暂不接管", Mode: model.LaunchModeHook, Path: `D:\App\app.exe`, AttachExisting: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := launches.SetEntryTakeover(entry.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := launches.Get(entry.ID); !ok || !got.TakeoverDisabled {
+		t.Fatalf("application takeover should be disabled before enabling the global service: %#v", got)
+	}
+	if got := launches.sharedTakeoverEntries(); len(got) != 0 {
+		t.Fatalf("disabled application still appears in shared rules: %#v", got)
+	}
+	if err := launches.SetTakeoverEnabled(true); err != nil {
+		t.Fatalf("disabled applications must not require a proxy: %v", err)
+	}
+	if status := launches.TakeoverStatus(); status.State != "idle" || !status.Enabled {
+		t.Fatalf("all-disabled takeover should be idle, got %#v", status)
+	}
+}
+
 func TestSharedWinDivertProfileDeduplicatesSharedHelper(t *testing.T) {
 	dir := t.TempDir()
 	launches, err := New(dir, testService(t, dir), &fakeRunner{})

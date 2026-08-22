@@ -74,6 +74,9 @@ func (s *Service) writeSharedWinDivertProfile() (string, error) {
 	assignments := make(map[string]assignment)
 	routeOrder := make([]string, 0)
 	for _, entry := range entries {
+		if !usesSharedWinDivert(entry) {
+			continue
+		}
 		proxyAddress, err := s.entryProxyAddress(entry)
 		if err != nil {
 			return "", fmt.Errorf("%s：%w", entry.Name, err)
@@ -201,7 +204,7 @@ func winDivertProcessNames(entry model.LaunchEntry) ([]string, error) {
 	if names[0] == "" {
 		switch entry.Mode {
 		case model.LaunchModeChatGPT:
-			names = []string{"ChatGPT.exe", "codex-code-mode-host.exe"}
+			names = []string{"ChatGPT.exe", "codex-code-mode-host.exe", "codex.exe"}
 		case model.LaunchModeAntigravity:
 			names = []string{"Antigravity IDE.exe", "language_server_windows_x64.exe"}
 		case model.LaunchModeCursor:
@@ -239,7 +242,7 @@ func winDivertProcessNames(entry model.LaunchEntry) ([]string, error) {
 }
 
 func usesSharedWinDivert(entry model.LaunchEntry) bool {
-	return entry.Mode == model.LaunchModeWinDivert || entry.AttachExisting
+	return !entry.TakeoverDisabled && (entry.Mode == model.LaunchModeWinDivert || entry.AttachExisting)
 }
 
 func windowsExecutableBase(path string) string {

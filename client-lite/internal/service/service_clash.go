@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"reflect"
 	"time"
 
 	"easy-net/client-lite/internal/clashsub"
@@ -10,8 +11,14 @@ import (
 
 func (s *Service) AttachClash(manager *clashsub.Manager) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.clash = manager
+	s.mu.Unlock()
+	if manager != nil {
+		manager.SetRefreshHook(func(id string) error {
+			_, err := s.RefreshClash(id)
+			return err
+		})
+	}
 }
 
 func (s *Service) ClashViews() []clashsub.View {
@@ -22,8 +29,9 @@ func (s *Service) ClashViews() []clashsub.View {
 	for _, sub := range s.clash.List() {
 		view := clashsub.View{
 			ID: sub.ID, Name: sub.Name, URL: sub.URL, SelectedNode: sub.SelectedNode,
-			ListenAddress: fmt.Sprintf("127.0.0.1:%d", sub.ListenPort),
-			ProfileID:     clashsub.ProfileID(sub.ID), Running: s.clash.Running(sub.ID),
+			ListenAddress:  fmt.Sprintf("127.0.0.1:%d", sub.ListenPort),
+			RefreshMinutes: sub.RefreshMinutes,
+			ProfileID:      clashsub.ProfileID(sub.ID), Running: s.clash.Running(sub.ID),
 		}
 		if !sub.UpdatedAt.IsZero() {
 			view.UpdatedAt = sub.UpdatedAt.Format(time.RFC3339)
@@ -42,11 +50,11 @@ func (s *Service) ClashViews() []clashsub.View {
 	return views
 }
 
-func (s *Service) ImportClash(name, rawURL string) (model.Subscription, error) {
+func (s *Service) ImportClash(name, rawURL string, refreshMinutes int) (model.Subscription, error) {
 	if s.clash == nil {
 		return model.Subscription{}, fmt.Errorf("Clash 订阅不可用")
 	}
-	sub, err := s.clash.Import(name, rawURL, s.nextAvailablePort(17890))
+	sub, err := s.clash.Import(name, rawURL, s.nextAvailablePort(17890), refreshMinutes)
 	if err != nil {
 		return model.Subscription{}, err
 	}
@@ -57,10 +65,19 @@ func (s *Service) ImportClash(name, rawURL string) (model.Subscription, error) {
 	return sub, nil
 }
 
+func (s *Service) SetClashRefreshInterval(id string, refreshMinutes int) (model.Subscription, error) {
+	if s.clash == nil {
+		return model.Subscription{}, fmt.Errorf("Clash 订阅不可用")
+	}
+	return s.clash.SetRefreshInterval(id, refreshMinutes)
+}
+
 func (s *Service) RefreshClash(id string) (model.Subscription, error) {
 	if s.clash == nil {
 		return model.Subscription{}, fmt.Errorf("Clash 订阅不可用")
 	}
+	previous, hadPrevious := s.clash.Get(id)
+	previousNode, hadPreviousNode := previous.Node(previous.SelectedNode)
 	wasRunning := s.clash.Running(id)
 	sub, err := s.clash.Refresh(id)
 	if err != nil {
@@ -69,11 +86,17 @@ func (s *Service) RefreshClash(id string) (model.Subscription, error) {
 	if err := s.upsertClashProfile(sub); err != nil {
 		return model.Subscription{}, err
 	}
-	if wasRunning && sub.SelectedNode != "" {
+	currentNode, hasCurrentNode := sub.Node(sub.SelectedNode)
+	nodeChanged := !hadPrevious || !hadPreviousNode || !hasCurrentNode ||
+		previous.SelectedNode != sub.SelectedNode || !reflect.DeepEqual(previousNode.Raw, currentNode.Raw)
+	if wasRunning && sub.SelectedNode != "" && nodeChanged {
 		if err := s.StartClashNode(id, sub.SelectedNode); err != nil {
 			return sub, err
 		}
 	}
+	s.mu.Lock()
+	s.errors[clashsub.ProfileID(id)] = ""
+	s.mu.Unlock()
 	return sub, nil
 }
 
@@ -100,6 +123,13 @@ func (s *Service) TestClashSpeed(id, nodeName string) ([]clashsub.NodeMetric, er
 		return nil, fmt.Errorf("Clash 订阅不可用")
 	}
 	return s.clash.TestSpeed(id, nodeName)
+}
+
+func (s *Service) TestClashAccess(id, nodeName string) ([]clashsub.NodeMetric, error) {
+	if s.clash == nil {
+		return nil, fmt.Errorf("Clash 订阅不可用")
+	}
+	return s.clash.TestAccess(id, nodeName)
 }
 
 func (s *Service) StartClashNode(id, nodeName string) error {

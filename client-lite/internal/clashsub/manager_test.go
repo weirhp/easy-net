@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+
+	"easy-net/client-lite/internal/model"
 )
 
 type fakeRunner struct {
@@ -45,11 +47,11 @@ func TestManagerImportStartAndRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager.SetFetcher(func(string) ([]byte, error) { return []byte(sampleYAML), nil })
-	sub, err := manager.Import("机场 A", "https://example.com/clash.yaml", 17890)
+	sub, err := manager.Import("机场 A", "https://example.com/clash.yaml", 17890, model.DefaultClashRefreshMinutes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sub.Name != "机场 A" || len(sub.Nodes) != 2 || ProfileID(sub.ID) != "clash-"+sub.ID {
+	if sub.Name != "机场 A" || len(sub.Nodes) != 2 || ProfileID(sub.ID) != "clash-"+sub.ID || sub.RefreshMinutes != model.DefaultClashRefreshMinutes {
 		t.Fatalf("unexpected subscription: %#v", sub)
 	}
 	if err := manager.StartNode(sub.ID, "日本 2"); err != nil {
@@ -72,7 +74,7 @@ func TestManagerImportStartAndRefresh(t *testing.T) {
 	if err := manager.StartNode(sub.ID, "日本 2"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Import("机场 A", "https://example.com/other.yaml", 17891); err == nil {
+	if _, err := manager.Import("机场 A", "https://example.com/other.yaml", 17891, 0); err == nil {
 		t.Fatal("expected duplicate tab name to fail")
 	}
 	refreshed, err := manager.Refresh(sub.ID)
@@ -87,5 +89,27 @@ func TestManagerImportStartAndRefresh(t *testing.T) {
 	}
 	if manager.Running(sub.ID) {
 		t.Fatal("delete should stop mihomo")
+	}
+}
+
+func TestSetRefreshInterval(t *testing.T) {
+	manager, err := New(t.TempDir(), &fakeRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.SetFetcher(func(string) ([]byte, error) { return []byte(sampleYAML), nil })
+	sub, err := manager.Import("机场 B", "https://example.com/clash.yaml", 17890, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sub.RefreshMinutes != 0 {
+		t.Fatalf("expected never, got %d", sub.RefreshMinutes)
+	}
+	updated, err := manager.SetRefreshInterval(sub.ID, 180)
+	if err != nil || updated.RefreshMinutes != 180 {
+		t.Fatalf("interval: %#v %v", updated, err)
+	}
+	if _, err := manager.SetRefreshInterval("missing", 60); err == nil {
+		t.Fatal("expected missing subscription")
 	}
 }

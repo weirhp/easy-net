@@ -23,8 +23,21 @@ const appState = {
   notifiedFailures: new Map(),
 	notifiedTakeoverError: "",
   nodeMetrics: {},
+  profileMetrics: {},
 };
 const $ = (selector) => document.querySelector(selector);
+
+function setText(element, value) {
+  if (!element || element.textContent === value) return;
+  element.textContent = value;
+}
+
+function setInnerHTML(element, html) {
+  if (!element || element.__viewHTML === html) return false;
+  element.__viewHTML = html;
+  element.innerHTML = html;
+  return true;
+}
 const profilesElement = $("#profiles");
 const launchesElement = $("#launches");
 const dialogElement = $("#profile-dialog");
@@ -46,7 +59,7 @@ let applicationPickerBusy = false;
 
 const commonApplications = [
   { name: "Cursor.exe", label: "Cursor", mode: "cursor", processes: "Cursor.exe" },
-  { name: "ChatGPT.exe", label: "ChatGPT", mode: "chatgpt", processes: "ChatGPT.exe;codex-code-mode-host.exe" },
+  { name: "ChatGPT.exe", label: "ChatGPT", mode: "chatgpt", processes: "ChatGPT.exe;codex-code-mode-host.exe;codex.exe" },
   { name: "Antigravity IDE.exe", label: "Antigravity IDE", mode: "antigravity", processes: "Antigravity IDE.exe;language_server_windows_x64.exe" },
   { name: "claude.exe", label: "Claude Code", mode: "claude", processes: "claude.exe;claude-code.exe" },
   { name: "chrome.exe", label: "Google Chrome", mode: "chrome", processes: "chrome.exe" },
@@ -126,12 +139,11 @@ async function loadState(silent = false) {
 	appState.takeover = data.takeover || { enabled: false, state: "stopped", message: "" };
     appState.features = data.features || { appLaunches: false };
     appState.token = data.token;
-	$("#app-version").textContent = `v${data.version || "dev"}`;
-	$("#config-path").textContent = `配置文件：${data.configPath}`;
+	setText($("#app-version"), `v${data.version || "dev"}`);
+	setText($("#config-path"), `配置文件：${data.configPath}`);
 	const validIDs = new Set(appState.profiles.map((item) => item.profile.id));
 	for (const id of appState.selectedProfiles) if (!validIDs.has(id)) appState.selectedProfiles.delete(id);
     syncTabs();
-    renderSourceTabs();
     renderProfiles();
     renderLaunches();
 	renderTakeover();
@@ -173,17 +185,6 @@ function notifyConnectionFailures(previousProfiles, currentProfiles) {
 	}
 }
 
-function formatConnectionTime(value) {
-	if (!value) return "";
-	const date = new Date(value);
-	if (Number.isNaN(date.getTime())) return "";
-	const now = new Date();
-	const sameDay = date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
-	return new Intl.DateTimeFormat("zh-CN", sameDay
-		? { hour: "2-digit", minute: "2-digit", second: "2-digit" }
-		: { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(date);
-}
-
 function manualProfiles() {
   return appState.profiles.filter((item) => item.profile.type !== "clash");
 }
@@ -218,7 +219,7 @@ function renderSourceTabs() {
     const running = sub.running ? " running" : "";
     buttons.push(`<button type="button" class="source-tab${appState.proxySource === sub.id ? " active" : ""}${running}" data-proxy-source="${escapeHTML(sub.id)}">${escapeHTML(sub.name)}</button>`);
   }
-  tabs.innerHTML = buttons.join("");
+  setInnerHTML(tabs, buttons.join(""));
   const isManual = appState.proxySource === "manual";
   toolbar.hidden = isManual;
   document.querySelectorAll("[data-actions='proxies'] [data-import], [data-actions='proxies'] [data-command='start-all'], [data-actions='proxies'] [data-menu]").forEach((element) => {
@@ -230,15 +231,21 @@ function renderSourceTabs() {
     if (filter && filter.value !== appState.nodeFilter) filter.value = appState.nodeFilter;
     const meta = $("#subscription-meta");
     if (!sub) {
-      meta.textContent = "";
+      setText(meta, "");
+      meta.__viewHTML = "";
     } else {
       const current = sub.selectedNode ? ` · <span class="current-node">当前 ${escapeHTML(sub.selectedNode)}</span>` : "";
-      meta.innerHTML = `${sub.nodes?.length || 0} 个节点 · ${escapeHTML(sub.listenAddress)}${current}`;
+      setInnerHTML(meta, `${sub.nodes?.length || 0} 个节点 · ${escapeHTML(sub.listenAddress)}${current}`);
     }
     const testing = Boolean(sub && appState.busy.has(`clash-test:${sub.id}`));
-    document.querySelectorAll("[data-clash-action='delay'], [data-clash-action='speed']").forEach((button) => {
+    document.querySelectorAll("[data-clash-action='delay'], [data-clash-action='speed'], [data-clash-action='probe']").forEach((button) => {
       button.disabled = testing;
     });
+    const refreshSelect = $("#clash-refresh-interval");
+    if (refreshSelect && sub && document.activeElement !== refreshSelect) {
+      const value = String(sub.refreshMinutes ?? 60);
+      if (refreshSelect.value !== value) refreshSelect.value = value;
+    }
   }
 }
 
@@ -250,81 +257,91 @@ function renderProfiles() {
     return;
   }
   profilesElement.classList.remove("node-grid");
+  profilesElement.classList.add("app-grid");
   const profiles = manualProfiles();
   const running = profiles.filter((item) => item.running).length;
   const external = profiles.filter((item) => item.profile.type === "external").length;
-  $("#summary").textContent = `${profiles.length} 个代理 · ${running} 个本地监听${external ? ` · ${external} 个外部代理` : ""}`;
-  $("#page-eyebrow").textContent = "LOCAL PROXY";
-  $("#page-title").textContent = "网络代理管理";
-  $("#notice-title").textContent = "使用说明";
-  $("#overview-note").textContent = "配置并启动代理后，本机流量会通过加密通道传输。关闭此窗口不会停止代理运行，你可以在系统托盘中继续管理。Clash 订阅请用上方 Tab 切换。";
+  setText($("#summary"), `${profiles.length} 个代理 · ${running} 个本地监听${external ? ` · ${external} 个外部代理` : ""}`);
+  setText($("#page-eyebrow"), "LOCAL PROXY");
+  setText($("#page-title"), "网络代理管理");
+  setText($("#notice-title"), "使用说明");
+  setText($("#overview-note"), "配置并启动代理后，本机流量会通过加密通道传输。关闭此窗口不会停止代理运行，你可以在系统托盘中继续管理。Clash 订阅请用上方 Tab 切换。");
   if (!profiles.length) {
-    profilesElement.innerHTML = `<div class="empty-state"><h2>还没有代理配置</h2><p>使用右上角按钮添加 WebSocket、SSH、外部 SOCKS5，或导入 Clash 订阅。</p></div>`;
+    setInnerHTML(profilesElement, `<div class="empty-state"><h2>还没有代理配置</h2><p>使用右上角按钮添加 WebSocket、SSH、外部 SOCKS5，或导入 Clash 订阅。</p></div>`);
     updateSelectionToolbar();
     return;
   }
-  profilesElement.innerHTML = profiles.map((item) => {
+  setInnerHTML(profilesElement, profiles.map((item) => {
     const profile = item.profile;
     const busy = appState.busy.has(profile.id);
     const isExternal = profile.type === "external";
-    const type = profile.type === "ssh" ? "SSH" : isExternal ? "外部 SOCKS5" : "WebSocket";
+    const type = profile.type === "ssh" ? "SSH" : isExternal ? "外部" : "WS";
     const localCapabilities = isExternal ? "SOCKS5 / 混合端口" : profile.type === "ssh" ? "SOCKS5 TCP / HTTP" : "SOCKS5 TCP+UDP / HTTP";
-    const statusClass = busy || item.starting ? "busy" : item.running || isExternal ? "running" : "";
-    const statusText = item.starting ? "正在启动" : busy ? "正在处理" : isExternal ? "外部提供" : item.running ? "本地监听中" : "已停止";
-    const endpoint = isExternal ? "由其他代理软件管理" : profile.type === "ssh" ? `${profile.ssh.host}:${profile.ssh.port}` : profile.websocket.url;
     const primaryAction = item.running ? "stop" : "start";
     const primaryText = item.running ? "停止" : "启动";
-	const connectionTime = formatConnectionTime(item.connectionAt);
-	const connectionStatus = item.connectionStatus === "success"
-		? `<span class="connection-health success">远端连接正常${connectionTime ? ` · ${escapeHTML(connectionTime)}` : ""}</span>`
-		: item.connectionStatus === "error"
-			? `<span class="connection-health error-health">远端连接失败${connectionTime ? ` · ${escapeHTML(connectionTime)}` : ""}</span>`
-			: `<span class="connection-health untested">远端尚未验证</span>`;
     const selected = appState.selectedProfiles.has(profile.id);
-    return `<article class="profile-card${selected ? " selected" : ""}">
-      <div class="card-main">
-        <div class="card-content">
-          <div class="card-title-row">
-            ${isExternal ? "" : `<label class="profile-selector" title="选择 ${escapeHTML(profile.name)}"><input class="profile-select" type="checkbox" data-profile-select="${escapeHTML(profile.id)}" aria-label="选择 ${escapeHTML(profile.name)}" ${selected ? "checked" : ""}></label>`}
-            <h2 class="card-title">${escapeHTML(profile.name)}</h2>
-            <span class="badge">${type}</span>
-            ${connectionStatus}
-            <span class="status ${statusClass}">${statusText}</span>
-            ${profile.autoStart ? `<span class="badge neutral">自动启动</span>` : ""}
-            ${profile.bypassPrivate ? `<span class="badge neutral">局域网直连</span>` : ""}
-            ${profile.bypassChina ? `<span class="badge neutral">国内直连</span>` : ""}
-          </div>
-          <p class="endpoint">${localCapabilities} ${escapeHTML(profile.listenHost)}:${profile.listenPort} · ${escapeHTML(endpoint)}</p>
-		  ${item.error ? `<p class="error">启动错误：${escapeHTML(item.error)}</p>` : ""}
-		  ${item.connectionError ? `<p class="error connection-error">连接失败：${escapeHTML(item.connectionError)}</p>` : ""}
+    const testing = appState.busy.has(`profile-test:${profile.id}`);
+    const metric = appState.profileMetrics[profile.id] || {};
+    const delayText = metric.delayError ? "延迟 超时" : metric.delayMs ? `延迟 ${metric.delayMs} ms` : "";
+    const speedText = metric.speedError ? "速度 失败" : metric.speedMbps ? `速度 ${Number(metric.speedMbps).toFixed(1)} Mbps` : "";
+    const siteTags = (metric.sites || []).map((site) => `<span class="node-metric ${site.ok ? "good" : "bad"}">${escapeHTML(site.name)} ${site.ok ? "通" : escapeHTML(site.error || "阻断")}</span>`).join("");
+    const hasMetrics = Boolean(delayText || speedText || siteTags || metric.probeError);
+    return `<article class="profile-card proxy-card${selected ? " selected" : ""}">
+      <div class="card-row">
+        <div class="card-title-row">
+          ${isExternal ? "" : `<label class="profile-selector" title="选择 ${escapeHTML(profile.name)}"><input class="profile-select" type="checkbox" data-profile-select="${escapeHTML(profile.id)}" aria-label="选择 ${escapeHTML(profile.name)}" ${selected ? "checked" : ""}></label>`}
+          ${item.running ? `<span class="live-dot" title="运行中" aria-label="运行中"></span>` : ""}
+          <h2 class="card-title">${escapeHTML(profile.name)}</h2>
+          <span class="badge">${type}</span>
+          ${profile.autoStart ? `<span class="badge neutral">自动启动</span>` : ""}
+          ${profile.bypassPrivate ? `<span class="badge neutral">局域网直连</span>` : ""}
+          ${profile.bypassChina ? `<span class="badge neutral">国内直连</span>` : ""}
         </div>
-      </div>
-      <div class="card-top-actions">
-        <div class="card-actions">
-          ${isExternal ? "" : `<button class="button compact ${item.running ? "stop" : "start"}" data-profile-action="${primaryAction}" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon(item.running ? "stop" : "play")}${primaryText}</button><button class="button compact secondary icon-only" aria-label="分享 ${escapeHTML(profile.name)}" data-tooltip="分享配置" data-profile-action="share" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("share")}</button>`}
+        <div class="card-ops">
+          ${isExternal ? "" : `<button class="button compact secondary icon-only" aria-label="分享 ${escapeHTML(profile.name)}" data-tooltip="分享配置" data-profile-action="share" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("share")}</button>`}
           <button class="button compact secondary icon-only" aria-label="编辑 ${escapeHTML(profile.name)}" data-tooltip="编辑配置" data-profile-action="edit" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("edit")}</button>
+          <button class="card-delete" aria-label="删除 ${escapeHTML(profile.name)}" data-tooltip="删除配置" data-profile-action="delete" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("close")}</button>
         </div>
-        <label class="default-proxy-switch"><input type="checkbox" role="switch" data-profile-default="${escapeHTML(profile.id)}" ${profile.default ? "checked" : ""} ${busy ? "disabled" : ""}><span class="switch-track" aria-hidden="true"></span><span>默认</span></label>
-        <button class="card-delete" aria-label="删除 ${escapeHTML(profile.name)}" data-tooltip="删除配置" data-profile-action="delete" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon("close")}</button>
       </div>
+      <p class="endpoint">${localCapabilities} ${escapeHTML(profile.listenHost)}:${profile.listenPort}</p>
+      ${hasMetrics ? `<div class="node-metrics proxy-metrics">
+        ${delayText ? `<span class="node-metric ${delayClassFor(metric.delayMs, metric.delayError)}">${delayText}</span>` : ""}
+        ${speedText ? `<span class="node-metric ${metric.speedError ? "bad" : "good"}">${speedText}</span>` : ""}
+        ${siteTags}
+        ${metric.probeError && !siteTags ? `<span class="node-metric bad">探测失败</span>` : ""}
+      </div>` : ""}
+      <div class="card-row proxy-card-footer">
+        <div class="node-card-tools">
+          <button class="button compact secondary icon-only" aria-label="测试 ${escapeHTML(profile.name)} 延迟" data-tooltip="延迟测试" data-profile-test="delay" data-id="${escapeHTML(profile.id)}" ${testing ? "disabled" : ""}>${icon("delay")}</button>
+          <button class="button compact secondary icon-only" aria-label="测试 ${escapeHTML(profile.name)} 速度" data-tooltip="速度测试" data-profile-test="speed" data-id="${escapeHTML(profile.id)}" ${testing ? "disabled" : ""}>${icon("speed")}</button>
+          <button class="button compact secondary icon-only" aria-label="探测 ${escapeHTML(profile.name)} 常用网站" data-tooltip="探测 Gemini / ChatGPT / Grok" data-profile-test="probe" data-id="${escapeHTML(profile.id)}" ${testing ? "disabled" : ""}>${icon("target")}</button>
+        </div>
+        <div class="node-card-primary">
+          ${isExternal ? "" : `<button class="button compact ${item.running ? "stop" : "start"}" data-profile-action="${primaryAction}" data-id="${escapeHTML(profile.id)}" ${busy ? "disabled" : ""}>${icon(item.running ? "stop" : "play")}${primaryText}</button>`}
+          <label class="default-proxy-switch"><input type="checkbox" role="switch" data-profile-default="${escapeHTML(profile.id)}" ${profile.default ? "checked" : ""} ${busy ? "disabled" : ""}><span class="switch-track" aria-hidden="true"></span><span>默认</span></label>
+        </div>
+      </div>
+      ${item.error ? `<p class="error">启动错误：${escapeHTML(item.error)}</p>` : ""}
+      ${item.connectionError ? `<p class="error connection-error">连接失败：${escapeHTML(item.connectionError)}</p>` : ""}
     </article>`;
-  }).join("");
+  }).join(""));
   updateSelectionToolbar();
 }
 
 function renderClashNodes() {
   const sub = currentSubscription();
-  $("#page-eyebrow").textContent = "CLASH SUBSCRIPTION";
-  $("#page-title").textContent = sub ? sub.name : "Clash 订阅";
-  $("#notice-title").textContent = "订阅节点";
-  $("#overview-note").textContent = "选择一个节点启动本地 SOCKS5。设为默认后，未单独指定代理的应用会使用该节点。同一订阅同时只运行一个节点。";
+  profilesElement.classList.remove("app-grid");
+  profilesElement.classList.add("node-grid");
+  setText($("#page-eyebrow"), "CLASH SUBSCRIPTION");
+  setText($("#page-title"), sub ? sub.name : "Clash 订阅");
+  setText($("#notice-title"), "订阅节点");
+  setText($("#overview-note"), "选择一个节点启动本地 SOCKS5。设为默认后，未单独指定代理的应用会使用该节点。同一订阅同时只运行一个节点。");
   if (!sub) {
-    $("#summary").textContent = "订阅不存在";
-    profilesElement.innerHTML = `<div class="empty-state"><h2>找不到这个订阅</h2><p>请切换回「手动添加」，或重新导入 Clash 订阅。</p></div>`;
+    setText($("#summary"), "订阅不存在");
+    setInnerHTML(profilesElement, `<div class="empty-state"><h2>找不到这个订阅</h2><p>请切换回「手动添加」，或重新导入 Clash 订阅。</p></div>`);
     updateSelectionToolbar();
     return;
   }
-  profilesElement.classList.add("node-grid");
   const busy = appState.busy.has(`clash:${sub.id}`);
   const testing = appState.busy.has(`clash-test:${sub.id}`);
   const metrics = appState.nodeMetrics[sub.id] || {};
@@ -333,38 +350,42 @@ function renderClashNodes() {
     if (!keyword) return true;
     return [node.name, node.type].join(" ").toLowerCase().includes(keyword);
   });
-  $("#summary").textContent = `${sub.nodes?.length || 0} 个节点 · ${sub.running ? "本地监听中" : "未启动"} · ${sub.listenAddress}`;
+  setText($("#summary"), `${sub.nodes?.length || 0} 个节点 · ${sub.running ? "运行中" : "未启动"} · ${sub.listenAddress}`);
   if (sub.error) {
-    $("#overview-note").textContent = `启动错误：${sub.error}`;
+    setText($("#overview-note"), `启动错误：${sub.error}`);
   }
   if (!sub.nodes?.length) {
-    profilesElement.innerHTML = `<div class="empty-state"><h2>订阅里还没有节点</h2><p>点击“更新订阅”重新拉取，或删除后重新导入。</p></div>`;
+    setInnerHTML(profilesElement, `<div class="empty-state"><h2>订阅里还没有节点</h2><p>点击“更新订阅”重新拉取，或删除后重新导入。</p></div>`);
     updateSelectionToolbar();
     return;
   }
   if (!nodes.length) {
-    profilesElement.innerHTML = `<div class="empty-state"><h2>没有匹配的节点</h2><p>请调整筛选关键词。</p></div>`;
+    setInnerHTML(profilesElement, `<div class="empty-state"><h2>没有匹配的节点</h2><p>请调整筛选关键词。</p></div>`);
     updateSelectionToolbar();
     return;
   }
-  profilesElement.innerHTML = nodes.map((node) => {
+  setInnerHTML(profilesElement, nodes.map((node) => {
     const active = sub.selectedNode === node.name;
     const running = Boolean(sub.running && active);
     const metric = metrics[node.name] || {};
     const delayText = metric.delayError ? "延迟 超时" : metric.delayMs ? `延迟 ${metric.delayMs} ms` : "";
     const speedText = metric.speedError ? "速度 失败" : metric.speedMbps ? `速度 ${Number(metric.speedMbps).toFixed(1)} Mbps` : "";
+    const siteTags = (metric.sites || []).map((site) => `<span class="node-metric ${site.ok ? "good" : "bad"}">${escapeHTML(site.name)} ${site.ok ? "通" : escapeHTML(site.error || "阻断")}</span>`).join("");
     return `<article class="profile-card node-card${active ? " selected" : ""}">
       <div class="card-main">
         <div class="card-content">
           <div class="card-title-row">
+            ${running ? `<span class="live-dot" title="运行中" aria-label="运行中"></span>` : ""}
             <h2 class="card-title">${escapeHTML(node.name)}</h2>
             <span class="badge">${escapeHTML(node.type || "proxy")}</span>
-            <span class="status ${running ? "running" : busy ? "busy" : ""}">${running ? "本地监听中" : active ? "已选择" : "未启动"}</span>
+            ${running ? "" : `<span class="status ${busy ? "busy" : ""}">${busy ? "正在处理" : active ? "已选择" : "未启动"}</span>`}
             ${sub.profileDefault && active ? `<span class="badge default-badge">默认代理</span>` : ""}
           </div>
           <div class="node-metrics">
             ${delayText ? `<span class="node-metric ${delayClassFor(metric.delayMs, metric.delayError)}">${delayText}</span>` : ""}
             ${speedText ? `<span class="node-metric ${metric.speedError ? "bad" : "good"}">${speedText}</span>` : ""}
+            ${siteTags}
+            ${metric.probeError && !siteTags ? `<span class="node-metric bad">探测失败</span>` : ""}
           </div>
         </div>
       </div>
@@ -372,6 +393,7 @@ function renderClashNodes() {
         <div class="node-card-tools">
           <button class="button compact secondary icon-only" aria-label="测试 ${escapeHTML(node.name)} 延迟" data-tooltip="延迟测试" data-clash-test="delay" data-id="${escapeHTML(sub.id)}" data-node="${escapeHTML(node.name)}" ${testing ? "disabled" : ""}>${icon("delay")}</button>
           <button class="button compact secondary icon-only" aria-label="测试 ${escapeHTML(node.name)} 速度" data-tooltip="速度测试" data-clash-test="speed" data-id="${escapeHTML(sub.id)}" data-node="${escapeHTML(node.name)}" ${testing ? "disabled" : ""}>${icon("speed")}</button>
+          <button class="button compact secondary icon-only" aria-label="探测 ${escapeHTML(node.name)} 常用网站" data-tooltip="探测 Gemini / ChatGPT / Grok" data-clash-test="probe" data-id="${escapeHTML(sub.id)}" data-node="${escapeHTML(node.name)}" ${testing ? "disabled" : ""}>${icon("target")}</button>
         </div>
         <div class="node-card-primary">
           <button class="button compact ${running ? "stop" : "start"}" data-clash-node="${running ? "stop" : "start"}" data-id="${escapeHTML(sub.id)}" data-node="${escapeHTML(node.name)}" ${busy ? "disabled" : ""}>${icon(running ? "stop" : "play")}${running ? "停止" : "启动"}</button>
@@ -379,7 +401,7 @@ function renderClashNodes() {
         </div>
       </div>
     </article>`;
-  }).join("");
+  }).join(""));
   updateSelectionToolbar();
 }
 
@@ -476,8 +498,8 @@ function launchModeLabel(mode) {
     chrome: "Google Chrome",
     edge: "Microsoft Edge",
     claude: "Claude Code",
-    wechat: "微信 TUN",
-    "wechat-windivert": "微信 WinDivert",
+    wechat: "微信（WinDivert）",
+    "wechat-windivert": "微信（WinDivert）",
     hook: "通用 Hook",
     windivert: "通用 WinDivert"
   })[mode] || mode;
@@ -485,37 +507,54 @@ function launchModeLabel(mode) {
 
 function renderLaunches() {
   if (appState.tab !== "apps") return;
-  $("#page-eyebrow").textContent = "APPLICATION PROXY";
-  $("#page-title").textContent = "应用代理管理";
-  $("#summary").textContent = `${appState.launches.length} 个被代理应用`;
-  $("#notice-title").textContent = "应用代理说明";
-  $("#overview-note").textContent = "这里维护持续生效的进程接管规则。启动新应用请创建桌面快捷方式；快捷方式会读取最新的默认或单独指定代理。";
+  setText($("#page-eyebrow"), "APPLICATION PROXY");
+  setText($("#page-title"), "应用代理管理");
+  setText($("#summary"), `${appState.launches.length} 个被代理应用`);
+  setText($("#notice-title"), "应用代理说明");
+  setText($("#overview-note"), "这里维护持续生效的进程接管规则。启动新应用请创建桌面快捷方式；快捷方式会读取最新的默认或单独指定代理。");
   if (!appState.launches.length) {
-    launchesElement.innerHTML = `<div class="empty-state"><h2>还没有接管应用</h2><p>点击“添加应用”，可从运行进程、桌面快捷方式或 EXE 程序批量添加。</p></div>`;
+    setInnerHTML(launchesElement, `<div class="empty-state app-empty">
+      <h2>还没有添加应用</h2>
+      <p>把浏览器、开发工具或 AI 客户端加到这里后，它们的新建网络连接可以走你配置的代理，不用再给每个软件单独改代理设置。</p>
+      <div class="empty-guide">
+        <button type="button" data-process-launch><strong>从运行进程添加</strong><small>适合已经打开的程序，可筛选并一次添加多个</small></button>
+        <button type="button" data-pick-app="shortcut"><strong>选择桌面快捷方式</strong><small>从现有 .lnk 解析目标程序，支持多选</small></button>
+        <button type="button" data-pick-app="exe"><strong>选择 EXE 程序</strong><small>直接指定可执行文件，支持一次选多个</small></button>
+      </div>
+      <p>不确定从哪开始时，也可以先导入常见应用，例如 Chrome、Cursor、ChatGPT。</p>
+      <div class="empty-actions"><button type="button" class="button primary" data-common-launch>${icon("apps")}导入常见应用</button></div>
+    </div>`);
     return;
   }
-  launchesElement.innerHTML = appState.launches.map((entry) => {
+  setInnerHTML(launchesElement, appState.launches.map((entry) => {
     const busy = appState.busy.has(`launch:${entry.id}`);
+		const takeoverEnabled = !entry.takeoverDisabled;
+    const displayName = String(entry.name || "").replace(/\.exe$/i, "");
     const profileText = entry.profileName
       ? `${entry.profileName} · ${entry.listenAddress || "未监听"}`
       : "尚未选择代理配置";
     const statusClass = busy ? "busy" : entry.profileRunning || entry.externalProxy ? "running" : "";
-    const statusText = busy ? "正在处理" : entry.usesDefault ? "继承默认代理" : entry.profileName ? "单独指定代理" : "等待设置默认代理";
+    const statusText = busy ? "正在处理" : entry.usesDefault ? "默认代理" : entry.profileName ? "单独指定代理" : "等待设置默认代理";
     return `<article class="profile-card app-card">
-      <div class="card-main">
-        <div class="card-content">
-          <div class="card-title-row">
-            <span class="app-avatar" aria-hidden="true">${icon(entry.mode === "wechat" || entry.mode === "wechat-windivert" ? "network" : "apps")}</span>
-            <h2 class="card-title">${escapeHTML(entry.name)}</h2>
-            <span class="badge">${escapeHTML(entry.modeLabel || launchModeLabel(entry.mode))}</span>
-            <span class="status ${statusClass}">${statusText}</span>
-          </div>
-          <p class="endpoint">${escapeHTML(profileText)}${entry.path ? ` · ${escapeHTML(entry.path)}` : ""}</p>
+      <div class="card-row">
+        <div class="card-title-row">
+          <span class="app-avatar" aria-hidden="true">${icon(entry.mode === "wechat" || entry.mode === "wechat-windivert" ? "network" : "apps")}</span>
+          <h2 class="card-title">${escapeHTML(displayName)}</h2>
+          <span class="status ${statusClass}">${statusText}</span>
+        </div>
+        <div class="card-ops">
+          <button class="button compact secondary" data-launch-action="shortcut" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("shortcut")}创建桌面快捷方式</button>
+          <button class="button compact secondary icon-only" aria-label="启动 ${escapeHTML(displayName)}" data-tooltip="启动应用" data-launch-action="start" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("play")}</button>
+          <button class="button compact secondary icon-only" aria-label="编辑 ${escapeHTML(displayName)}" data-tooltip="编辑应用" data-launch-action="edit" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("edit")}</button>
+          <button class="card-delete" aria-label="删除 ${escapeHTML(displayName)}" data-tooltip="删除应用" data-launch-action="delete" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("close")}</button>
         </div>
       </div>
-      <div class="card-top-actions app-top-actions"><button class="button compact secondary" data-launch-action="shortcut" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("shortcut")}桌面快捷方式</button><button class="button compact secondary icon-only" aria-label="编辑 ${escapeHTML(entry.name)}" data-tooltip="编辑应用" data-launch-action="edit" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("edit")}</button><button class="card-delete" aria-label="删除 ${escapeHTML(entry.name)}" data-tooltip="删除应用" data-launch-action="delete" data-id="${escapeHTML(entry.id)}" ${busy ? "disabled" : ""}>${icon("close")}</button></div>
+      <p class="endpoint">${escapeHTML(profileText)}</p>
+      <div class="card-row app-card-footer">
+        <label class="app-takeover-switch"><input type="checkbox" role="switch" data-launch-takeover="${escapeHTML(entry.id)}" aria-label="${takeoverEnabled ? "关闭" : "开启"} ${escapeHTML(displayName)} 的自动接管" ${takeoverEnabled ? "checked" : ""} ${busy ? "disabled" : ""}><span class="switch-track" aria-hidden="true"></span><span class="app-takeover-label">接管</span></label>
+      </div>
     </article>`;
-  }).join("");
+  }).join(""));
 }
 
 function fillLaunchProfiles(selectedId) {
@@ -591,6 +630,7 @@ async function saveLaunch(event) {
   saveButton.disabled = true;
   saveButton.textContent = "保存中…";
   try {
+		const currentEntry = appState.launches.find((item) => item.id === appState.editingLaunchId);
     const data = await api("/api/launches", {
       method: "POST",
       body: JSON.stringify({
@@ -606,7 +646,8 @@ async function saveLaunch(event) {
         udpMode: $("#launch-udp").value,
         dns: $("#launch-dns-row").hidden ? "" : $("#launch-dns").value.trim(),
         processNames: $("#launch-processes").value.trim(),
-        attachExisting: true
+				attachExisting: true,
+				takeoverDisabled: Boolean(currentEntry?.takeoverDisabled)
       })
     });
     closeLaunchDialog();
@@ -621,9 +662,49 @@ async function saveLaunch(event) {
   }
 }
 
+async function toggleLaunchTakeover(id, enabled) {
+	const key = `launch:${id}`;
+	if (appState.busy.has(key)) return;
+	const entry = appState.launches.find((item) => item.id === id);
+	if (!entry) return;
+	appState.busy.add(key);
+	entry.takeoverDisabled = !enabled;
+	renderLaunches();
+	try {
+		const data = await api(`/api/launches/${encodeURIComponent(id)}/takeover`, {
+			method: "POST",
+			body: JSON.stringify({ enabled })
+		});
+		showToast(data.applyError
+			? `${entry.name} 的接管设置已保存，但规则刷新失败：${data.applyError}`
+			: `${entry.name} 已${enabled ? "开启" : "关闭"}自动接管`, Boolean(data.applyError));
+	} catch (error) {
+		showToast(error.message, true);
+	} finally {
+		appState.busy.delete(key);
+		await loadState(true);
+	}
+}
+
+function processHelperNames(process) {
+  const names = [];
+  const seen = new Set();
+  const add = (name) => {
+    const value = String(name || "").trim();
+    const key = value.toLowerCase();
+    if (!value || seen.has(key)) return;
+    seen.add(key);
+    names.push(value);
+  };
+  add(process.name);
+  const known = commonApplications.find((item) => item.processes.toLowerCase().split(";").includes(String(process.name || "").toLowerCase()));
+  if (known) for (const name of known.processes.split(";")) add(name);
+  for (const name of process.helpers || []) add(name);
+  return { known, names };
+}
+
 function processApplication(process) {
-  const lower = process.name.toLowerCase();
-  const known = commonApplications.find((item) => item.processes.toLowerCase().split(";").includes(lower));
+  const { known, names } = processHelperNames(process);
   return {
     name: process.name,
     mode: known?.mode || "hook",
@@ -634,7 +715,7 @@ function processApplication(process) {
     isolated: false,
     udpMode: "auto",
     dns: "",
-    processNames: known?.processes || process.name,
+    processNames: names.join(";"),
     attachExisting: true
   };
 }
@@ -719,8 +800,11 @@ async function loadProcessChoices() {
   try {
     const data = await api("/api/processes");
     appState.runningProcesses = data.processes || [];
-    list.innerHTML = appState.runningProcesses.length ? appState.runningProcesses.map((process, index) => `
-      <label class="choice-item"><input type="checkbox" name="running-process" value="${index}"><span class="choice-icon">${icon("apps")}</span><span class="choice-copy"><strong>${escapeHTML(process.name)}</strong><small>${escapeHTML(process.path)} · PID ${process.pid}</small></span></label>`).join("") : `<div class="empty-state compact-empty"><p>没有读取到可添加的桌面进程</p></div>`;
+    list.innerHTML = appState.runningProcesses.length ? appState.runningProcesses.map((process, index) => {
+      const helpers = (process.helpers || []).filter((name) => name && name.toLowerCase() !== String(process.name || "").toLowerCase());
+      const helperText = helpers.length ? ` · 辅助 ${helpers.join(" · ")}` : "";
+      return `<label class="choice-item"><input type="checkbox" name="running-process" value="${index}"><span class="choice-icon">${icon("apps")}</span><span class="choice-copy"><strong>${escapeHTML(process.name)}</strong><small>${escapeHTML(process.path)} · PID ${process.pid}${escapeHTML(helperText)}</small></span></label>`;
+    }).join("") : `<div class="empty-state compact-empty"><p>没有读取到可添加的桌面进程</p></div>`;
     filterProcessChoices();
   } catch (error) {
     list.innerHTML = `<p class="form-error" role="alert">${escapeHTML(error.message)}</p>`;
@@ -735,7 +819,8 @@ function filterProcessChoices() {
   let visible = 0;
   document.querySelectorAll('#process-choice-list input[name="running-process"]').forEach((input) => {
     const process = appState.runningProcesses[Number(input.value)];
-    const matches = !query || (process?.name || "").toLocaleLowerCase().includes(query);
+    const helperText = (process?.helpers || []).join(" ").toLocaleLowerCase();
+    const matches = !query || (process?.name || "").toLocaleLowerCase().includes(query) || helperText.includes(query);
     input.closest(".choice-item").hidden = !matches;
     if (matches) visible += 1;
   });
@@ -845,6 +930,26 @@ async function launchAction(action, id) {
   const entry = appState.launches.find((item) => item.id === id);
   if (!entry) return;
   if (action === "edit") { openLaunchDialog(id); return; }
+  if (action === "start") {
+    const confirmed = await showConfirmModal({
+      kind: "启动应用",
+      title: `启动「${entry.name}」？`,
+      message: `将使用当前配置的代理启动「${entry.name}」。`,
+      details: "会按该应用单独指定的代理，或网络代理页的默认代理启动。如果应用已经在运行，确认后还会再提示你。",
+      confirmText: "启动应用"
+    });
+    if (!confirmed) return;
+  }
+  if (action === "shortcut") {
+    const confirmed = await showConfirmModal({
+      kind: "创建快捷方式",
+      title: "在桌面创建快捷方式？",
+      message: `将为「${entry.name}」在桌面创建一个启动快捷方式。`,
+      details: "双击这个快捷方式会用当前配置的代理启动应用。之后如果改了默认代理或该应用单独指定的代理，快捷方式会读取最新设置。",
+      confirmText: "创建快捷方式"
+    });
+    if (!confirmed) return;
+  }
   if (action === "delete") {
     const confirmed = await showConfirmModal({
       kind: "删除应用",
@@ -913,7 +1018,7 @@ async function launchAction(action, id) {
         kind: "WinDivert 权限",
         title: "需要管理员授权",
         message: error.message,
-        details: "首次启用接管时会弹出 Windows UAC。请点击“是”允许启动共享 WinDivert 引擎；不需要把 Easy-Net Lite 整体改成管理员运行。如果已经允许仍然失败，请确认使用的是 x64-TUN 完整包。"
+        details: "首次启用接管时会弹出 Windows UAC。请点击“是”允许启动共享 WinDivert 引擎；不需要把 Easy-Net Lite 整体改成管理员运行。如果已经允许仍然失败，请确认使用的是完整 x64 包。"
       });
     } else if (action === "start") {
       await showAlertModal({
@@ -1263,6 +1368,7 @@ function setAllProfilesSelected(selected) {
 
 function openClashImportDialog() {
   clashImportFormElement.reset();
+  $("#clash-import-refresh").value = "60";
   $("#clash-import-error").hidden = true;
   clashImportDialogElement.showModal();
   $("#clash-import-name").focus();
@@ -1285,7 +1391,11 @@ async function importClashSubscription(event) {
   try {
     const data = await api("/api/subscriptions", {
       method: "POST",
-      body: JSON.stringify({ name: $("#clash-import-name").value.trim(), url: $("#clash-import-url").value.trim() })
+      body: JSON.stringify({
+        name: $("#clash-import-name").value.trim(),
+        url: $("#clash-import-url").value.trim(),
+        refreshMinutes: Number($("#clash-import-refresh").value)
+      })
     });
     closeClashImportDialog();
     appState.proxySource = data.id;
@@ -1473,6 +1583,55 @@ function delayClassFor(ms, error) {
   return "bad";
 }
 
+async function profileMetricTest(kind, id) {
+  const key = `profile-test:${id}`;
+  if (appState.busy.has(key) || !id) return;
+  appState.busy.add(key);
+  renderProfiles();
+  const label = kind === "delay" ? "延迟" : kind === "speed" ? "速度" : "探测";
+  showToast(`正在测试${label}`);
+  try {
+    const data = await api(`/api/profiles/${encodeURIComponent(id)}/${kind}`, { method: "POST" });
+    applyProfileMetrics(id, data.results || [], kind);
+    const results = data.results || [];
+    if (kind === "probe") {
+      let ok = 0;
+      let total = 0;
+      for (const item of results) {
+        for (const site of item.sites || []) {
+          total += 1;
+          if (site.ok) ok += 1;
+        }
+      }
+      showToast(total ? `探测完成：${ok}/${total} 可访问` : "探测完成");
+    } else {
+      const failed = results.filter((item) => item.error).length;
+      showToast(failed ? `${label}测试失败` : `${label}测试完成`);
+    }
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    appState.busy.delete(key);
+    renderProfiles();
+  }
+}
+
+function applyProfileMetrics(id, results, kind) {
+  const item = (results || [])[0] || {};
+  const prev = appState.profileMetrics[id] || {};
+  if (kind === "delay") {
+    prev.delayMs = item.delayMs || 0;
+    prev.delayError = item.error || "";
+  } else if (kind === "speed") {
+    prev.speedMbps = item.speedMbps || 0;
+    prev.speedError = item.error || "";
+  } else {
+    prev.sites = item.sites || [];
+    prev.probeError = item.error || "";
+  }
+  appState.profileMetrics[id] = prev;
+}
+
 function applyNodeMetrics(id, results, kind) {
   const bag = appState.nodeMetrics[id] || {};
   for (const item of results || []) {
@@ -1480,9 +1639,12 @@ function applyNodeMetrics(id, results, kind) {
     if (kind === "delay") {
       prev.delayMs = item.delayMs || 0;
       prev.delayError = item.error || "";
-    } else {
+    } else if (kind === "speed") {
       prev.speedMbps = item.speedMbps || 0;
       prev.speedError = item.error || "";
+    } else {
+      prev.sites = item.sites || [];
+      prev.probeError = item.error || "";
     }
     bag[item.name] = prev;
   }
@@ -1494,7 +1656,7 @@ async function clashMetricTest(kind, id, nodeName) {
   if (appState.busy.has(key) || !id) return;
   appState.busy.add(key);
   renderProfiles();
-  const label = kind === "delay" ? "延迟" : "速度";
+  const label = kind === "delay" ? "延迟" : kind === "speed" ? "速度" : "探测";
   showToast(nodeName ? `正在测试「${nodeName}」${label}` : `正在测试全部节点${label}`);
   try {
     const data = await api(`/api/subscriptions/${encodeURIComponent(id)}/${kind}`, {
@@ -1503,8 +1665,20 @@ async function clashMetricTest(kind, id, nodeName) {
     });
     applyNodeMetrics(id, data.results || [], kind);
     const results = data.results || [];
-    const failed = results.filter((item) => item.error).length;
-    showToast(failed ? `${label}测试完成：${results.length - failed}/${results.length} 可用` : `${label}测试完成`);
+    if (kind === "probe") {
+      let ok = 0;
+      let total = 0;
+      for (const item of results) {
+        for (const site of item.sites || []) {
+          total += 1;
+          if (site.ok) ok += 1;
+        }
+      }
+      showToast(total ? `探测完成：${ok}/${total} 可访问` : "探测完成");
+    } else {
+      const failed = results.filter((item) => item.error).length;
+      showToast(failed ? `${label}测试完成：${results.length - failed}/${results.length} 可用` : `${label}测试完成`);
+    }
   } catch (error) {
     showToast(error.message, true);
   } finally {
@@ -1537,11 +1711,16 @@ document.addEventListener("click", (event) => {
     const sub = currentSubscription();
     if (!sub) return;
     const action = clashAction.dataset.clashAction;
-    if (action === "delay" || action === "speed") {
+    if (action === "delay" || action === "speed" || action === "probe") {
       clashMetricTest(action, sub.id, "");
       return;
     }
     clashSubscriptionAction(action, sub.id);
+    return;
+  }
+  const profileTest = event.target.closest("[data-profile-test]");
+  if (profileTest) {
+    profileMetricTest(profileTest.dataset.profileTest, profileTest.dataset.id);
     return;
   }
   const clashTest = event.target.closest("[data-clash-test]");
@@ -1584,6 +1763,8 @@ document.addEventListener("keydown", (event) => {
 
 document.addEventListener("change", (event) => {
 	if (event.target.id === "takeover-enabled") { toggleTakeover(event.target.checked); return; }
+	const launchTakeover = event.target.closest("[data-launch-takeover]");
+	if (launchTakeover) { toggleLaunchTakeover(launchTakeover.dataset.launchTakeover, launchTakeover.checked); return; }
   const clashDefault = event.target.closest("[data-clash-default]");
   if (clashDefault) { setClashNodeDefault(clashDefault.dataset.clashDefault, clashDefault.dataset.node, clashDefault.checked); return; }
   const defaultSwitch = event.target.closest("[data-profile-default]");
@@ -1616,6 +1797,23 @@ importFormElement.addEventListener("submit", importProfile);
 $("#close-clash-import-dialog").addEventListener("click", closeClashImportDialog);
 $("#cancel-clash-import-dialog").addEventListener("click", closeClashImportDialog);
 clashImportFormElement.addEventListener("submit", importClashSubscription);
+$("#clash-refresh-interval").addEventListener("change", async (event) => {
+  const sub = currentSubscription();
+  if (!sub) return;
+  const refreshMinutes = Number(event.target.value);
+  try {
+    const data = await api(`/api/subscriptions/${encodeURIComponent(sub.id)}/interval`, {
+      method: "POST",
+      body: JSON.stringify({ refreshMinutes })
+    });
+    sub.refreshMinutes = data.refreshMinutes;
+    const label = event.target.selectedOptions[0]?.textContent.replace("自动刷新 ", "") || "";
+    showToast(refreshMinutes === 0 ? "已关闭自动刷新" : `已设置自动刷新：${label}`);
+  } catch (error) {
+    showToast(error.message, true);
+    event.target.value = String(sub.refreshMinutes ?? 60);
+  }
+});
 $("#node-filter").addEventListener("input", (event) => {
   appState.nodeFilter = event.target.value;
   if (appState.proxySource !== "manual") renderClashNodes();

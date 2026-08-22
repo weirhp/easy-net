@@ -26,10 +26,11 @@ const (
 )
 
 type NodeMetric struct {
-	Name      string  `json:"name"`
-	DelayMs   int     `json:"delayMs,omitempty"`
-	SpeedMbps float64 `json:"speedMbps,omitempty"`
-	Error     string  `json:"error,omitempty"`
+	Name      string       `json:"name"`
+	DelayMs   int          `json:"delayMs,omitempty"`
+	SpeedMbps float64      `json:"speedMbps,omitempty"`
+	Error     string       `json:"error,omitempty"`
+	Sites     []SiteResult `json:"sites,omitempty"`
 }
 
 func (m *Manager) TestDelay(id, nodeName string) ([]NodeMetric, error) {
@@ -86,31 +87,40 @@ func (m *Manager) nodesForTest(id, nodeName string) ([]model.ClashNode, error) {
 }
 
 func (m *Manager) measureNodeSpeed(sub model.Subscription, node model.ClashNode) (float64, error) {
-	if m.runner != nil && m.runner.Running(sub.ID) && sub.SelectedNode == node.Name {
-		return socksDownloadMbps("127.0.0.1:"+strconv.Itoa(sub.ListenPort), speedTimeout)
-	}
-	return m.tempNodeSpeed(sub.ID, node)
+	var mbps float64
+	err := m.withNodeSOCKS(sub, node, func(socksAddr string) error {
+		var measureErr error
+		mbps, measureErr = socksDownloadMbps(socksAddr, speedTimeout)
+		return measureErr
+	})
+	return mbps, err
 }
 
-func (m *Manager) tempNodeSpeed(subscriptionID string, node model.ClashNode) (float64, error) {
+func (m *Manager) withNodeSOCKS(sub model.Subscription, node model.ClashNode, fn func(socksAddr string) error) error {
+	if m.runner != nil && m.runner.Running(sub.ID) && sub.SelectedNode == node.Name && sub.ListenPort > 0 {
+		return fn(net.JoinHostPort("127.0.0.1", strconv.Itoa(sub.ListenPort)))
+	}
+	return m.withTempNodeSOCKS(sub.ID, node, fn)
+}
+
+func (m *Manager) withTempNodeSOCKS(subscriptionID string, node model.ClashNode, fn func(socksAddr string) error) error {
 	exe, err := findMihomo(m.dir)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	port, err := freeLocalPort()
 	if err != nil {
-		return 0, err
+		return err
 	}
 	workDir := filepath.Join(m.dir, "clash-test", fmt.Sprintf("%s-%d", subscriptionID, port))
 	configPath := filepath.Join(workDir, "config.yaml")
 	if err := WriteMihomoConfig(configPath, port, node.Raw); err != nil {
-		return 0, err
+		return err
 	}
 	logFile, err := os.OpenFile(filepath.Join(workDir, "mihomo.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	defer logFile.Close()
 	cmd := exec.Command(exe, "-d", workDir, "-f", configPath)
 	cmd.Dir = workDir
 	cmd.Stdout = logFile
@@ -118,19 +128,33 @@ func (m *Manager) tempNodeSpeed(subscriptionID string, node model.ClashNode) (fl
 	cmd.Env = withoutProxyEnv(os.Environ())
 	hideWindow(cmd)
 	if err := cmd.Start(); err != nil {
-		return 0, err
+		_ = logFile.Close()
+		return err
 	}
+	control, err := retainProcessControl(cmd.Process.Pid)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		_ = logFile.Close()
+		return err
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
 	defer func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			_, _ = cmd.Process.Wait()
+		_ = control.Terminate()
+		select {
+		case <-exited:
+		case <-time.After(5 * time.Second):
 		}
+		control.Close()
+		_ = logFile.Close()
 		_ = os.RemoveAll(workDir)
 	}()
-	if err := waitPort("127.0.0.1:"+strconv.Itoa(port), 8*time.Second); err != nil {
-		return 0, err
+	socksAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	if err := waitPort(socksAddr, 8*time.Second); err != nil {
+		return err
 	}
-	return socksDownloadMbps("127.0.0.1:"+strconv.Itoa(port), speedTimeout)
+	return fn(socksAddr)
 }
 
 func runNodeTests(nodes []model.ClashNode, workers int, fn func(model.ClashNode) NodeMetric) []NodeMetric {
@@ -151,6 +175,14 @@ func runNodeTests(nodes []model.ClashNode, workers int, fn func(model.ClashNode)
 	}
 	wg.Wait()
 	return results
+}
+
+func TCPDelay(host string, port int) (int, error) {
+	return tcpDelay(host, port, delayTimeout)
+}
+
+func SOCKSSpeed(socksAddr string) (float64, error) {
+	return socksDownloadMbps(socksAddr, speedTimeout)
 }
 
 func tcpDelay(host string, port int, timeout time.Duration) (int, error) {
@@ -191,62 +223,73 @@ func socksDownloadMbps(socksAddr string, timeout time.Duration) (float64, error)
 }
 
 func socksHTTPSGet(ctx context.Context, socksAddr, host string, port int, path string) (int, error) {
+	_, n, err := socksHTTPSExchange(ctx, socksAddr, host, port, path, "Easy-Net-Lite", speedTestBytes, true)
+	return n, err
+}
+
+func socksHTTPSExchange(ctx context.Context, socksAddr, host string, port int, path, userAgent string, maxBody int, requireOK bool) (int, int, error) {
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "tcp", socksAddr)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer conn.Close()
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}
 	if _, err := conn.Write([]byte{5, 1, 0}); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	reply := make([]byte, 2)
 	if _, err := io.ReadFull(conn, reply); err != nil || reply[0] != 5 || reply[1] != 0 {
-		return 0, fmt.Errorf("SOCKS5 握手失败")
+		return 0, 0, fmt.Errorf("SOCKS5 握手失败")
 	}
 	target := []byte(host)
 	request := []byte{5, 1, 0, 3, byte(len(target))}
 	request = append(request, target...)
 	request = append(request, byte(port>>8), byte(port))
 	if _, err := conn.Write(request); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	head := make([]byte, 4)
 	if _, err := io.ReadFull(conn, head); err != nil || head[0] != 5 || head[1] != 0 {
-		return 0, fmt.Errorf("节点未能建立测速连接")
+		return 0, 0, fmt.Errorf("节点未能建立目标连接")
 	}
 	if err := discardSOCKSAddress(conn, head[3]); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	tlsConn := tls.Client(conn, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}})
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+net.JoinHostPort(host, strconv.Itoa(port))+path, nil)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	req.Host = host
-	req.Header.Set("User-Agent", "Easy-Net-Lite")
+	if userAgent == "" {
+		userAgent = "Easy-Net-Lite"
+	}
+	req.Header.Set("User-Agent", userAgent)
 	if err := req.Write(tlsConn); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), req)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
-		return 0, fmt.Errorf("测速返回 HTTP %d", resp.StatusCode)
+	if requireOK && (resp.StatusCode < 200 || resp.StatusCode >= 400) {
+		return resp.StatusCode, 0, fmt.Errorf("测速返回 HTTP %d", resp.StatusCode)
 	}
-	n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, speedTestBytes))
+	if maxBody < 1 {
+		maxBody = 4096
+	}
+	n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, int64(maxBody)))
 	if err != nil && n == 0 {
-		return 0, err
+		return resp.StatusCode, 0, err
 	}
-	return int(n), nil
+	return resp.StatusCode, int(n), nil
 }
 
 func freeLocalPort() (int, error) {

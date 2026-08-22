@@ -117,6 +117,15 @@ func TestManagementPageAndProfileAPI(t *testing.T) {
 		t.Fatalf("expected 403, got %d", unauthorized.StatusCode)
 	}
 
+	delayUnauthorized, err := http.Post(server.URL+"/api/profiles/x/delay", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = delayUnauthorized.Body.Close()
+	if delayUnauthorized.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected profile delay 403, got %d", delayUnauthorized.StatusCode)
+	}
+
 	httpRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/api/profiles", bytes.NewReader(body))
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("X-Easy-Net-Token", state.Token)
@@ -831,6 +840,47 @@ func TestTakeoverAPIStoresEnabledState(t *testing.T) {
 	}
 }
 
+func TestApplicationTakeoverAPIStoresDisabledState(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := service.New(config.NewStoreAt(filepath.Join(dir, "config.json")), &memorySecrets{values: map[string]string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	launches, err := launch.New(dir, svc, &recordingHookRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := launches.Upsert(model.LaunchEntry{
+		Name: "Cursor", Mode: model.LaunchModeCursor, Proxy: "127.0.0.1:1082", AttachExisting: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewWithOptions(svc, func() {}, Options{Launches: launches})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(manager.Handler())
+	defer server.Close()
+	state := getState(t, server.URL)
+	request, _ := http.NewRequest(
+		http.MethodPost,
+		server.URL+"/api/launches/"+entry.ID+"/takeover",
+		bytes.NewReader([]byte(`{"enabled":false}`)),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Easy-Net-Token", state.Token)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	got, ok := launches.Get(entry.ID)
+	if response.StatusCode != http.StatusOK || !ok || !got.TakeoverDisabled {
+		t.Fatalf("application takeover toggle was not stored: status=%d entry=%#v", response.StatusCode, got)
+	}
+}
+
 type testClashRunner struct {
 	mu      sync.Mutex
 	running map[string]bool
@@ -902,6 +952,15 @@ func TestClashSubscriptionAPI(t *testing.T) {
 		t.Fatalf("expected delay 403, got %d", delayUnauthorized.StatusCode)
 	}
 
+	probeUnauthorized, err := http.Post(server.URL+"/api/subscriptions/x/probe", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = probeUnauthorized.Body.Close()
+	if probeUnauthorized.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected probe 403, got %d", probeUnauthorized.StatusCode)
+	}
+
 	importReq, _ := http.NewRequest(http.MethodPost, server.URL+"/api/subscriptions", strings.NewReader(`{"name":"机场 A","url":"https://example.com/clash.yaml"}`))
 	importReq.Header.Set("Content-Type", "application/json")
 	importReq.Header.Set("X-Easy-Net-Token", state.Token)
@@ -924,8 +983,23 @@ func TestClashSubscriptionAPI(t *testing.T) {
 	}
 
 	state = getState(t, server.URL)
-	if len(state.Subscriptions) != 1 || state.Subscriptions[0].Name != "机场 A" || len(state.Subscriptions[0].Nodes) != 2 {
+	if len(state.Subscriptions) != 1 || state.Subscriptions[0].Name != "机场 A" || len(state.Subscriptions[0].Nodes) != 2 || state.Subscriptions[0].RefreshMinutes != model.DefaultClashRefreshMinutes {
 		t.Fatalf("unexpected subscriptions: %#v", state.Subscriptions)
+	}
+	intervalReq, _ := http.NewRequest(http.MethodPost, server.URL+"/api/subscriptions/"+imported.ID+"/interval", strings.NewReader(`{"refreshMinutes":30}`))
+	intervalReq.Header.Set("Content-Type", "application/json")
+	intervalReq.Header.Set("X-Easy-Net-Token", state.Token)
+	intervalResp, err := http.DefaultClient.Do(intervalReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = intervalResp.Body.Close()
+	if intervalResp.StatusCode != http.StatusOK {
+		t.Fatalf("interval failed: %d", intervalResp.StatusCode)
+	}
+	state = getState(t, server.URL)
+	if state.Subscriptions[0].RefreshMinutes != 30 {
+		t.Fatalf("expected refresh interval 30, got %#v", state.Subscriptions[0])
 	}
 	raw, _ := json.Marshal(state.Subscriptions)
 	if strings.Contains(string(raw), "super-secret") || strings.Contains(strings.ToLower(string(raw)), `"raw"`) {

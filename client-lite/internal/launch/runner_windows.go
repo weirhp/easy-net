@@ -231,11 +231,10 @@ func (windowsRunner) Processes() ([]ProcessInfo, error) {
 	if err := windows.Process32First(snapshot, &process); err != nil {
 		return nil, fmt.Errorf("读取运行进程：%w", err)
 	}
-	items := make([]ProcessInfo, 0, 64)
-	seen := make(map[string]struct{})
+	snapshotItems := make([]ProcessInfo, 0, 128)
 	internalNames := map[string]struct{}{
 		"easy-net-lite.exe": {}, "easy-net-hook.exe": {},
-		"easy-net-windivert.exe": {}, "sing-box.exe": {}, "mihomo.exe": {},
+		"easy-net-windivert.exe": {}, "mihomo.exe": {},
 	}
 	for {
 		name := windows.UTF16ToString(process.ExeFile[:])
@@ -243,11 +242,9 @@ func (windowsRunner) Processes() ([]ProcessInfo, error) {
 		lowerName := strings.ToLower(name)
 		_, internal := internalNames[lowerName]
 		if path != "" && strings.HasSuffix(lowerName, ".exe") && !internal {
-			key := strings.ToLower(path)
-			if _, exists := seen[key]; !exists {
-				seen[key] = struct{}{}
-				items = append(items, ProcessInfo{PID: process.ProcessID, Name: name, Path: path})
-			}
+			snapshotItems = append(snapshotItems, ProcessInfo{
+				PID: process.ProcessID, ParentPID: process.ParentProcessID, Name: name, Path: path,
+			})
 		}
 		if err := windows.Process32Next(snapshot, &process); err != nil {
 			if err == windows.ERROR_NO_MORE_FILES {
@@ -256,6 +253,10 @@ func (windowsRunner) Processes() ([]ProcessInfo, error) {
 			return nil, fmt.Errorf("读取运行进程：%w", err)
 		}
 	}
+	items := uniqueProcessesByPath(snapshotItems)
+	for index, item := range items {
+		items[index].Helpers = InferProcessHelpers(item, snapshotItems)
+	}
 	sort.Slice(items, func(i, j int) bool {
 		if !strings.EqualFold(items[i].Name, items[j].Name) {
 			return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
@@ -263,6 +264,28 @@ func (windowsRunner) Processes() ([]ProcessInfo, error) {
 		return items[i].PID < items[j].PID
 	})
 	return items, nil
+}
+
+func uniqueProcessesByPath(items []ProcessInfo) []ProcessInfo {
+	children := map[uint32]int{}
+	for _, item := range items {
+		children[item.ParentPID]++
+	}
+	seen := make(map[string]int, len(items))
+	out := make([]ProcessInfo, 0, len(items))
+	for _, item := range items {
+		key := strings.ToLower(item.Path)
+		index, exists := seen[key]
+		if !exists {
+			seen[key] = len(out)
+			out = append(out, item)
+			continue
+		}
+		if children[item.PID] > children[out[index].PID] {
+			out[index] = item
+		}
+	}
+	return out
 }
 
 func queryProcessPath(pid uint32) string {

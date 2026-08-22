@@ -1,0 +1,171 @@
+#pragma once
+
+#include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace easy_net::network {
+
+enum class UdpMode { automatic, proxy, block, direct };
+
+struct Endpoint {
+    std::string host;
+    std::uint16_t port = 0;
+};
+
+inline bool ParsePort(std::string_view value, std::uint16_t& port) {
+    if (value.empty()) return false;
+    unsigned long parsed = 0;
+    for (const char character : value) {
+        if (character < '0' || character > '9') return false;
+        parsed = parsed * 10 + static_cast<unsigned long>(character - '0');
+        if (parsed > 65535) return false;
+    }
+    if (parsed == 0) return false;
+    port = static_cast<std::uint16_t>(parsed);
+    return true;
+}
+
+inline bool ParseEndpoint(std::string_view value, Endpoint& endpoint,
+                          std::uint16_t default_port = 0) {
+    endpoint = {};
+    if (value.empty()) return false;
+    if (value.front() == '[') {
+        const std::size_t close = value.find(']');
+        if (close == std::string_view::npos || close == 1) return false;
+        endpoint.host.assign(value.substr(1, close - 1));
+        if (close + 1 == value.size()) {
+            endpoint.port = default_port;
+            return endpoint.port != 0;
+        }
+        if (value[close + 1] != ':' || !ParsePort(value.substr(close + 2), endpoint.port)) {
+            return false;
+        }
+        return true;
+    }
+    const std::size_t colon = value.rfind(':');
+    if (colon == std::string_view::npos) {
+        endpoint.host.assign(value);
+        endpoint.port = default_port;
+        return !endpoint.host.empty() && endpoint.port != 0;
+    }
+    if (value.find(':') != colon) {
+        endpoint.host.assign(value);
+        endpoint.port = default_port;
+        return endpoint.port != 0;
+    }
+    endpoint.host.assign(value.substr(0, colon));
+    return !endpoint.host.empty() && ParsePort(value.substr(colon + 1), endpoint.port);
+}
+
+inline bool ParseUdpMode(std::string_view value, UdpMode& mode) {
+    std::string normalized(value);
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (normalized == "auto") mode = UdpMode::automatic;
+    else if (normalized == "proxy") mode = UdpMode::proxy;
+    else if (normalized == "block") mode = UdpMode::block;
+    else if (normalized == "direct") mode = UdpMode::direct;
+    else return false;
+    return true;
+}
+
+inline bool ParseDecimal(std::string_view value, unsigned int maximum) {
+    if (value.empty()) return false;
+    unsigned int parsed = 0;
+    for (const char character : value) {
+        if (character < '0' || character > '9') return false;
+        const unsigned int digit = static_cast<unsigned int>(character - '0');
+        if (parsed > (maximum - digit) / 10) return false;
+        parsed = parsed * 10 + digit;
+    }
+    return true;
+}
+
+inline bool IsIpv4Address(std::string_view value) {
+    std::size_t start = 0;
+    for (int part = 0; part < 4; ++part) {
+        const std::size_t end = value.find('.', start);
+        if ((part < 3 && end == std::string_view::npos) ||
+            (part == 3 && end != std::string_view::npos)) return false;
+        const std::size_t length = (end == std::string_view::npos ? value.size() : end) - start;
+        if (length == 0 || length > 3 || !ParseDecimal(value.substr(start, length), 255)) return false;
+        start = end == std::string_view::npos ? value.size() : end + 1;
+    }
+    return start == value.size();
+}
+
+inline bool IsRoutePrefix(std::string_view value) {
+    const std::size_t slash = value.find('/');
+    if (slash == std::string_view::npos || slash == 0 || slash + 1 >= value.size() ||
+        value.find('/', slash + 1) != std::string_view::npos) return false;
+    const std::string_view address = value.substr(0, slash);
+    const std::string_view prefix = value.substr(slash + 1);
+    if (address.find(':') == std::string_view::npos) {
+        return IsIpv4Address(address) && ParseDecimal(prefix, 32);
+    }
+    if (!ParseDecimal(prefix, 128)) return false;
+    bool has_colon = false;
+    for (const unsigned char character : address) {
+        if (character == ':') has_colon = true;
+        else if (character != '.' && !std::isxdigit(character)) return false;
+    }
+    return has_colon;
+}
+
+inline bool AppendBypassPrefixes(std::string_view value, std::vector<std::string>& prefixes) {
+    std::size_t start = 0;
+    while (start <= value.size()) {
+        const std::size_t comma = value.find(',', start);
+        const std::size_t end = comma == std::string_view::npos ? value.size() : comma;
+        std::string_view item = value.substr(start, end - start);
+        while (!item.empty() && std::isspace(static_cast<unsigned char>(item.front()))) item.remove_prefix(1);
+        while (!item.empty() && std::isspace(static_cast<unsigned char>(item.back()))) item.remove_suffix(1);
+        if (!IsRoutePrefix(item)) return false;
+        const std::string prefix(item);
+        if (std::find(prefixes.begin(), prefixes.end(), prefix) == prefixes.end()) prefixes.push_back(prefix);
+        if (comma == std::string_view::npos) break;
+        start = comma + 1;
+    }
+    return true;
+}
+
+inline std::string JsonString(std::string_view value) {
+    std::string output;
+    output.reserve(value.size() + 2);
+    output.push_back('"');
+    constexpr char hex[] = "0123456789abcdef";
+    for (const unsigned char character : value) {
+        switch (character) {
+            case '"': output += "\\\""; break;
+            case '\\': output += "\\\\"; break;
+            case '\b': output += "\\b"; break;
+            case '\f': output += "\\f"; break;
+            case '\n': output += "\\n"; break;
+            case '\r': output += "\\r"; break;
+            case '\t': output += "\\t"; break;
+            default:
+                if (character < 0x20) {
+                    output += "\\u00";
+                    output.push_back(hex[(character >> 4) & 0x0f]);
+                    output.push_back(hex[character & 0x0f]);
+                } else output.push_back(static_cast<char>(character));
+        }
+    }
+    output.push_back('"');
+    return output;
+}
+
+inline const std::vector<std::string>& WeChatProcessNames() {
+    static const std::vector<std::string> names{
+        "WeChat.exe", "Weixin.exe", "WeChatApp.exe", "WeChatAppEx.exe",
+        "WeChatBrowser.exe", "WeChatOCR.exe", "WeChatPlayer.exe",
+        "WeChatUtility.exe", "WeChatWeb.exe", "WeChatUpdate.exe", "xwechat.exe",
+    };
+    return names;
+}
+
+}  // namespace easy_net::network

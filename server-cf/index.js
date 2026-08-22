@@ -90,6 +90,32 @@ export default {
       serverWS.binaryType = 'arraybuffer';
       serverWS.accept();
 
+      // Easy-Net Lite 0.2.3 and earlier tested the tunnel by asking the Worker
+      // to connect back to the Worker's own custom domain. Cloudflare Workers
+      // TCP sockets reject that loop into Cloudflare's network even though the
+      // tunnel and secret are healthy. Keep those released clients compatible;
+      // current clients probe a separate external TLS endpoint instead.
+      const normalizedTargetHost = targetHost.replace(/\.$/, '').toLowerCase();
+      const normalizedWorkerHost = url.hostname.replace(/\.$/, '').toLowerCase();
+      const workerPort = url.protocol === 'http:' ? 80 : 443;
+      const isLegacySelfProbe = protocolV2 && normalizedTargetHost === normalizedWorkerHost && targetPort === workerPort;
+      if (isLegacySelfProbe) {
+        serverWS.send('READY');
+        const closeProbe = () => {
+          try { serverWS.close(); } catch (e) {}
+        };
+        serverWS.addEventListener('close', closeProbe);
+        serverWS.addEventListener('error', closeProbe);
+        return new Response(null, {
+          status: 101,
+          webSocket: clientWS,
+          headers: {
+            'X-Easy-Net-Protocol': '2',
+            'X-Easy-Net-Probe-Fallback': 'self'
+          }
+        });
+      }
+
       try {
         // 3. 直连目标网站 (例如 google.com:443)
         const socket = connect({ hostname: targetHost, port: targetPort });

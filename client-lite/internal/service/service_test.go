@@ -6,8 +6,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +19,7 @@ import (
 	"easy-net/client-lite/internal/config"
 	"easy-net/client-lite/internal/model"
 	"easy-net/client-lite/internal/sharecode"
+	websockettransport "easy-net/client-lite/internal/transport/websocket"
 
 	"github.com/gorilla/websocket"
 )
@@ -453,7 +456,7 @@ func TestConnectionRecordsFriendlyWebSocketAuthenticationFailure(t *testing.T) {
 func TestConnectionRecordsSuccessfulWebSocketProbe(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer valid-secret" || r.Header.Get("X-Target-Host") == "" || r.Header.Get("X-Target-Port") == "" {
+		if r.Header.Get("Authorization") != "Bearer valid-secret" || r.Header.Get("X-Target-Host") != "www.microsoft.com" || r.Header.Get("X-Target-Port") != "443" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -483,6 +486,69 @@ func TestConnectionRecordsSuccessfulWebSocketProbe(t *testing.T) {
 	state := svc.States()[0]
 	if state.ConnectionStatus != "success" || state.ConnectionAt.IsZero() || state.ConnectionError != "" {
 		t.Fatalf("unexpected connection state: %#v", state)
+	}
+}
+
+func TestConnectionFallsBackToWebSocketServerProbe(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	var selfHost string
+	var selfPort string
+	requests := make([]string, 0, 2)
+	var requestsMu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		target := net.JoinHostPort(r.Header.Get("X-Target-Host"), r.Header.Get("X-Target-Port"))
+		requestsMu.Lock()
+		requests = append(requests, target)
+		requestsMu.Unlock()
+		if target == "www.microsoft.com:443" {
+			http.Error(w, "target unavailable", http.StatusBadGateway)
+			return
+		}
+		if target != net.JoinHostPort(selfHost, selfPort) {
+			http.Error(w, "unexpected target", http.StatusBadRequest)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selfHost, selfPort = serverURL.Hostname(), serverURL.Port()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/tunnel"
+	profile := model.Profile{Type: model.ProxyTypeWebSocket, WebSocket: &model.WebSocketConfig{URL: wsURL}}
+	transport, err := websockettransport.New(websockettransport.Config{URL: wsURL, Secret: "valid-secret", AllowInsecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transport.Close()
+	if err := testWebSocketConnection(context.Background(), profile, transport); err != nil {
+		t.Fatal(err)
+	}
+	requestsMu.Lock()
+	defer requestsMu.Unlock()
+	want := []string{"www.microsoft.com:443", net.JoinHostPort(selfHost, selfPort)}
+	if !slices.Equal(requests, want) {
+		t.Fatalf("unexpected probe order: got %v want %v", requests, want)
+	}
+}
+
+func TestWebSocketProbeTargetsUseEndpointAsFallback(t *testing.T) {
+	targets, err := websocketProbeTargets("wss://example.com:8443/tunnel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"www.microsoft.com:443", "example.com:8443"}
+	if !slices.Equal(targets, want) {
+		t.Fatalf("unexpected targets: got %v want %v", targets, want)
 	}
 }
 

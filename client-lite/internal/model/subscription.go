@@ -17,15 +17,18 @@ type SubscriptionFile struct {
 	Subscriptions []Subscription `json:"subscriptions"`
 }
 
+const DefaultClashRefreshMinutes = 60
+
 type Subscription struct {
-	ID           string      `json:"id"`
-	Name         string      `json:"name"`
-	URL          string      `json:"url"`
-	ListenPort   int         `json:"listenPort"`
-	SelectedNode string      `json:"selectedNode,omitempty"`
-	Active       bool        `json:"active,omitempty"`
-	UpdatedAt    time.Time   `json:"updatedAt,omitempty"`
-	Nodes        []ClashNode `json:"nodes"`
+	ID             string      `json:"id"`
+	Name           string      `json:"name"`
+	URL            string      `json:"url"`
+	ListenPort     int         `json:"listenPort"`
+	RefreshMinutes int         `json:"refreshMinutes"`
+	SelectedNode   string      `json:"selectedNode,omitempty"`
+	Active         bool        `json:"active,omitempty"`
+	UpdatedAt      time.Time   `json:"updatedAt,omitempty"`
+	Nodes          []ClashNode `json:"nodes"`
 }
 
 type ClashNode struct {
@@ -50,6 +53,7 @@ func (s *Subscription) Normalize() {
 	s.Name = strings.TrimSpace(s.Name)
 	s.URL = strings.TrimSpace(s.URL)
 	s.SelectedNode = strings.TrimSpace(s.SelectedNode)
+	s.RefreshMinutes = NormalizeRefreshMinutes(s.RefreshMinutes)
 	valid := make([]ClashNode, 0, len(s.Nodes))
 	seen := map[string]struct{}{}
 	for _, node := range s.Nodes {
@@ -100,6 +104,22 @@ func (s Subscription) Node(name string) (ClashNode, bool) {
 		}
 	}
 	return ClashNode{}, false
+}
+
+func NormalizeRefreshMinutes(value int) int {
+	switch value {
+	case 0, 30, 60, 180, 360, 1440:
+		return value
+	default:
+		return DefaultClashRefreshMinutes
+	}
+}
+
+func (s Subscription) RefreshDue() bool {
+	if s.RefreshMinutes <= 0 || s.UpdatedAt.IsZero() {
+		return false
+	}
+	return time.Since(s.UpdatedAt) >= time.Duration(s.RefreshMinutes)*time.Minute
 }
 
 func cloneMap(value map[string]any) map[string]any {

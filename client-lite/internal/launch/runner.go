@@ -37,9 +37,11 @@ type ShortcutOptions struct {
 }
 
 type ProcessInfo struct {
-	PID  uint32 `json:"pid"`
-	Name string `json:"name"`
-	Path string `json:"path"`
+	PID       uint32   `json:"pid"`
+	ParentPID uint32   `json:"parentPid,omitempty"`
+	Name      string   `json:"name"`
+	Path      string   `json:"path"`
+	Helpers   []string `json:"helpers,omitempty"`
 }
 
 type Runner interface {

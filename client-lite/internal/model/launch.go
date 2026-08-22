@@ -10,13 +10,15 @@ import (
 type LaunchMode string
 
 const (
-	LaunchModeChatGPT         LaunchMode = "chatgpt"
-	LaunchModeAntigravity     LaunchMode = "antigravity"
-	LaunchModeCursor          LaunchMode = "cursor"
-	LaunchModeChrome          LaunchMode = "chrome"
-	LaunchModeEdge            LaunchMode = "edge"
-	LaunchModeClaude          LaunchMode = "claude"
-	LaunchModeWeChat          LaunchMode = "wechat"
+	LaunchModeChatGPT     LaunchMode = "chatgpt"
+	LaunchModeAntigravity LaunchMode = "antigravity"
+	LaunchModeCursor      LaunchMode = "cursor"
+	LaunchModeChrome      LaunchMode = "chrome"
+	LaunchModeEdge        LaunchMode = "edge"
+	LaunchModeClaude      LaunchMode = "claude"
+	LaunchModeWeChat      LaunchMode = "wechat"
+	// LaunchModeWeChatWinDivert is retained only to read older saved entries.
+	// Both WeChat modes now use the same WinDivert-only implementation.
 	LaunchModeWeChatWinDivert LaunchMode = "wechat-windivert"
 	LaunchModeHook            LaunchMode = "hook"
 	LaunchModeWinDivert       LaunchMode = "windivert"
@@ -44,6 +46,10 @@ type LaunchEntry struct {
 	DNS            string     `json:"dns,omitempty"`
 	ProcessNames   string     `json:"processNames,omitempty"`
 	AttachExisting bool       `json:"attachExisting,omitempty"`
+	// TakeoverDisabled is intentionally stored as the negative form so entries
+	// created by older versions, and newly imported entries that omit the field,
+	// remain opted in by default.
+	TakeoverDisabled bool `json:"takeoverDisabled,omitempty"`
 }
 
 func (e LaunchEntry) Clone() LaunchEntry { return e }
@@ -190,9 +196,9 @@ func (e LaunchMode) Label() string {
 	case LaunchModeClaude:
 		return "Claude Code"
 	case LaunchModeWeChat:
-		return "微信 TUN"
+		return "微信（WinDivert）"
 	case LaunchModeWeChatWinDivert:
-		return "微信 WinDivert"
+		return "微信（WinDivert）"
 	case LaunchModeHook:
 		return "通用 Hook"
 	case LaunchModeWinDivert:

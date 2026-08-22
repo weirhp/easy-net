@@ -163,13 +163,16 @@ func (s *Service) SetTakeoverEnabled(enabled bool) error {
 
 func (s *Service) TakeoverStatus() TakeoverStatus {
 	enabled := s.TakeoverEnabled()
-	status := s.readSharedSupervisorStatus()
 	s.statusMu.Lock()
 	local := s.status
 	s.statusMu.Unlock()
 	if !enabled {
 		return TakeoverStatus{Enabled: false, State: "stopped", Message: "应用网络接管已关闭"}
 	}
+	if len(s.sharedTakeoverEntries()) == 0 {
+		return TakeoverStatus{Enabled: true, State: "idle", Message: "已开启；当前没有启用接管的应用"}
+	}
+	status := s.readSharedSupervisorStatus()
 	if status != nil {
 		age := time.Since(time.UnixMilli(status.UpdatedAtMS))
 		if age >= 0 && age <= 12*time.Second {
@@ -451,6 +454,25 @@ func (s *Service) Delete(id string) error {
 	return s.store.Save(s.file)
 }
 
+func (s *Service) SetEntryTakeover(id string, enabled bool) (model.LaunchEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index := s.indexLocked(id)
+	if index < 0 {
+		return model.LaunchEntry{}, fmt.Errorf("启动入口不存在")
+	}
+	updated := &model.LaunchFile{
+		Version: s.file.Version, TakeoverEnabled: s.file.TakeoverEnabled,
+		Entries: append([]model.LaunchEntry(nil), s.file.Entries...),
+	}
+	updated.Entries[index].TakeoverDisabled = !enabled
+	if err := s.store.Save(updated); err != nil {
+		return model.LaunchEntry{}, err
+	}
+	s.file = updated
+	return updated.Entries[index].Clone(), nil
+}
+
 func (s *Service) Start(id string) (View, error) {
 	return s.StartWithOptions(id, StartOptions{})
 }
@@ -561,12 +583,11 @@ func (s *Service) applySharedRulesLocked() error {
 		s.setTakeoverStatus(TakeoverStatus{Enabled: false, State: "stopped", Message: "应用网络接管已关闭", UpdatedAt: time.Now().Format(time.RFC3339)})
 		return nil
 	}
-	entries := s.List()
-	rules := append([]model.LaunchEntry(nil), entries...)
+	rules := s.sharedTakeoverEntries()
 	if len(rules) == 0 {
 		_, err := s.writeSharedWinDivertProfile()
 		if err == nil {
-			s.setTakeoverStatus(TakeoverStatus{Enabled: true, State: "idle", Message: "已开启；添加应用后将自动接管", UpdatedAt: time.Now().Format(time.RFC3339)})
+			s.setTakeoverStatus(TakeoverStatus{Enabled: true, State: "idle", Message: "已开启；当前没有启用接管的应用", UpdatedAt: time.Now().Format(time.RFC3339)})
 		}
 		return err
 	}
@@ -594,7 +615,7 @@ func (s *Service) applySharedRulesLocked() error {
 	}
 	args := []string{
 		"--proxy", firstProxy, "--detach", "--gui-worker", "--windivert",
-		"--tun-udp", "auto", "--windivert-existing",
+		"--udp-mode", "auto", "--windivert-existing",
 		"--windivert-processes", "easy-net-shared-rule.exe",
 		"--windivert-shared-profile", profilePath,
 		"--windivert-shared-root", strconv.Itoa(os.Getpid()),
@@ -608,6 +629,17 @@ func (s *Service) applySharedRulesLocked() error {
 	}
 	s.setTakeoverStatus(TakeoverStatus{Enabled: true, State: "healthy", Message: "接管服务运行中；列表内应用的新连接将自动走代理", UpdatedAt: time.Now().Format(time.RFC3339)})
 	return nil
+}
+
+func (s *Service) sharedTakeoverEntries() []model.LaunchEntry {
+	entries := s.List()
+	rules := make([]model.LaunchEntry, 0, len(entries))
+	for _, entry := range entries {
+		if usesSharedWinDivert(entry) {
+			rules = append(rules, entry)
+		}
+	}
+	return rules
 }
 
 func (s *Service) prepareEntryProxy(entry model.LaunchEntry) (string, string, error) {

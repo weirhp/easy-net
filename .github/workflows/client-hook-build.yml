@@ -77,34 +77,30 @@ jobs:
           Copy-Item client-hook/build/Release/Easy-Net-Lite.exe -Destination $package
           Copy-Item client-hook/build/Release/THIRD-PARTY-LICENSES -Destination $package -Recurse
           Copy-Item client-hook/README.md -Destination $package
-
-      - name: Package optional TUN engine
-        if: matrix.arch == 'x64'
-        shell: pwsh
-        run: |
-          $package = "client-hook/package/Easy-Net-Hook-x64-TUN"
-          New-Item -ItemType Directory -Force $package | Out-Null
-          Copy-Item client-hook/build/Release/easy-net-hook.exe -Destination $package
-          Copy-Item client-hook/build/Release/easy-net-hook.dll -Destination $package
-          Copy-Item client-hook/build/Release/Easy-Net-Lite.exe -Destination $package
-          Copy-Item client-hook/build/Release/THIRD-PARTY-LICENSES -Destination $package -Recurse
-          Copy-Item client-hook/README.md -Destination $package
-          Copy-Item client-hook/build/Release/windivert -Destination $package -Recurse
-          ./client-hook/scripts/install-tun-engine.ps1 -Destination "$package/tun"
+          if ('${{ matrix.arch }}' -eq 'x64') {
+            Copy-Item client-hook/build/Release/windivert -Destination $package -Recurse
+            ./client-hook/scripts/install-mihomo.ps1 -Destination "$package/mihomo"
+            foreach ($required in @(
+              "$package/windivert/easy-net-windivert.exe",
+              "$package/mihomo/mihomo.exe",
+              "$package/mihomo/LICENSE.txt",
+              "$package/mihomo/VERSION.txt"
+            )) {
+              if (-not (Test-Path -LiteralPath $required)) {
+                throw "Required x64 package file is missing: $required"
+              }
+            }
+          }
+          $forbidden = Get-ChildItem -LiteralPath $package -File -Recurse |
+            Where-Object { $_.Name -in @('sing-box.exe', 'libcronet.dll') }
+          if ($forbidden) {
+            throw "Removed TUN files unexpectedly entered the package: $($forbidden.FullName -join ', ')"
+          }
 
       - name: Upload package
         uses: actions/upload-artifact@v7
         with:
           name: Easy-Net-Hook-${{ matrix.arch }}
           path: client-hook/package/Easy-Net-Hook-${{ matrix.arch }}
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload package with TUN
-        if: matrix.arch == 'x64'
-        uses: actions/upload-artifact@v7
-        with:
-          name: Easy-Net-Hook-x64-TUN
-          path: client-hook/package/Easy-Net-Hook-x64-TUN
           if-no-files-found: error
           retention-days: 14

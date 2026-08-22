@@ -118,7 +118,7 @@ add_executable(easy_net_hook_launcher
     src/launcher.cpp
     src/lite_api.h
     src/socks5_health.h
-    src/tun_config.h
+    src/network_config.h
     src/wechat_supervisor.h
     src/windivert_profile.h
     src/dns_resolver.cpp
@@ -143,7 +143,8 @@ endif()
 enable_testing()
 add_test(NAME launcher_help_test COMMAND easy_net_hook_launcher --help)
 set_tests_properties(launcher_help_test PROPERTIES
-    PASS_REGULAR_EXPRESSION "wechat-existing")
+    PASS_REGULAR_EXPRESSION "wechat-existing"
+    FAIL_REGULAR_EXPRESSION "wechat-backend|tun-engine|tun-stack|tun-udp|tun-bypass|tun-debug")
 add_test(NAME launcher_cursor_help_test COMMAND easy_net_hook_launcher --help)
 set_tests_properties(launcher_cursor_help_test PROPERTIES
     PASS_REGULAR_EXPRESSION "cursor-isolated")
@@ -197,17 +198,17 @@ set_property(TARGET child_injection_test PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_test(NAME child_injection_test COMMAND child_injection_test)
 
-add_executable(tun_config_test tests/tun_config_test.cpp src/tun_config.h)
-target_compile_features(tun_config_test PRIVATE cxx_std_20)
-target_compile_options(tun_config_test PRIVATE /W4 /permissive- /EHsc /UNDEBUG)
-set_property(TARGET tun_config_test PROPERTY
+add_executable(network_config_test tests/network_config_test.cpp src/network_config.h)
+target_compile_features(network_config_test PRIVATE cxx_std_20)
+target_compile_options(network_config_test PRIVATE /W4 /permissive- /EHsc /UNDEBUG)
+set_property(TARGET network_config_test PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-add_test(NAME tun_config_test COMMAND tun_config_test)
+add_test(NAME network_config_test COMMAND network_config_test)
 
 add_executable(windivert_profile_test
     tests/windivert_profile_test.cpp
     src/windivert_profile.h
-    src/tun_config.h
+    src/network_config.h
 )
 target_compile_features(windivert_profile_test PRIVATE cxx_std_20)
 target_compile_options(windivert_profile_test PRIVATE /W4 /permissive- /EHsc /UNDEBUG)
@@ -215,7 +216,7 @@ set_property(TARGET windivert_profile_test PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_test(NAME windivert_profile_test COMMAND windivert_profile_test)
 
-add_executable(socks5_health_test tests/socks5_health_test.cpp src/socks5_health.h src/tun_config.h)
+add_executable(socks5_health_test tests/socks5_health_test.cpp src/socks5_health.h src/network_config.h)
 target_compile_features(socks5_health_test PRIVATE cxx_std_20)
 target_compile_definitions(socks5_health_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(socks5_health_test PRIVATE /W4 /permissive- /EHsc /UNDEBUG)
@@ -227,7 +228,7 @@ add_test(NAME socks5_health_test COMMAND socks5_health_test)
 add_executable(wechat_supervisor_test
     tests/wechat_supervisor_test.cpp
     src/wechat_supervisor.h
-    src/tun_config.h
+    src/network_config.h
 )
 target_compile_features(wechat_supervisor_test PRIVATE cxx_std_20)
 target_compile_options(wechat_supervisor_test PRIVATE /W4 /permissive- /EHsc /UNDEBUG)

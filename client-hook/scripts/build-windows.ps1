@@ -3,7 +3,7 @@ param(
     [string]$Architecture = "x64",
     [ValidateSet("Debug", "Release")]
     [string]$Configuration = "Release",
-    [switch]$WithTunEngine
+    [switch]$WithMihomo
 )
 
 $ErrorActionPreference = "Stop"
@@ -75,12 +75,12 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $outputDirectory = Join-Path $buildDirectory $Configuration
-if ($WithTunEngine) {
+if ($WithMihomo) {
     if ($Architecture -ne "x64") {
-        throw "The optional TUN engine is available only for x64 builds."
+        throw "The bundled Mihomo executable is available only for x64 builds."
     }
-    & (Join-Path $PSScriptRoot "install-tun-engine.ps1") `
-        -Destination (Join-Path $outputDirectory "tun")
+    & (Join-Path $PSScriptRoot "install-mihomo.ps1") `
+        -Destination (Join-Path $outputDirectory "mihomo")
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 Write-Host "Build complete: $outputDirectory"

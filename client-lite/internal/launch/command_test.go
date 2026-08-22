@@ -47,7 +47,7 @@ func TestHookArgsWeChatWinDivertExisting(t *testing.T) {
 	}
 	want := []string{
 		"--proxy", "127.0.0.1:1084", "--detach", "--gui-worker",
-		"--wechat-existing", "--tun-udp", "proxy", "--wechat-backend", "windivert",
+		"--wechat-existing", "--udp-mode", "proxy",
 	}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("got %#v want %#v", args, want)
@@ -109,7 +109,7 @@ func TestHookArgsGenericWinDivert(t *testing.T) {
 	}
 	want := []string{
 		"--proxy", "127.0.0.1:10808", "--detach", "--gui-worker", "--windivert",
-		"--tun-udp", "proxy", "--windivert-processes", "app.exe;helper.exe", "--",
+		"--udp-mode", "proxy", "--windivert-processes", "app.exe;helper.exe", "--",
 		`D:\App\app.exe`, "--flag", "quoted value",
 	}
 	if !reflect.DeepEqual(args, want) {
@@ -146,7 +146,7 @@ func TestHookArgsAttachRunningEdge(t *testing.T) {
 	}
 	want := []string{
 		"--proxy", "127.0.0.1:1082", "--detach", "--gui-worker", "--windivert",
-		"--windivert-existing", "--tun-udp", "block",
+		"--windivert-existing", "--udp-mode", "block",
 		"--windivert-processes", "msedge.exe;edge-helper.exe",
 	}
 	if !reflect.DeepEqual(args, want) {
@@ -164,7 +164,7 @@ func TestHookArgsAttachRunningGenericWinDivert(t *testing.T) {
 	}
 	want := []string{
 		"--proxy", "127.0.0.1:10808", "--detach", "--gui-worker", "--windivert",
-		"--tun-udp", "proxy", "--windivert-existing", "--windivert-processes", "app.exe",
+		"--udp-mode", "proxy", "--windivert-existing", "--windivert-processes", "app.exe",
 	}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("got %#v want %#v", args, want)

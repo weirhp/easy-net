@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -217,4 +218,45 @@ func (p Profile) Endpoint() string {
 
 func (p Profile) ListenAddress() string {
 	return net.JoinHostPort(p.ListenHost, fmt.Sprintf("%d", p.ListenPort))
+}
+
+func (p Profile) DelayTarget() (string, int, error) {
+	switch p.Type {
+	case ProxyTypeExternal, ProxyTypeClash:
+		if strings.TrimSpace(p.ListenHost) == "" || p.ListenPort < 1 {
+			return "", 0, fmt.Errorf("本地监听地址无效")
+		}
+		return strings.TrimSpace(p.ListenHost), p.ListenPort, nil
+	case ProxyTypeSSH:
+		if p.SSH == nil || strings.TrimSpace(p.SSH.Host) == "" {
+			return "", 0, fmt.Errorf("SSH 地址无效")
+		}
+		port := p.SSH.Port
+		if port < 1 {
+			port = 22
+		}
+		return strings.TrimSpace(p.SSH.Host), port, nil
+	case ProxyTypeWebSocket:
+		if p.WebSocket == nil || strings.TrimSpace(p.WebSocket.URL) == "" {
+			return "", 0, fmt.Errorf("WebSocket 地址无效")
+		}
+		parsed, err := url.Parse(strings.TrimSpace(p.WebSocket.URL))
+		if err != nil || parsed.Hostname() == "" {
+			return "", 0, fmt.Errorf("WebSocket 地址无效")
+		}
+		port := 443
+		if parsed.Scheme == "ws" || parsed.Scheme == "http" {
+			port = 80
+		}
+		if parsed.Port() != "" {
+			parsedPort, err := strconv.Atoi(parsed.Port())
+			if err != nil || parsedPort < 1 {
+				return "", 0, fmt.Errorf("WebSocket 端口无效")
+			}
+			port = parsedPort
+		}
+		return parsed.Hostname(), port, nil
+	default:
+		return "", 0, fmt.Errorf("不支持的代理类型")
+	}
 }

@@ -7,7 +7,7 @@
 #include <string>
 #include <string_view>
 
-#include "tun_config.h"
+#include "network_config.h"
 
 namespace easy_net::wechat {
 
@@ -47,15 +47,15 @@ struct RuntimeStatus {
 inline std::string BuildRuntimeStatus(const RuntimeStatus& status) {
     std::ostringstream json;
     json << "{\n"
-         << "  \"backend\": " << tun::JsonString(status.backend) << ",\n"
-         << "  \"state\": " << tun::JsonString(HealthStateName(status.state)) << ",\n"
-         << "  \"message\": " << tun::JsonString(status.message) << ",\n"
-         << "  \"proxy\": " << tun::JsonString(status.proxy) << ",\n"
+         << "  \"backend\": " << network::JsonString(status.backend) << ",\n"
+         << "  \"state\": " << network::JsonString(HealthStateName(status.state)) << ",\n"
+         << "  \"message\": " << network::JsonString(status.message) << ",\n"
+         << "  \"proxy\": " << network::JsonString(status.proxy) << ",\n"
          << "  \"engine_pid\": " << status.engine_pid << ",\n"
          << "  \"restart_count\": " << status.restart_count << ",\n"
          << "  \"heartbeat_tick_ms\": " << status.heartbeat_tick_ms << ",\n"
          << "  \"fail_closed\": " << (status.fail_closed ? "true" : "false") << ",\n"
-         << "  \"updated_at\": " << tun::JsonString(status.updated_at) << "\n"
+         << "  \"updated_at\": " << network::JsonString(status.updated_at) << "\n"
          << "}\n";
     return json.str();
 }

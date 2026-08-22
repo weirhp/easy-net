@@ -56,11 +56,13 @@
       <section class="subscription-toolbar" id="subscription-toolbar" hidden>
         <label class="field node-filter-field"><span class="visually-hidden">筛选节点</span><input id="node-filter" type="search" autocomplete="off" placeholder="筛选节点名称或类型"></label>
         <span class="subscription-meta" id="subscription-meta"></span>
-        <button type="button" class="button secondary compact" data-clash-action="delay"><svg class="icon" aria-hidden="true"><use href="#icon-delay"></use></svg>延迟测试</button>
-        <button type="button" class="button secondary compact" data-clash-action="speed"><svg class="icon" aria-hidden="true"><use href="#icon-speed"></use></svg>速度测试</button>
-        <button type="button" class="button secondary compact" data-clash-action="refresh"><svg class="icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>更新订阅</button>
-        <button type="button" class="button secondary compact" data-clash-action="stop"><svg class="icon" aria-hidden="true"><use href="#icon-stop"></use></svg>停止节点</button>
-        <button type="button" class="button secondary compact" data-clash-action="delete"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg>删除订阅</button>
+        <label class="field refresh-interval-field"><span class="visually-hidden">自动刷新</span><select id="clash-refresh-interval" aria-label="自动刷新间隔"><option value="30">自动刷新 30 分钟</option><option value="60" selected>自动刷新 1 小时</option><option value="180">自动刷新 3 小时</option><option value="360">自动刷新 6 小时</option><option value="1440">自动刷新 1 天</option><option value="0">自动刷新 从不</option></select></label>
+        <button type="button" class="button secondary compact icon-only" aria-label="延迟测试" data-tooltip="延迟测试" data-clash-action="delay"><svg class="icon" aria-hidden="true"><use href="#icon-delay"></use></svg></button>
+        <button type="button" class="button secondary compact icon-only" aria-label="速度测试" data-tooltip="速度测试" data-clash-action="speed"><svg class="icon" aria-hidden="true"><use href="#icon-speed"></use></svg></button>
+        <button type="button" class="button secondary compact icon-only" aria-label="探测常用网站" data-tooltip="探测 Gemini / ChatGPT / Grok" data-clash-action="probe"><svg class="icon" aria-hidden="true"><use href="#icon-target"></use></svg></button>
+        <button type="button" class="button secondary compact icon-only" aria-label="更新订阅" data-tooltip="更新订阅" data-clash-action="refresh"><svg class="icon" aria-hidden="true"><use href="#icon-refresh"></use></svg></button>
+        <button type="button" class="button stop compact icon-only" aria-label="停止节点" data-tooltip="停止节点" data-clash-action="stop"><svg class="icon" aria-hidden="true"><use href="#icon-stop"></use></svg></button>
+        <button type="button" class="button danger compact icon-only" aria-label="删除订阅" data-tooltip="删除订阅" data-clash-action="delete"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button>
       </section>
     </div>
     <section class="selection-toolbar" id="selection-toolbar" hidden aria-live="polite">
@@ -70,7 +72,7 @@
     </section>
 
     <section class="profiles" id="profiles" aria-live="polite"><div class="empty-state"><div class="loading" aria-hidden="true"></div><p>正在加载代理配置</p></div></section>
-    <section class="profiles" id="launches" hidden aria-live="polite"></section>
+    <section class="profiles app-grid" id="launches" hidden aria-live="polite"></section>
     <footer class="page-footer"><span id="config-path"></span></footer>
   </main>
 
@@ -82,7 +84,7 @@
           <h3>基本信息</h3>
           <div class="form-grid single-column">
             <label class="field full"><span>名称</span><input id="field-name" required maxlength="80" placeholder="例如：公司代理"></label>
-            <div class="inline-fields" id="managed-listen-fields"><label class="field"><span>本地 SOCKS5/HTTP 端口</span><input id="field-local-port" required type="number" min="1" max="65535" inputmode="numeric"></label><label class="check-field inline-check"><input id="field-auto-start" type="checkbox"><span>程序启动后自动运行</span></label></div>
+            <div class="inline-fields listen-inline-fields" id="managed-listen-fields"><label class="field"><span class="field-label-nowrap">本地 SOCKS5/HTTP 端口</span><input id="field-local-port" required type="number" min="1" max="65535" inputmode="numeric"></label><label class="check-field inline-check"><input id="field-auto-start" type="checkbox"><span>程序启动后自动运行</span></label></div>
             <label class="check-field full" id="field-bypass-private-row"><input id="field-bypass-private" type="checkbox"><span>局域网与私有地址直连（不走代理）</span></label>
             <label class="check-field full" id="field-bypass-china-row"><input id="field-bypass-china" type="checkbox"><span>中国大陆 IP 直连（国外 IP 走代理）</span></label>
           </div>
@@ -121,7 +123,7 @@
   </dialog>
 
   <dialog id="process-dialog" class="wide-dialog" aria-labelledby="process-dialog-title">
-    <form id="process-form" class="dialog-shell"><div class="dialog-header"><div><p class="eyebrow">批量接管</p><h2 id="process-dialog-title">从运行进程添加应用</h2></div><button type="button" class="icon-button" data-close-process aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button></div><div class="dialog-body"><div class="bulk-toolbar process-toolbar"><label class="field"><span>这些应用使用的代理</span><select id="process-profile"></select></label><label class="field"><span>按进程名称筛选</span><input id="process-filter" type="search" autocomplete="off" aria-controls="process-choice-list" placeholder="例如 Cursor 或 chrome"></label><button type="button" class="button secondary toolbar-button" id="refresh-process-list" aria-controls="process-choice-list"><svg class="icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>刷新进程</button></div><p class="share-note">可多选。名称直接使用进程文件名；筛选不会取消已选项。保存后会更新共享 WinDivert 接管规则，只影响新建连接。</p><div class="choice-list" id="process-choice-list" aria-live="polite"></div><div class="empty-state compact-empty process-filter-empty" id="process-filter-empty" role="status" hidden><p>没有匹配的运行进程</p></div><p class="form-error" id="process-error" role="alert" hidden></p></div><div class="dialog-actions"><button type="button" class="button secondary" data-close-process>取消</button><button type="submit" class="button primary" id="save-processes">添加所选应用</button></div></form>
+    <form id="process-form" class="dialog-shell"><div class="dialog-header"><div><p class="eyebrow">批量接管</p><h2 id="process-dialog-title">从运行进程添加应用</h2></div><button type="button" class="icon-button" data-close-process aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button></div><div class="dialog-body"><div class="bulk-toolbar process-toolbar"><label class="field"><span>这些应用使用的代理</span><select id="process-profile"></select></label><label class="field"><span>按进程名称筛选</span><input id="process-filter" type="search" autocomplete="off" aria-controls="process-choice-list" placeholder="例如 Cursor 或 chrome"></label><button type="button" class="button secondary toolbar-button" id="refresh-process-list" aria-controls="process-choice-list"><svg class="icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>刷新进程</button></div><p class="share-note">可多选。添加时会自动识别子进程、同目录相关进程，以及 ChatGPT / Claude 等已知辅助进程。筛选不会取消已选项。</p><div class="choice-list" id="process-choice-list" aria-live="polite"></div><div class="empty-state compact-empty process-filter-empty" id="process-filter-empty" role="status" hidden><p>没有匹配的运行进程</p></div><p class="form-error" id="process-error" role="alert" hidden></p></div><div class="dialog-actions"><button type="button" class="button secondary" data-close-process>取消</button><button type="submit" class="button primary" id="save-processes">添加所选应用</button></div></form>
   </dialog>
 
   <dialog id="common-dialog" class="wide-dialog" aria-labelledby="common-dialog-title">
@@ -143,6 +145,7 @@
         <div class="form-grid single-column">
           <label class="field full"><span>Tab 名称</span><input id="clash-import-name" required maxlength="40" placeholder="例如：机场 A"></label>
           <label class="field full"><span>订阅地址</span><input id="clash-import-url" required type="url" placeholder="https://example.com/clash.yaml"><small>支持 Clash / Mihomo YAML，或 base64 后的 YAML。名称会显示为网络代理页的 Tab。</small></label>
+          <label class="field full"><span>自动刷新</span><select id="clash-import-refresh"><option value="30">30 分钟</option><option value="60" selected>1 小时</option><option value="180">3 小时</option><option value="360">6 小时</option><option value="1440">1 天</option><option value="0">从不</option></select><small>到期后会自动重新拉取节点列表，之后也可以在订阅工具栏里修改。</small></label>
         </div>
         <p class="share-note">导入后可在对应 Tab 中选择节点启动本地 SOCKS5。启动节点需要把 mihomo 放到 Lite 同一目录，或设置 EASY_NET_MIHOMO。</p>
         <p class="form-error" id="clash-import-error" role="alert" hidden></p>

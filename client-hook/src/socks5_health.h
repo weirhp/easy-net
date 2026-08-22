@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "tun_config.h"
+#include "network_config.h"
 
 namespace easy_net::socks5_health {
 
@@ -32,7 +32,7 @@ inline bool ReceiveAll(SOCKET socket, std::uint8_t* data, std::size_t size) {
     return true;
 }
 
-inline bool Responsive(const easy_net::tun::Endpoint& endpoint, DWORD timeout_ms = 1000) {
+inline bool Responsive(const easy_net::network::Endpoint& endpoint, DWORD timeout_ms = 1000) {
     WSADATA winsock{};
     if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) return false;
     sockaddr_storage address{};

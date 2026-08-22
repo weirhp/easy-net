@@ -4,7 +4,7 @@
 #include "../src/windivert_profile.h"
 
 int main() {
-    using easy_net::tun::UdpMode;
+    using easy_net::network::UdpMode;
     using easy_net::windivert::Backend;
     using easy_net::windivert::Profile;
 

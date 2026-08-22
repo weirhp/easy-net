@@ -21,7 +21,8 @@ type Manager struct {
 	store  *store
 	file   *model.SubscriptionFile
 	runner Runner
-	fetch  Fetcher
+	fetch        Fetcher
+	refreshHook  func(id string) error
 }
 
 func New(dir string, runner Runner) (*Manager, error) {
@@ -63,7 +64,13 @@ func (m *Manager) Get(id string) (model.Subscription, bool) {
 	return m.file.Subscriptions[index].Clone(), true
 }
 
-func (m *Manager) Import(name, rawURL string, listenPort int) (model.Subscription, error) {
+func (m *Manager) SetRefreshHook(hook func(id string) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refreshHook = hook
+}
+
+func (m *Manager) Import(name, rawURL string, listenPort, refreshMinutes int) (model.Subscription, error) {
 	name = strings.TrimSpace(name)
 	rawURL = strings.TrimSpace(rawURL)
 	if name == "" || len([]rune(name)) > 40 {
@@ -91,7 +98,8 @@ func (m *Manager) Import(name, rawURL string, listenPort int) (model.Subscriptio
 	}
 	sub := model.Subscription{
 		ID: newID(), Name: name, URL: rawURL, ListenPort: listenPort,
-		Nodes: nodes, UpdatedAt: time.Now(),
+		RefreshMinutes: model.NormalizeRefreshMinutes(refreshMinutes),
+		Nodes:          nodes, UpdatedAt: time.Now(),
 	}
 	sub.Normalize()
 	if err := sub.Validate(); err != nil {
@@ -132,6 +140,20 @@ func (m *Manager) Refresh(id string) (model.Subscription, error) {
 		return model.Subscription{}, err
 	}
 	return current.Clone(), nil
+}
+
+func (m *Manager) SetRefreshInterval(id string, refreshMinutes int) (model.Subscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	index := m.indexLocked(id)
+	if index < 0 {
+		return model.Subscription{}, fmt.Errorf("Clash 订阅不存在")
+	}
+	m.file.Subscriptions[index].RefreshMinutes = model.NormalizeRefreshMinutes(refreshMinutes)
+	if err := m.store.Save(m.file); err != nil {
+		return model.Subscription{}, err
+	}
+	return m.file.Subscriptions[index].Clone(), nil
 }
 
 func (m *Manager) Delete(id string) error {
@@ -201,12 +223,14 @@ func (m *Manager) StartMonitor(ctx context.Context, report func(string, ...any))
 		defer ticker.Stop()
 		lastAttempt := make(map[string]time.Time)
 		failures := make(map[string]int)
+		lastRefreshAttempt := make(map[string]time.Time)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
 				for _, sub := range m.List() {
+					m.maybeAutoRefresh(sub, lastRefreshAttempt, report)
 					if !sub.Active || sub.SelectedNode == "" || m.Running(sub.ID) {
 						continue
 					}
@@ -230,6 +254,27 @@ func (m *Manager) StartMonitor(ctx context.Context, report func(string, ...any))
 			}
 		}
 	}()
+}
+
+func (m *Manager) maybeAutoRefresh(sub model.Subscription, lastAttempt map[string]time.Time, report func(string, ...any)) {
+	if !sub.RefreshDue() {
+		return
+	}
+	if !lastAttempt[sub.ID].IsZero() && time.Since(lastAttempt[sub.ID]) < 5*time.Minute {
+		return
+	}
+	m.mu.Lock()
+	hook := m.refreshHook
+	m.mu.Unlock()
+	if hook == nil {
+		return
+	}
+	lastAttempt[sub.ID] = time.Now()
+	go func(id, name string) {
+		if err := hook(id); err != nil && report != nil {
+			report("[Easy-Net Lite] 自动刷新订阅 %s 失败：%v", name, err)
+		}
+	}(sub.ID, sub.Name)
 }
 
 func (m *Manager) downloadNodes(rawURL string) ([]model.ClashNode, error) {
@@ -272,6 +317,7 @@ type View struct {
 	ListenAddress  string     `json:"listenAddress"`
 	SelectedNode   string     `json:"selectedNode,omitempty"`
 	UpdatedAt      string     `json:"updatedAt,omitempty"`
+	RefreshMinutes int        `json:"refreshMinutes"`
 	Running        bool       `json:"running"`
 	ProfileID      string     `json:"profileId"`
 	ProfileDefault bool       `json:"profileDefault"`

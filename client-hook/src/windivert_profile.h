@@ -8,32 +8,15 @@
 #include <string_view>
 #include <vector>
 
-#include "tun_config.h"
+#include "network_config.h"
 
 namespace easy_net::windivert {
 
-enum class Backend {
-    tun,
-    windivert,
-};
-
-inline bool ParseBackend(std::string_view value, Backend& backend) {
-    if (value == "tun") {
-        backend = Backend::tun;
-        return true;
-    }
-    if (value == "windivert") {
-        backend = Backend::windivert;
-        return true;
-    }
-    return false;
-}
-
 struct Profile {
-    tun::Endpoint proxy;
+    network::Endpoint proxy;
     std::string username;
     std::string password;
-    tun::UdpMode udp_mode = tun::UdpMode::block;
+    network::UdpMode udp_mode = network::UdpMode::block;
     bool traffic_logging = false;
     std::vector<std::string> process_names;
     std::vector<std::string> bypass_prefixes{
@@ -49,7 +32,7 @@ struct Profile {
 
 inline std::string ProcessNames(const Profile& profile) {
     std::string output;
-    const auto& names = profile.process_names.empty() ? tun::WeChatProcessNames()
+    const auto& names = profile.process_names.empty() ? network::WeChatProcessNames()
                                                       : profile.process_names;
     for (const auto& name : names) {
         if (!output.empty()) {
@@ -100,7 +83,7 @@ inline bool ParseIpv4(std::string_view value, std::uint32_t& address) {
         }
         const std::string_view part = value.substr(start,
             (end == std::string_view::npos ? value.size() : end) - start);
-        if (!tun::ParseDecimal(part, 255)) {
+        if (!network::ParseDecimal(part, 255)) {
             return false;
         }
         unsigned int parsed = 0;
@@ -129,7 +112,7 @@ inline bool RoutePrefixToHostPattern(std::string_view prefix, std::string& patte
         return false;
     }
     if (prefix.substr(0, slash).find(':') != std::string_view::npos) {
-        if (!tun::IsRoutePrefix(prefix)) {
+        if (!network::IsRoutePrefix(prefix)) {
             return false;
         }
         pattern.assign(prefix);
@@ -141,7 +124,7 @@ inline bool RoutePrefixToHostPattern(std::string_view prefix, std::string& patte
     }
     unsigned int bits = 0;
     const auto bit_text = prefix.substr(slash + 1);
-    if (!tun::ParseDecimal(bit_text, 32)) {
+    if (!network::ParseDecimal(bit_text, 32)) {
         return false;
     }
     for (const char character : bit_text) {
@@ -164,11 +147,11 @@ inline void AddRule(std::ostringstream& json, bool& first_rule,
         json << ",\n";
     }
     first_rule = false;
-    json << "    {\"ProcessName\": " << tun::JsonString(processes)
-         << ", \"TargetHosts\": " << tun::JsonString(hosts)
+    json << "    {\"ProcessName\": " << network::JsonString(processes)
+         << ", \"TargetHosts\": " << network::JsonString(hosts)
          << ", \"TargetPorts\": \"*\", \"TargetDomains\": \"*\", "
-         << "\"Protocol\": " << tun::JsonString(protocol)
-         << ", \"Action\": " << tun::JsonString(action)
+         << "\"Protocol\": " << network::JsonString(protocol)
+         << ", \"Action\": " << network::JsonString(action)
          << ", \"IsEnabled\": true, \"ProxyConfigId\": 1}";
 }
 
@@ -181,10 +164,10 @@ inline std::string BuildProfile(const Profile& profile) {
          << "  \"IsTrafficLoggingEnabled\": "
          << (profile.traffic_logging ? "true" : "false") << ",\n"
          << "  \"ProxyConfigs\": [{\"Id\": 1, \"Type\": \"socks5\", \"Host\": "
-         << tun::JsonString(profile.proxy.host) << ", \"Port\": "
-         << tun::JsonString(std::to_string(profile.proxy.port))
-         << ", \"Username\": " << tun::JsonString(profile.username)
-         << ", \"Password\": " << tun::JsonString(profile.password) << "}],\n"
+         << network::JsonString(profile.proxy.host) << ", \"Port\": "
+         << network::JsonString(std::to_string(profile.proxy.port))
+         << ", \"Username\": " << network::JsonString(profile.username)
+         << ", \"Password\": " << network::JsonString(profile.password) << "}],\n"
          << "  \"ProxyRules\": [\n";
     bool first_rule = true;
     for (const auto& prefix : profile.bypass_prefixes) {
@@ -195,14 +178,14 @@ inline std::string BuildProfile(const Profile& profile) {
     }
     AddRule(json, first_rule, processes, "*", "TCP", "PROXY");
     switch (profile.udp_mode) {
-        case tun::UdpMode::proxy:
-        case tun::UdpMode::automatic:
+        case network::UdpMode::proxy:
+        case network::UdpMode::automatic:
             AddRule(json, first_rule, processes, "*", "UDP", "PROXY");
             break;
-        case tun::UdpMode::block:
+        case network::UdpMode::block:
             AddRule(json, first_rule, processes, "*", "UDP", "BLOCK");
             break;
-        case tun::UdpMode::direct:
+        case network::UdpMode::direct:
             AddRule(json, first_rule, processes, "*", "UDP", "DIRECT");
             break;
     }

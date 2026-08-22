@@ -20,11 +20,21 @@ type Runner interface {
 	Running(subscriptionID string) bool
 }
 
+type retainedProcessControl interface {
+	Terminate() error
+	Close()
+}
+
 type mihomoRunner struct {
 	configDir string
 	opMu      sync.Mutex
 	mu        sync.Mutex
-	commands  map[string]*exec.Cmd
+	commands  map[string]*managedMihomo
+}
+
+type managedMihomo struct {
+	cmd     *exec.Cmd
+	control retainedProcessControl
 }
 
 type mihomoRuntime struct {
@@ -35,7 +45,7 @@ type mihomoRuntime struct {
 }
 
 func DefaultRunner(configDir string) Runner {
-	return &mihomoRunner{configDir: configDir, commands: map[string]*exec.Cmd{}}
+	return &mihomoRunner{configDir: configDir, commands: map[string]*managedMihomo{}}
 }
 
 func (r *mihomoRunner) Start(subscriptionID string, listenPort int, proxy map[string]any) error {
@@ -73,21 +83,32 @@ func (r *mihomoRunner) Start(subscriptionID string, listenPort int, proxy map[st
 		_ = logFile.Close()
 		return fmt.Errorf("启动 mihomo：%w", err)
 	}
+	control, err := retainProcessControl(cmd.Process.Pid)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		_ = logFile.Close()
+		return fmt.Errorf("取得 mihomo 进程控制权：%w", err)
+	}
+	managed := &managedMihomo{cmd: cmd, control: control}
 	runtimeInfo := mihomoRuntime{PID: cmd.Process.Pid, Executable: exe, ListenPort: listenPort, StartedAt: time.Now()}
 	if err := r.writeRuntime(subscriptionID, runtimeInfo); err != nil {
-		_ = cmd.Process.Kill()
+		_ = control.Terminate()
+		_ = cmd.Wait()
+		control.Close()
 		_ = logFile.Close()
 		return err
 	}
 	r.mu.Lock()
-	r.commands[subscriptionID] = cmd
+	r.commands[subscriptionID] = managed
 	r.mu.Unlock()
 	exited := make(chan error, 1)
 	go func() {
 		exited <- cmd.Wait()
+		control.Close()
 		_ = logFile.Close()
 		r.mu.Lock()
-		if r.commands[subscriptionID] == cmd {
+		if r.commands[subscriptionID] == managed {
 			delete(r.commands, subscriptionID)
 			r.removeRuntime(subscriptionID, cmd.Process.Pid)
 		}
@@ -117,9 +138,9 @@ func (r *mihomoRunner) Stop(subscriptionID string) error {
 
 func (r *mihomoRunner) Running(subscriptionID string) bool {
 	r.mu.Lock()
-	cmd := r.commands[subscriptionID]
+	managed := r.commands[subscriptionID]
 	r.mu.Unlock()
-	if cmd != nil && cmd.Process != nil && ownedProcessRunning(cmd.Process.Pid, cmd.Path) {
+	if managed != nil && managed.cmd != nil && managed.cmd.Process != nil && ownedProcessRunning(managed.cmd.Process.Pid, managed.cmd.Path) {
 		return true
 	}
 	info, err := r.readRuntime(subscriptionID)
@@ -129,26 +150,53 @@ func (r *mihomoRunner) Running(subscriptionID string) bool {
 func (r *mihomoRunner) stopOwned(subscriptionID, expectedExecutable string) error {
 	_ = expectedExecutable
 	r.mu.Lock()
-	cmd := r.commands[subscriptionID]
-	delete(r.commands, subscriptionID)
+	managed := r.commands[subscriptionID]
 	r.mu.Unlock()
-	var firstErr error
-	if cmd != nil && cmd.Process != nil {
-		if err := cmd.Process.Kill(); err != nil && ownedProcessRunning(cmd.Process.Pid, cmd.Path) {
-			firstErr = err
+	if managed != nil && managed.cmd != nil && managed.cmd.Process != nil {
+		pid := managed.cmd.Process.Pid
+		executable := managed.cmd.Path
+		if ownedProcessRunning(pid, executable) {
+			firstErr := managed.control.Terminate()
+			// Keep the retained handle as the primary path, but retry through a
+			// freshly opened handle. TerminateProcess may transiently return
+			// ACCESS_DENIED while another termination is already completing, so wait
+			// for the final process state before deciding whether that error is real.
+			if ownedProcessRunning(pid, executable) {
+				if err := terminateOwnedProcess(pid, executable); err != nil && firstErr == nil {
+					firstErr = err
+				}
+			}
+			if err := waitOwnedProcessExit(pid, executable, 5*time.Second); err != nil {
+				if firstErr != nil {
+					return fmt.Errorf("终止 PID %d：%w", pid, firstErr)
+				}
+				return err
+			}
 		}
+		r.mu.Lock()
+		if r.commands[subscriptionID] == managed {
+			delete(r.commands, subscriptionID)
+		}
+		r.mu.Unlock()
+		r.removeRuntime(subscriptionID, pid)
+		return nil
 	}
+
 	info, err := r.readRuntime(subscriptionID)
 	if err == nil && info.PID > 0 {
 		ownedExecutable := info.Executable
 		if ownedProcessRunning(info.PID, ownedExecutable) {
-			if err := terminateOwnedProcess(info.PID, ownedExecutable); err != nil && firstErr == nil {
-				firstErr = err
+			terminateErr := terminateOwnedProcess(info.PID, ownedExecutable)
+			if waitErr := waitOwnedProcessExit(info.PID, ownedExecutable, 5*time.Second); waitErr != nil {
+				if terminateErr != nil {
+					return fmt.Errorf("终止 PID %d：%w", info.PID, terminateErr)
+				}
+				return waitErr
 			}
 		}
 	}
 	r.removeRuntime(subscriptionID, 0)
-	return firstErr
+	return nil
 }
 
 func (r *mihomoRunner) runtimePath(subscriptionID string) string {
@@ -225,7 +273,6 @@ func findMihomo(configDir string) (string, error) {
 	if self != "" {
 		dir := filepath.Dir(self)
 		candidates = append([]string{
-			filepath.Join(dir, name),
 			filepath.Join(dir, "mihomo", name),
 		}, candidates...)
 	}
@@ -238,7 +285,7 @@ func findMihomo(configDir string) (string, error) {
 			return absolute, nil
 		}
 	}
-	return "", fmt.Errorf("未找到 mihomo。请把 %s 放到 Easy-Net Lite 同一目录，或设置 EASY_NET_MIHOMO", name)
+	return "", fmt.Errorf("未找到 mihomo。请把 %s 放到 Easy-Net Lite 的 mihomo 子目录，或设置 EASY_NET_MIHOMO", name)
 }
 
 func waitPort(address string, timeout time.Duration) error {

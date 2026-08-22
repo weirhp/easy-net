@@ -459,6 +459,19 @@ func (s *Server) handleProfileAction(w http.ResponseWriter, r *http.Request) {
 		s.service.Stop(id)
 	case "test":
 		err = s.service.TestConnection(id)
+	case "delay", "speed", "probe":
+		var results []clashsub.NodeMetric
+		switch parts[1] {
+		case "delay":
+			results, err = s.service.TestProfileDelay(id)
+		case "speed":
+			results, err = s.service.TestProfileSpeed(id)
+		default:
+			results, err = s.service.TestProfileAccess(id)
+		}
+		if err == nil {
+			result = map[string]any{"ok": true, "results": results}
+		}
 	case "default":
 		var body struct {
 			Enabled bool `json:"enabled"`
@@ -667,6 +680,26 @@ func (s *Server) handleLaunchAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch parts[1] {
+	case "takeover":
+		var body struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := decodeJSON(w, r, &body); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		entry, err := s.launches.SetEntryTakeover(id, body.Enabled)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		applyError := ""
+		if s.launches.TakeoverEnabled() {
+			if err := s.launches.ApplySharedRules(); err != nil {
+				applyError = err.Error()
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "entry": entry, "applyError": applyError})
 	case "start":
 		var body struct {
 			ConfirmRunning bool   `json:"confirmRunning"`
@@ -746,14 +779,19 @@ func (s *Server) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name string `json:"name"`
-		URL  string `json:"url"`
+		Name           string `json:"name"`
+		URL            string `json:"url"`
+		RefreshMinutes *int   `json:"refreshMinutes"`
 	}
 	if err := decodeJSON(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	sub, err := s.service.ImportClash(body.Name, body.URL)
+	refreshMinutes := model.DefaultClashRefreshMinutes
+	if body.RefreshMinutes != nil {
+		refreshMinutes = model.NormalizeRefreshMinutes(*body.RefreshMinutes)
+	}
+	sub, err := s.service.ImportClash(body.Name, body.URL, refreshMinutes)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -791,6 +829,20 @@ func (s *Server) handleSubscriptionAction(w http.ResponseWriter, r *http.Request
 		return
 	}
 	switch parts[1] {
+	case "interval":
+		var body struct {
+			RefreshMinutes int `json:"refreshMinutes"`
+		}
+		if err := decodeJSON(w, r, &body); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		sub, err := s.service.SetClashRefreshInterval(id, body.RefreshMinutes)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "refreshMinutes": sub.RefreshMinutes})
 	case "refresh":
 		sub, err := s.service.RefreshClash(id)
 		if err != nil {
@@ -801,7 +853,7 @@ func (s *Server) handleSubscriptionAction(w http.ResponseWriter, r *http.Request
 	case "stop":
 		s.service.Stop(clashsub.ProfileID(id))
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-	case "delay", "speed":
+	case "delay", "speed", "probe":
 		var body struct {
 			Node string `json:"node"`
 		}
@@ -815,10 +867,13 @@ func (s *Server) handleSubscriptionAction(w http.ResponseWriter, r *http.Request
 			results []clashsub.NodeMetric
 			err     error
 		)
-		if parts[1] == "delay" {
+		switch parts[1] {
+		case "delay":
 			results, err = s.service.TestClashDelay(id, body.Node)
-		} else {
+		case "speed":
 			results, err = s.service.TestClashSpeed(id, body.Node)
+		default:
+			results, err = s.service.TestClashAccess(id, body.Node)
 		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())

@@ -60,7 +60,7 @@ func HookArgs(entry model.LaunchEntry, proxy string) ([]string, error) {
 		}
 	case model.LaunchModeChrome, model.LaunchModeEdge:
 		if entry.AttachExisting {
-			args = append(args, "--windivert", "--windivert-existing", "--tun-udp", entry.UDPMode)
+			args = append(args, "--windivert", "--windivert-existing", "--udp-mode", entry.UDPMode)
 			processName := "chrome.exe"
 			if entry.Mode == model.LaunchModeEdge {
 				processName = "msedge.exe"
@@ -96,15 +96,9 @@ func HookArgs(entry model.LaunchEntry, proxy string) ([]string, error) {
 		if udp == "" {
 			udp = "auto"
 		}
-		args = append(args, "--tun-udp", udp)
-		if entry.Mode == model.LaunchModeWeChatWinDivert {
-			args = append(args, "--wechat-backend", "windivert")
-		}
+		args = append(args, "--udp-mode", udp)
 		if !entry.WeChatExisting && entry.Path != "" {
 			args = append(args, "--wechat-path", entry.Path)
-		}
-		if entry.DNS != "" {
-			args = append(args, "--dns", entry.DNS)
 		}
 		if !entry.WeChatExisting && entry.Arguments != "" {
 			args = append(args, "--")
@@ -119,7 +113,7 @@ func HookArgs(entry model.LaunchEntry, proxy string) ([]string, error) {
 			args = append(args, splitArguments(entry.Arguments)...)
 		}
 	case model.LaunchModeWinDivert:
-		args = append(args, "--windivert", "--tun-udp", entry.UDPMode)
+		args = append(args, "--windivert", "--udp-mode", entry.UDPMode)
 		if entry.AttachExisting {
 			args = append(args, "--windivert-existing")
 		}

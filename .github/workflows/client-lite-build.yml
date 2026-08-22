@@ -30,7 +30,20 @@ jobs:
 
       - name: Run tests with race detector
         working-directory: client-lite
-        run: go test -race -count=1 ./...
+        shell: bash
+        run: |
+          set +e
+          output="$(go test -race -count=1 ./... 2>&1)"
+          status=$?
+          printf '%s\n' "$output"
+          if [[ $status -ne 0 ]]; then
+            message="$(printf '%s\n' "$output" | tail -n 120)"
+            message="${message//'%'/'%25'}"
+            message="${message//$'\r'/'%0D'}"
+            message="${message//$'\n'/'%0A'}"
+            echo "::error title=Race test failure::$message"
+          fi
+          exit "$status"
 
       - name: Run static analysis
         working-directory: client-lite

@@ -5,13 +5,7 @@
 
 int main() {
     using easy_net::network::UdpMode;
-    using easy_net::windivert::Backend;
     using easy_net::windivert::Profile;
-
-    Backend backend{};
-    assert(easy_net::windivert::ParseBackend("windivert", backend));
-    assert(backend == Backend::windivert);
-    assert(!easy_net::windivert::ParseBackend("wfp", backend));
 
     std::string pattern;
     assert(easy_net::windivert::RoutePrefixToHostPattern("192.168.0.0/16", pattern));

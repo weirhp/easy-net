@@ -6,8 +6,10 @@
 #include <shobjidl.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
+#include <winternl.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -23,12 +25,14 @@
 #include <system_error>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "browser_proxy.h"
 #include "chatgpt_package.h"
 #include "config_ipc.h"
+#include "cursor_takeover.h"
 #include "dns_resolver.h"
 #include "lite_control.h"
 #include "socks5_health.h"
@@ -94,6 +98,11 @@ struct Options {
     std::optional<DWORD> process_id;
     std::vector<std::wstring> command;
 };
+
+bool IsModuleLoaded(DWORD process_id, const std::filesystem::path& dll_path);
+bool InjectRunningProcess(DWORD process_id,
+                          const std::filesystem::path& dll_path,
+                          const Options& options);
 
 void PrintUsage() {
     std::wcerr
@@ -1332,6 +1341,113 @@ int WatchWeChat(DWORD root_process_id, DWORD engine_process_id, HANDLE log_pipe,
 constexpr wchar_t kSharedWinDivertMutex[] =
     L"Local\\EasyNetHook_SharedWinDivertSupervisor_v1";
 
+std::optional<std::wstring> SharedCursorNodeProxy(const std::filesystem::path& path) {
+    const auto profile = ReadUtf8File(path);
+    if (!profile) {
+        return std::nullopt;
+    }
+    const auto proxy = easy_net::cursor::NodeProxyFromSharedProfile(*profile);
+    if (!proxy) {
+        return std::nullopt;
+    }
+    // Literal SOCKS5 endpoints are ASCII. Validate the value again on the
+    // privileged side before using it to configure an injected process.
+    const std::wstring wide(proxy->begin(), proxy->end());
+    std::wstring proxy_host;
+    if (!easy_net::browser::ParseLiteralSocksEndpoint(wide, proxy_host)) {
+        return std::nullopt;
+    }
+    return wide;
+}
+
+std::optional<std::wstring> QueryProcessCommandLine(DWORD process_id) {
+    ScopedHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process_id));
+    if (process.get() == nullptr) {
+        return std::nullopt;
+    }
+    using NtQueryInformationProcessType = LONG(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto query = ntdll == nullptr
+        ? nullptr
+        : reinterpret_cast<NtQueryInformationProcessType>(
+              GetProcAddress(ntdll, "NtQueryInformationProcess"));
+    if (query == nullptr) {
+        return std::nullopt;
+    }
+    constexpr ULONG kProcessCommandLineInformation = 60;
+    ULONG bytes = 0;
+    query(process.get(), kProcessCommandLineInformation, nullptr, 0, &bytes);
+    if (bytes < sizeof(UNICODE_STRING) || bytes > 1024U * 1024U) {
+        return std::nullopt;
+    }
+    std::vector<std::byte> buffer(bytes);
+    if (query(process.get(), kProcessCommandLineInformation, buffer.data(), bytes, &bytes) < 0) {
+        return std::nullopt;
+    }
+    const auto* command = reinterpret_cast<const UNICODE_STRING*>(buffer.data());
+    if (command->Buffer == nullptr || command->Length == 0 ||
+        command->Length % sizeof(wchar_t) != 0) {
+        return std::wstring{};
+    }
+    const auto buffer_begin = reinterpret_cast<std::uintptr_t>(buffer.data());
+    const auto buffer_end = buffer_begin + buffer.size();
+    const auto text_begin = reinterpret_cast<std::uintptr_t>(command->Buffer);
+    const auto text_end = text_begin + command->Length;
+    if (text_begin < buffer_begin || text_end > buffer_end || text_end < text_begin) {
+        return std::nullopt;
+    }
+    return std::wstring(command->Buffer, command->Length / sizeof(wchar_t));
+}
+
+void AttachCursorTakeoverProcesses(const std::wstring& proxy,
+                                   const std::filesystem::path& dll_path,
+                                   std::unordered_map<DWORD, unsigned int>& attempts) {
+    if (proxy.empty() || !std::filesystem::is_regular_file(dll_path)) {
+        return;
+    }
+    ScopedHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    if (snapshot.get() == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    Options options;
+    options.proxy = proxy;
+    options.inject_children = true;
+    std::unordered_set<DWORD> live;
+    PROCESSENTRY32W process{};
+    process.dwSize = sizeof(process);
+    if (Process32FirstW(snapshot.get(), &process)) {
+        do {
+            if (_wcsicmp(process.szExeFile, L"Cursor.exe") != 0) {
+                continue;
+            }
+            live.insert(process.th32ProcessID);
+            unsigned int& count = attempts[process.th32ProcessID];
+            if (count >= 5 || IsModuleLoaded(process.th32ProcessID, dll_path)) {
+                count = 5;
+                continue;
+            }
+            const auto command = QueryProcessCommandLine(process.th32ProcessID);
+            if (!command || !easy_net::cursor::ShouldInjectTakeoverProcess(*command)) {
+                // A skipped renderer/GPU process never needs another attempt.
+                count = 5;
+                continue;
+            }
+            if (InjectRunningProcess(process.th32ProcessID, dll_path, options)) {
+                count = 5;
+            } else {
+                ++count;
+            }
+        } while (Process32NextW(snapshot.get(), &process));
+    }
+    for (auto current = attempts.begin(); current != attempts.end();) {
+        if (!live.contains(current->first)) {
+            current = attempts.erase(current);
+        } else {
+            ++current;
+        }
+    }
+}
+
 std::optional<std::string> SharedProfileRevision(const std::filesystem::path& path) {
     WIN32_FILE_ATTRIBUTE_DATA data{};
     if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) {
@@ -1395,6 +1511,8 @@ int WatchSharedWinDivert(DWORD root_process_id,
     ScopedHandle engine;
     std::thread log_relay;
     std::optional<std::string> active_revision;
+	std::wstring cursor_node_proxy;
+	std::unordered_map<DWORD, unsigned int> cursor_hook_attempts;
     unsigned int restart_failures = 0;
     unsigned int total_restarts = 0;
     ULONGLONG last_heartbeat = 0;
@@ -1447,6 +1565,7 @@ int WatchSharedWinDivert(DWORD root_process_id,
             return false;
         }
         active_revision = revision;
+		cursor_node_proxy = SharedCursorNodeProxy(config_path).value_or(L"");
         if (!WriteUtf8File(ready_path, *revision)) {
             finish_engine();
             active_revision.reset();
@@ -1510,6 +1629,15 @@ int WatchSharedWinDivert(DWORD root_process_id,
 			last_heartbeat = GetTickCount64();
 			WriteSharedWinDivertStatus(status_path, "healthy",
 			                          "Application proxy service is running", total_restarts);
+		}
+		if (!cursor_node_proxy.empty()) {
+			const auto module_directory = CurrentModuleDirectory();
+			if (module_directory) {
+				AttachCursorTakeoverProcesses(
+					cursor_node_proxy,
+					std::filesystem::path(*module_directory) / L"easy-net-hook.dll",
+					cursor_hook_attempts);
+			}
 		}
         Sleep(250);
     }

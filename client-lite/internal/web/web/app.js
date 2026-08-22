@@ -617,6 +617,7 @@ function syncLaunchFields() {
     hook: "接管由共享 WinDivert 完成；桌面快捷方式使用 Hook 启动 TCP 流量。",
     windivert: "接管由共享 WinDivert 完成；填写程序路径后，桌面快捷方式将优先使用通用 Hook 以减少提权。",
     claude: "接管 claude.exe；桌面快捷方式使用 Hook，因此需要填写 Claude 可执行文件路径。",
+		cursor: "Cursor 接管会自动为 Node/Network Service 注入 Hook，官方服务域名由 SOCKS5 解析；UDP=自动时还会阻断 QUIC。首次开启或更换代理后，请完整退出并重启 Cursor。",
     chrome: "推荐创建桌面快捷方式：原生 SOCKS5 会在代理端解析域名。WinDivert 接管仍可选，但依赖系统或浏览器安全 DNS 给出正确地址。",
     edge: "推荐创建桌面快捷方式：原生 SOCKS5 会在代理端解析域名。WinDivert 接管仍可选，但依赖系统或浏览器安全 DNS 给出正确地址。"
   };
@@ -699,12 +700,17 @@ async function toggleLaunchTakeover(id, enabled) {
 	if (appState.busy.has(key)) return;
 	const entry = appState.launches.find((item) => item.id === id);
 	if (!entry) return;
-	if (enabled && (entry.mode === "chrome" || entry.mode === "edge")) {
+	if (enabled && (entry.mode === "cursor" || entry.mode === "chrome" || entry.mode === "edge")) {
+		const cursor = entry.mode === "cursor";
 		const confirmed = await showConfirmModal({
-			kind: "浏览器网络接管",
-			title: "建议优先使用桌面快捷方式",
-			message: "浏览器原生 SOCKS5 快捷方式会把域名交给代理解析，是 DNS 可能受污染时最稳定的方式。",
-			details: "你仍然可以使用 WinDivert 接管已经运行的浏览器。它工作在 IP 层，无法纠正系统 DNS 已经返回的错误地址；请启用浏览器安全 DNS，并在出现证书域名不匹配时停止访问。",
+			kind: cursor ? "Cursor 网络接管" : "浏览器网络接管",
+			title: cursor ? "开启后请重启 Cursor" : "建议优先使用桌面快捷方式",
+			message: cursor
+				? "接管会自动代理 Cursor 的 Node/Extension Host 请求，并在 UDP=自动时强制使用 TCP。"
+				: "浏览器原生 SOCKS5 快捷方式会把域名交给代理解析，是 DNS 可能受污染时最稳定的方式。",
+			details: cursor
+				? "已经运行的 Cursor 可能保留旧 DNS 和 HTTP/2 连接。开启后请从托盘完整退出 Cursor 再重新打开；之后从普通桌面图标启动也会由后台自动接管。"
+				: "你仍然可以使用 WinDivert 接管已经运行的浏览器。它工作在 IP 层，无法纠正系统 DNS 已经返回的错误地址；请启用浏览器安全 DNS，并在出现证书域名不匹配时停止访问。",
 			confirmText: "仍然开启接管"
 		});
 		if (!confirmed) {

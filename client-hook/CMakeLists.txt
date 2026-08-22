@@ -115,6 +115,7 @@ add_executable(easy_net_hook_launcher
     src/browser_proxy.h
     src/chatgpt_package.h
     src/config_ipc.h
+    src/cursor_takeover.h
     src/launcher.cpp
     src/lite_api.h
     src/socks5_health.h
@@ -197,6 +198,18 @@ target_compile_options(child_injection_test PRIVATE /W4 /permissive- /EHsc /UNDE
 set_property(TARGET child_injection_test PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_test(NAME child_injection_test COMMAND child_injection_test)
+
+add_executable(cursor_takeover_test
+    tests/cursor_takeover_test.cpp
+    src/cursor_takeover.h
+    src/child_injection.h
+)
+target_compile_features(cursor_takeover_test PRIVATE cxx_std_20)
+target_compile_definitions(cursor_takeover_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_compile_options(cursor_takeover_test PRIVATE /W4 /permissive- /EHsc /UNDEBUG)
+set_property(TARGET cursor_takeover_test PROPERTY
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_test(NAME cursor_takeover_test COMMAND cursor_takeover_test)
 
 add_executable(network_config_test tests/network_config_test.cpp src/network_config.h)
 target_compile_features(network_config_test PRIVATE cxx_std_20)

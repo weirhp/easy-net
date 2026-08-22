@@ -13,12 +13,13 @@ import (
 )
 
 type bridgeProxyConfig struct {
-	ID       int    `json:"Id"`
-	Type     string `json:"Type"`
-	Host     string `json:"Host"`
-	Port     string `json:"Port"`
-	Username string `json:"Username"`
-	Password string `json:"Password"`
+	ID                int    `json:"Id"`
+	Type              string `json:"Type"`
+	Host              string `json:"Host"`
+	Port              string `json:"Port"`
+	Username          string `json:"Username"`
+	Password          string `json:"Password"`
+	SendDomainToProxy bool   `json:"SendDomainToProxy"`
 }
 
 type bridgeProxyRule struct {
@@ -33,11 +34,12 @@ type bridgeProxyRule struct {
 }
 
 type bridgeProfile struct {
-	Version        string              `json:"Version"`
-	LocalhostProxy bool                `json:"LocalhostViaProxy"`
-	TrafficLogging bool                `json:"IsTrafficLoggingEnabled"`
-	ProxyConfigs   []bridgeProxyConfig `json:"ProxyConfigs"`
-	ProxyRules     []bridgeProxyRule   `json:"ProxyRules"`
+	Version         string              `json:"Version"`
+	LocalhostProxy  bool                `json:"LocalhostViaProxy"`
+	TrafficLogging  bool                `json:"IsTrafficLoggingEnabled"`
+	CursorNodeProxy string              `json:"EasyNetCursorNodeProxy,omitempty"`
+	ProxyConfigs    []bridgeProxyConfig `json:"ProxyConfigs"`
+	ProxyRules      []bridgeProxyRule   `json:"ProxyRules"`
 }
 
 var privateTargetRanges = []string{
@@ -66,9 +68,10 @@ func (s *Service) writeSharedWinDivertProfile() (string, error) {
 		udpAction string
 	}
 	type assignment struct {
-		name     string
-		routeKey string
-		priority int
+		name         string
+		routeKey     string
+		priority     int
+		proxyDomains string
 	}
 	routes := make(map[string]route)
 	assignments := make(map[string]assignment)
@@ -91,14 +94,19 @@ func (s *Service) writeSharedWinDivertProfile() (string, error) {
 			proxyIDs[proxyAddress] = proxyID
 			profile.ProxyConfigs = append(profile.ProxyConfigs, bridgeProxyConfig{
 				ID: proxyID, Type: "socks5", Host: host, Port: port,
+				// ProxyBridge can associate an intercepted DNS answer with its
+				// hostname and send the hostname in SOCKS5 CONNECT. Keep this
+				// explicit instead of relying on the upstream default so polluted
+				// local answers are not reused by the remote connection.
+				SendDomainToProxy: true,
 			})
 		}
-		udpAction := "PROXY"
-		if entry.UDPMode == "block" {
-			udpAction = "BLOCK"
-		} else if entry.UDPMode == "direct" {
-			udpAction = "DIRECT"
+		if entry.Mode == model.LaunchModeCursor {
+			// Consumed only by Easy-Net's shared supervisor. ProxyBridge ignores
+			// unknown top-level profile fields.
+			profile.CursorNodeProxy = proxyAddress
 		}
+		udpAction := winDivertUDPAction(entry)
 		routeKey := strings.ToLower(proxyAddress) + "\x00" + udpAction
 		if _, exists := routes[routeKey]; !exists {
 			routes[routeKey] = route{host: host, port: port, proxyID: proxyID, udpAction: udpAction}
@@ -120,7 +128,10 @@ func (s *Service) writeSharedWinDivertProfile() (string, error) {
 			// helper; otherwise the first stable entry wins because one process
 			// cannot use two SOCKS routes simultaneously.
 			if !exists || current.routeKey == routeKey || priority > current.priority {
-				assignments[key] = assignment{name: process, routeKey: routeKey, priority: priority}
+				assignments[key] = assignment{
+					name: process, routeKey: routeKey, priority: priority,
+					proxyDomains: winDivertProxyDomains(entry),
+				}
 			}
 		}
 	}
@@ -141,6 +152,24 @@ func (s *Service) writeSharedWinDivertProfile() (string, error) {
 		// DLL Hook path. Its connection to the configured SOCKS5 server must
 		// bypass WinDivert, otherwise a non-loopback proxy can be proxied again.
 		profile.ProxyRules = append(profile.ProxyRules, newBridgeEndpointRule(processList, currentRoute.host, currentRoute.port, currentRoute.proxyID))
+		domainProcesses := make([]string, 0)
+		domainPatterns := ""
+		for _, item := range assignments {
+			if item.routeKey == routeKey && item.proxyDomains != "" {
+				domainProcesses = append(domainProcesses, item.name)
+				if domainPatterns == "" {
+					domainPatterns = item.proxyDomains
+				}
+			}
+		}
+		if len(domainProcesses) != 0 {
+			slices.SortFunc(domainProcesses, func(a, b string) int { return strings.Compare(strings.ToLower(a), strings.ToLower(b)) })
+			// This rule has two jobs: it routes Cursor endpoints before private
+			// address bypass rules, and it makes ProxyBridge flush/snoop the
+			// Windows DNS cache so SOCKS5 CONNECT can carry the original domain.
+			profile.ProxyRules = append(profile.ProxyRules,
+				newBridgeDomainRule(strings.Join(domainProcesses, ";"), domainPatterns, "TCP", "PROXY", currentRoute.proxyID))
+		}
 		for _, target := range privateTargetRanges {
 			profile.ProxyRules = append(profile.ProxyRules, newBridgeRule(processList, target, "BOTH", "DIRECT", currentRoute.proxyID))
 		}
@@ -165,6 +194,39 @@ func (s *Service) writeSharedWinDivertProfile() (string, error) {
 		return "", fmt.Errorf("保存共享 WinDivert 配置：%w", err)
 	}
 	return path, nil
+}
+
+func winDivertUDPAction(entry model.LaunchEntry) string {
+	switch entry.UDPMode {
+	case "block":
+		return "BLOCK"
+	case "direct":
+		return "DIRECT"
+	case "proxy":
+		return "PROXY"
+	}
+	// ProxyBridge 4.0.x identifies tracked flows by local port and can confuse
+	// TCP with UDP when the port is reused. Chromium/Electron applications also
+	// use QUIC opportunistically. Blocking UDP in automatic mode both forces the
+	// stable HTTP/2-over-TCP path and avoids that cross-protocol collision. Apps
+	// that genuinely require UDP (notably WeChat) keep the existing behaviour.
+	switch entry.Mode {
+	case model.LaunchModeCursor, model.LaunchModeChrome, model.LaunchModeEdge,
+		model.LaunchModeChatGPT, model.LaunchModeAntigravity:
+		return "BLOCK"
+	default:
+		return "PROXY"
+	}
+}
+
+func winDivertProxyDomains(entry model.LaunchEntry) string {
+	if entry.Mode != model.LaunchModeCursor {
+		return ""
+	}
+	// Cursor's model transport currently uses cursor.sh endpoints. Keep the
+	// broader vendor domains for authentication, marketplace and future endpoint
+	// changes without making unrelated intranet hostnames leave the machine.
+	return "*.cursor.sh;*.cursor.com;*.cursorapi.com;*.anysphere.co"
 }
 
 func (s *Service) entryProxyAddress(entry model.LaunchEntry) (string, error) {
@@ -264,5 +326,12 @@ func newBridgeEndpointRule(processes, host, port string, proxyID int) bridgeProx
 	return bridgeProxyRule{
 		ProcessName: processes, TargetHosts: host, TargetPorts: port, TargetDomain: "*",
 		Protocol: "BOTH", Action: "DIRECT", Enabled: true, ProxyID: proxyID,
+	}
+}
+
+func newBridgeDomainRule(processes, domains, protocol, action string, proxyID int) bridgeProxyRule {
+	return bridgeProxyRule{
+		ProcessName: processes, TargetHosts: "*", TargetPorts: "*", TargetDomain: domains,
+		Protocol: protocol, Action: action, Enabled: true, ProxyID: proxyID,
 	}
 }

@@ -124,6 +124,82 @@ func TestSharedWinDivertProfileIncludesRunningBrowser(t *testing.T) {
 	}
 }
 
+func TestSharedWinDivertCursorUsesRemoteDNSAndStableTCPByDefault(t *testing.T) {
+	dir := t.TempDir()
+	launches, err := New(dir, testService(t, dir), &fakeRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := launches.Upsert(model.LaunchEntry{
+		Name: "Cursor", Mode: model.LaunchModeCursor, Proxy: "127.0.0.1:1082",
+		Path: `D:\Apps\Cursor.exe`, AttachExisting: true, UDPMode: "auto",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := launches.SetTakeoverEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	path, err := launches.writeSharedWinDivertProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var profile bridgeProfile
+	if err := json.Unmarshal(data, &profile); err != nil {
+		t.Fatal(err)
+	}
+	cursorProxyUsesRemoteDNS := false
+	for _, config := range profile.ProxyConfigs {
+		if config.Host == "127.0.0.1" && config.Port == "1082" && config.SendDomainToProxy {
+			cursorProxyUsesRemoteDNS = true
+			break
+		}
+	}
+	if !cursorProxyUsesRemoteDNS {
+		t.Fatalf("Cursor SOCKS5 config must resolve domains remotely: %#v", profile.ProxyConfigs)
+	}
+	if profile.CursorNodeProxy != "127.0.0.1:1082" {
+		t.Fatalf("Cursor Node hook proxy = %q, want 127.0.0.1:1082", profile.CursorNodeProxy)
+	}
+	domainRuleIndex, privateRuleIndex := -1, -1
+	blockedUDP := false
+	for index, rule := range profile.ProxyRules {
+		if !strings.Contains(strings.ToLower(rule.ProcessName), "cursor.exe") {
+			continue
+		}
+		if strings.Contains(rule.TargetDomain, "*.cursor.sh") && rule.Protocol == "TCP" && rule.Action == "PROXY" {
+			domainRuleIndex = index
+		}
+		if rule.TargetHosts == "192.168.0.0-192.168.255.255" && rule.Action == "DIRECT" {
+			privateRuleIndex = index
+		}
+		if rule.Protocol == "UDP" && rule.TargetHosts == "*" && rule.Action == "BLOCK" {
+			blockedUDP = true
+		}
+	}
+	if domainRuleIndex < 0 || privateRuleIndex < 0 || domainRuleIndex >= privateRuleIndex || !blockedUDP {
+		t.Fatalf("Cursor rules are not DNS/HTTP2 safe: domain=%d private=%d blockedUDP=%v rules=%#v", domainRuleIndex, privateRuleIndex, blockedUDP, profile.ProxyRules)
+	}
+}
+
+func TestSharedWinDivertCursorHonorsExplicitUDPProxy(t *testing.T) {
+	entry := model.LaunchEntry{Mode: model.LaunchModeCursor, UDPMode: "proxy"}
+	if got := winDivertUDPAction(entry); got != "PROXY" {
+		t.Fatalf("explicit Cursor UDP proxy = %s, want PROXY", got)
+	}
+	entry.UDPMode = "auto"
+	if got := winDivertUDPAction(entry); got != "BLOCK" {
+		t.Fatalf("automatic Cursor UDP action = %s, want BLOCK", got)
+	}
+	entry.Mode = model.LaunchModeWeChat
+	if got := winDivertUDPAction(entry); got != "PROXY" {
+		t.Fatalf("automatic WeChat UDP action = %s, want PROXY", got)
+	}
+}
+
 func TestDisabledApplicationIsExcludedFromSharedWinDivert(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "launches.json"), []byte(`{"version":3,"entries":[]}`), 0600); err != nil {

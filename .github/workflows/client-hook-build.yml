@@ -69,6 +69,8 @@ jobs:
 
       - name: Package
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           $package = "client-hook/package/Easy-Net-Hook-${{ matrix.arch }}"
           New-Item -ItemType Directory -Force $package | Out-Null
@@ -80,11 +82,16 @@ jobs:
           if ('${{ matrix.arch }}' -eq 'x64') {
             Copy-Item client-hook/build/Release/windivert -Destination $package -Recurse
             ./client-hook/scripts/install-mihomo.ps1 -Destination "$package/mihomo"
+            ./client-hook/scripts/install-zeroomega.ps1 -Destination "$package/zeroomega"
             foreach ($required in @(
               "$package/windivert/easy-net-windivert.exe",
               "$package/mihomo/mihomo.exe",
               "$package/mihomo/LICENSE.txt",
-              "$package/mihomo/VERSION.txt"
+              "$package/mihomo/VERSION.txt",
+              "$package/zeroomega/chromium-release.zip",
+              "$package/zeroomega/chromium-release.zip.sha256",
+              "$package/zeroomega/COPYING.txt",
+              "$package/zeroomega/VERSION.txt"
             )) {
               if (-not (Test-Path -LiteralPath $required)) {
                 throw "Required x64 package file is missing: $required"

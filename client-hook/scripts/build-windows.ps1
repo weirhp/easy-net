@@ -3,7 +3,8 @@ param(
     [string]$Architecture = "x64",
     [ValidateSet("Debug", "Release")]
     [string]$Configuration = "Release",
-    [switch]$WithMihomo
+    [switch]$WithMihomo,
+    [switch]$WithZeroOmega
 )
 
 $ErrorActionPreference = "Stop"
@@ -81,6 +82,11 @@ if ($WithMihomo) {
     }
     & (Join-Path $PSScriptRoot "install-mihomo.ps1") `
         -Destination (Join-Path $outputDirectory "mihomo")
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+if ($WithZeroOmega) {
+    & (Join-Path $PSScriptRoot "install-zeroomega.ps1") `
+        -Destination (Join-Path $outputDirectory "zeroomega")
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 Write-Host "Build complete: $outputDirectory"

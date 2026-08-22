@@ -25,6 +25,11 @@ Easy-Net-Hook-x64\
     mihomo.exe
     LICENSE.txt
     VERSION.txt
+  zeroomega\
+    chromium-release.zip
+    chromium-release.zip.sha256
+    COPYING.txt
+    VERSION.txt
   THIRD-PARTY-LICENSES\
 ```
 
@@ -48,6 +53,8 @@ cd client-hook
 ```
 
 GitHub Actions 会自动为 x64 包下载固定版本的 Mihomo，并验证 SHA-256；详见 [GITHUB_BUILD_GUIDE.md](GITHUB_BUILD_GUIDE.md)。
+
+GitHub Actions 还会从 `zero-peak/ZeroOmega` 的最新正式 Release 下载 Chromium 扩展包，核对 Release API digest 和随包 SHA-256 后放入 `zeroomega` 目录。该 ZIP 适用于 Chrome/Edge，不会被 Easy-Net 自动安装。
 
 ## 推荐使用方式
 
@@ -140,4 +147,4 @@ WinDivert 日志采用 8 MiB 硬上限，达到上限后截断重写，不会无
 
 ## 许可证
 
-Detours、ProxyBridge、WinDivert 和 Mihomo 的许可证随发布包分发。升级第三方依赖时应同步更新固定版本、SHA-256 和许可证文件。
+Detours、ProxyBridge、WinDivert、Mihomo 和 ZeroOmega 的许可证随发布包分发。升级第三方依赖时应同步更新固定版本、SHA-256 和许可证文件。

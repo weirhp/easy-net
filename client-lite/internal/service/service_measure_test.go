@@ -3,7 +3,6 @@ package service
 import (
 	"net"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"easy-net/client-lite/internal/config"
@@ -47,8 +46,9 @@ func TestTestProfileDelayAndStoppedSpeed(t *testing.T) {
 	if err := svc.Upsert(ws, SecretValues{WebSocketSecret: "secret"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.TestProfileSpeed("ws-1"); err == nil || !strings.Contains(err.Error(), "请先启动") {
-		t.Fatalf("expected start required, got %v", err)
+	results, err = svc.TestProfileSpeed("ws-1")
+	if err != nil || len(results) != 1 || results[0].Error == "" {
+		t.Fatalf("stopped websocket should test via a temporary listener, got %#v %v", results, err)
 	}
 	if _, err := svc.TestProfileDelay("missing"); err == nil {
 		t.Fatal("expected missing profile")

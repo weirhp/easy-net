@@ -246,6 +246,9 @@ function renderSourceTabs() {
       const value = String(sub.refreshMinutes ?? 60);
       if (refreshSelect.value !== value) refreshSelect.value = value;
     }
+    const bypassBusy = Boolean(sub && isClashBusy(sub.id));
+    syncClashBypassSwitch("#clash-bypass-private", Boolean(sub?.bypassPrivate), bypassBusy);
+    syncClashBypassSwitch("#clash-bypass-china", Boolean(sub?.bypassChina), bypassBusy);
   }
 }
 
@@ -342,7 +345,7 @@ function renderClashNodes() {
     updateSelectionToolbar();
     return;
   }
-  const busy = appState.busy.has(`clash:${sub.id}`);
+  const subBusy = isClashBusy(sub.id);
   const testing = appState.busy.has(`clash-test:${sub.id}`);
   const metrics = appState.nodeMetrics[sub.id] || {};
   const nodes = (sub.nodes || []).filter((node) => {
@@ -367,6 +370,7 @@ function renderClashNodes() {
   setInnerHTML(profilesElement, nodes.map((node) => {
     const active = sub.selectedNode === node.name;
     const running = Boolean(sub.running && active);
+    const nodeBusy = appState.busy.has(clashActionKey(sub.id, node.name));
     const metric = metrics[node.name] || {};
     const delayText = metric.delayError ? "延迟 超时" : metric.delayMs ? `延迟 ${metric.delayMs} ms` : "";
     const speedText = metric.speedError ? "速度 失败" : metric.speedMbps ? `速度 ${Number(metric.speedMbps).toFixed(1)} Mbps` : "";
@@ -378,7 +382,7 @@ function renderClashNodes() {
             ${running ? `<span class="live-dot" title="运行中" aria-label="运行中"></span>` : ""}
             <h2 class="card-title">${escapeHTML(node.name)}</h2>
             <span class="badge">${escapeHTML(node.type || "proxy")}</span>
-            ${running ? "" : `<span class="status ${busy ? "busy" : ""}">${busy ? "正在处理" : active ? "已选择" : "未启动"}</span>`}
+            ${running ? "" : `<span class="status ${nodeBusy ? "busy" : ""}">${nodeBusy ? "正在处理" : active ? "已选择" : "未启动"}</span>`}
             ${sub.profileDefault && active ? `<span class="badge default-badge">默认代理</span>` : ""}
           </div>
           <div class="node-metrics">
@@ -396,8 +400,8 @@ function renderClashNodes() {
           <button class="button compact secondary icon-only" aria-label="探测 ${escapeHTML(node.name)} 常用网站" data-tooltip="探测 Gemini / ChatGPT / Grok" data-clash-test="probe" data-id="${escapeHTML(sub.id)}" data-node="${escapeHTML(node.name)}" ${testing ? "disabled" : ""}>${icon("target")}</button>
         </div>
         <div class="node-card-primary">
-          <button class="button compact ${running ? "stop" : "start"}" data-clash-node="${running ? "stop" : "start"}" data-id="${escapeHTML(sub.id)}" data-node="${escapeHTML(node.name)}" ${busy ? "disabled" : ""}>${icon(running ? "stop" : "play")}${running ? "停止" : "启动"}</button>
-          <label class="default-proxy-switch"><input type="checkbox" role="switch" data-clash-default="${escapeHTML(sub.id)}" data-node="${escapeHTML(node.name)}" ${sub.profileDefault && active ? "checked" : ""} ${busy ? "disabled" : ""}><span class="switch-track" aria-hidden="true"></span><span>默认</span></label>
+          <button class="button compact ${running ? "stop" : "start"}" data-clash-node="${running ? "stop" : "start"}" data-id="${escapeHTML(sub.id)}" data-node="${escapeHTML(node.name)}" ${subBusy ? "disabled" : ""}>${icon(running ? "stop" : "play")}${running ? "停止" : "启动"}</button>
+          <label class="default-proxy-switch"><input type="checkbox" role="switch" data-clash-default="${escapeHTML(sub.id)}" data-node="${escapeHTML(node.name)}" ${sub.profileDefault && active ? "checked" : ""} ${subBusy ? "disabled" : ""}><span class="switch-track" aria-hidden="true"></span><span>默认</span></label>
         </div>
       </div>
     </article>`;
@@ -535,6 +539,7 @@ function renderLaunches() {
       : "尚未选择代理配置";
     const statusClass = busy ? "busy" : entry.profileRunning || entry.externalProxy ? "running" : "";
     const statusText = busy ? "正在处理" : entry.usesDefault ? "默认代理" : entry.profileName ? "单独指定代理" : "等待设置默认代理";
+    const helpers = launchHelperNames(entry);
     return `<article class="profile-card app-card">
       <div class="card-row">
         <div class="card-title-row">
@@ -551,10 +556,36 @@ function renderLaunches() {
       </div>
       <p class="endpoint">${escapeHTML(profileText)}</p>
       <div class="card-row app-card-footer">
+        <div class="app-helpers">${helpers.map((name) => `<span class="app-helper">${escapeHTML(name)}</span>`).join("")}</div>
         <label class="app-takeover-switch"><input type="checkbox" role="switch" data-launch-takeover="${escapeHTML(entry.id)}" aria-label="${takeoverEnabled ? "关闭" : "开启"} ${escapeHTML(displayName)} 的自动接管" ${takeoverEnabled ? "checked" : ""} ${busy ? "disabled" : ""}><span class="switch-track" aria-hidden="true"></span><span class="app-takeover-label">接管</span></label>
       </div>
     </article>`;
   }).join(""));
+}
+
+function launchHelperNames(entry) {
+  const primary = new Set();
+  const mark = (value) => {
+    const name = String(value || "").trim();
+    if (!name) return;
+    const lower = name.toLowerCase();
+    primary.add(lower);
+    primary.add(lower.replace(/\.exe$/, ""));
+  };
+  mark(entry.name);
+  mark(String(entry.path || "").split(/[\\/]/).pop());
+  const helpers = [];
+  const seen = new Set();
+  for (const part of String(entry.processNames || "").split(/[;,]/)) {
+    const name = part.trim();
+    if (!name) continue;
+    const lower = name.toLowerCase();
+    const stem = lower.replace(/\.exe$/, "");
+    if (primary.has(lower) || primary.has(stem) || seen.has(lower)) continue;
+    seen.add(lower);
+    helpers.push(name.replace(/\.exe$/i, ""));
+  }
+  return helpers;
 }
 
 function fillLaunchProfiles(selectedId) {
@@ -1366,9 +1397,18 @@ function setAllProfilesSelected(selected) {
   renderProfiles();
 }
 
+function syncClashBypassSwitch(selector, checked, disabled = false) {
+  const input = $(selector);
+  if (!input) return;
+  input.disabled = disabled;
+  if (document.activeElement !== input && input.checked !== checked) input.checked = checked;
+}
+
 function openClashImportDialog() {
   clashImportFormElement.reset();
   $("#clash-import-refresh").value = "60";
+  $("#clash-import-bypass-private").checked = true;
+  $("#clash-import-bypass-china").checked = true;
   $("#clash-import-error").hidden = true;
   clashImportDialogElement.showModal();
   $("#clash-import-name").focus();
@@ -1394,7 +1434,9 @@ async function importClashSubscription(event) {
       body: JSON.stringify({
         name: $("#clash-import-name").value.trim(),
         url: $("#clash-import-url").value.trim(),
-        refreshMinutes: Number($("#clash-import-refresh").value)
+        refreshMinutes: Number($("#clash-import-refresh").value),
+        bypassPrivate: $("#clash-import-bypass-private").checked,
+        bypassChina: $("#clash-import-bypass-china").checked
       })
     });
     closeClashImportDialog();
@@ -1411,10 +1453,24 @@ async function importClashSubscription(event) {
   }
 }
 
+function clashActionKey(id, nodeName = "") {
+  return nodeName ? `clash:${id}:${nodeName}` : `clash:${id}`;
+}
+
+function isClashBusy(id, nodeName = "") {
+  if (appState.busy.has(`clash:${id}`)) return true;
+  if (nodeName) return appState.busy.has(`clash:${id}:${nodeName}`);
+  const prefix = `clash:${id}:`;
+  for (const key of appState.busy) {
+    if (key.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
 async function clashSubscriptionAction(action, id) {
-  const key = `clash:${id}`;
-  if (appState.busy.has(key)) return;
+  if (isClashBusy(id)) return;
   const sub = (appState.subscriptions || []).find((item) => item.id === id);
+  const key = action === "stop" && sub?.selectedNode ? clashActionKey(id, sub.selectedNode) : clashActionKey(id);
   if (action === "delete") {
     const confirmed = await showConfirmModal({
       kind: "删除订阅",
@@ -1449,8 +1505,8 @@ async function clashSubscriptionAction(action, id) {
 }
 
 async function clashNodeAction(action, id, nodeName) {
-  const key = `clash:${id}`;
-  if (appState.busy.has(key) || !nodeName) return;
+  if (isClashBusy(id) || !nodeName) return;
+  const key = clashActionKey(id, nodeName);
   appState.busy.add(key);
   renderProfiles();
   try {
@@ -1470,8 +1526,8 @@ async function clashNodeAction(action, id, nodeName) {
 }
 
 async function setClashNodeDefault(id, nodeName, enabled) {
-  const key = `clash:${id}`;
-  if (appState.busy.has(key) || !nodeName) return;
+  if (isClashBusy(id) || !nodeName) return;
+  const key = clashActionKey(id, nodeName);
   appState.busy.add(key);
   renderProfiles();
   try {
@@ -1797,6 +1853,36 @@ importFormElement.addEventListener("submit", importProfile);
 $("#close-clash-import-dialog").addEventListener("click", closeClashImportDialog);
 $("#cancel-clash-import-dialog").addEventListener("click", closeClashImportDialog);
 clashImportFormElement.addEventListener("submit", importClashSubscription);
+async function saveClashBypass() {
+  const sub = currentSubscription();
+  if (!sub || isClashBusy(sub.id)) {
+    renderSourceTabs();
+    return;
+  }
+  const bypassPrivate = $("#clash-bypass-private").checked;
+  const bypassChina = $("#clash-bypass-china").checked;
+  const wasRunning = Boolean(sub.running);
+  const key = clashActionKey(sub.id);
+  appState.busy.add(key);
+  renderProfiles();
+  try {
+    const data = await api(`/api/subscriptions/${encodeURIComponent(sub.id)}/bypass`, {
+      method: "POST",
+      body: JSON.stringify({ bypassPrivate, bypassChina })
+    });
+    sub.bypassPrivate = data.bypassPrivate;
+    sub.bypassChina = data.bypassChina;
+    showToast(wasRunning ? "直连规则已更新，节点已按新规则重启" : "直连规则已更新");
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    appState.busy.delete(key);
+    await loadState(true);
+  }
+}
+
+$("#clash-bypass-private").addEventListener("change", saveClashBypass);
+$("#clash-bypass-china").addEventListener("change", saveClashBypass);
 $("#clash-refresh-interval").addEventListener("change", async (event) => {
   const sub = currentSubscription();
   if (!sub) return;

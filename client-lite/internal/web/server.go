@@ -782,6 +782,8 @@ func (s *Server) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
 		Name           string `json:"name"`
 		URL            string `json:"url"`
 		RefreshMinutes *int   `json:"refreshMinutes"`
+		BypassPrivate  *bool  `json:"bypassPrivate"`
+		BypassChina    *bool  `json:"bypassChina"`
 	}
 	if err := decodeJSON(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -791,7 +793,14 @@ func (s *Server) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
 	if body.RefreshMinutes != nil {
 		refreshMinutes = model.NormalizeRefreshMinutes(*body.RefreshMinutes)
 	}
-	sub, err := s.service.ImportClash(body.Name, body.URL, refreshMinutes)
+	bypassPrivate, bypassChina := true, true
+	if body.BypassPrivate != nil {
+		bypassPrivate = *body.BypassPrivate
+	}
+	if body.BypassChina != nil {
+		bypassChina = *body.BypassChina
+	}
+	sub, err := s.service.ImportClash(body.Name, body.URL, refreshMinutes, bypassPrivate, bypassChina)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -843,6 +852,21 @@ func (s *Server) handleSubscriptionAction(w http.ResponseWriter, r *http.Request
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "refreshMinutes": sub.RefreshMinutes})
+	case "bypass":
+		var body struct {
+			BypassPrivate bool `json:"bypassPrivate"`
+			BypassChina   bool `json:"bypassChina"`
+		}
+		if err := decodeJSON(w, r, &body); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		sub, err := s.service.SetClashBypass(id, body.BypassPrivate, body.BypassChina)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bypassPrivate": sub.BypassPrivate, "bypassChina": sub.BypassChina})
 	case "refresh":
 		sub, err := s.service.RefreshClash(id)
 		if err != nil {

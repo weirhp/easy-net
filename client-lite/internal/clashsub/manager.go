@@ -16,13 +16,13 @@ import (
 type Fetcher func(url string) ([]byte, error)
 
 type Manager struct {
-	mu     sync.Mutex
-	dir    string
-	store  *store
-	file   *model.SubscriptionFile
-	runner Runner
-	fetch        Fetcher
-	refreshHook  func(id string) error
+	mu          sync.Mutex
+	dir         string
+	store       *store
+	file        *model.SubscriptionFile
+	runner      Runner
+	fetch       Fetcher
+	refreshHook func(id string) error
 }
 
 func New(dir string, runner Runner) (*Manager, error) {
@@ -70,7 +70,7 @@ func (m *Manager) SetRefreshHook(hook func(id string) error) {
 	m.refreshHook = hook
 }
 
-func (m *Manager) Import(name, rawURL string, listenPort, refreshMinutes int) (model.Subscription, error) {
+func (m *Manager) Import(name, rawURL string, listenPort, refreshMinutes int, bypassPrivate, bypassChina bool) (model.Subscription, error) {
 	name = strings.TrimSpace(name)
 	rawURL = strings.TrimSpace(rawURL)
 	if name == "" || len([]rune(name)) > 40 {
@@ -99,7 +99,8 @@ func (m *Manager) Import(name, rawURL string, listenPort, refreshMinutes int) (m
 	sub := model.Subscription{
 		ID: newID(), Name: name, URL: rawURL, ListenPort: listenPort,
 		RefreshMinutes: model.NormalizeRefreshMinutes(refreshMinutes),
-		Nodes:          nodes, UpdatedAt: time.Now(),
+		BypassPrivate:  bypassPrivate, BypassChina: bypassChina,
+		Nodes: nodes, UpdatedAt: time.Now(),
 	}
 	sub.Normalize()
 	if err := sub.Validate(); err != nil {
@@ -156,6 +157,30 @@ func (m *Manager) SetRefreshInterval(id string, refreshMinutes int) (model.Subsc
 	return m.file.Subscriptions[index].Clone(), nil
 }
 
+func (m *Manager) SetBypass(id string, bypassPrivate, bypassChina bool) (model.Subscription, error) {
+	m.mu.Lock()
+	index := m.indexLocked(id)
+	if index < 0 {
+		m.mu.Unlock()
+		return model.Subscription{}, fmt.Errorf("Clash 订阅不存在")
+	}
+	m.file.Subscriptions[index].BypassPrivate = bypassPrivate
+	m.file.Subscriptions[index].BypassChina = bypassChina
+	current := m.file.Subscriptions[index].Clone()
+	if err := m.store.Save(m.file); err != nil {
+		m.mu.Unlock()
+		return model.Subscription{}, err
+	}
+	shouldRestart := current.Active && current.SelectedNode != "" && m.runner.Running(current.ID)
+	m.mu.Unlock()
+	if shouldRestart {
+		if err := m.StartNode(current.ID, current.SelectedNode); err != nil {
+			return current, fmt.Errorf("直连规则已保存，但重启节点失败：%w", err)
+		}
+	}
+	return current, nil
+}
+
 func (m *Manager) Delete(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -177,7 +202,7 @@ func (m *Manager) StartNode(id, nodeName string) error {
 	if !ok {
 		return fmt.Errorf("订阅中找不到节点 %q", nodeName)
 	}
-	if err := m.runner.Start(sub.ID, sub.ListenPort, node.Raw); err != nil {
+	if err := m.runner.Start(sub.ID, sub.ListenPort, node.Raw, sub.BypassPrivate, sub.BypassChina); err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -318,6 +343,8 @@ type View struct {
 	SelectedNode   string     `json:"selectedNode,omitempty"`
 	UpdatedAt      string     `json:"updatedAt,omitempty"`
 	RefreshMinutes int        `json:"refreshMinutes"`
+	BypassPrivate  bool       `json:"bypassPrivate"`
+	BypassChina    bool       `json:"bypassChina"`
 	Running        bool       `json:"running"`
 	ProfileID      string     `json:"profileId"`
 	ProfileDefault bool       `json:"profileDefault"`

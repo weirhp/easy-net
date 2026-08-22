@@ -56,6 +56,8 @@
       <section class="subscription-toolbar" id="subscription-toolbar" hidden>
         <label class="field node-filter-field"><span class="visually-hidden">筛选节点</span><input id="node-filter" type="search" autocomplete="off" placeholder="筛选节点名称或类型"></label>
         <span class="subscription-meta" id="subscription-meta"></span>
+        <label class="default-proxy-switch clash-bypass-switch"><input id="clash-bypass-private" type="checkbox" role="switch" checked><span class="switch-track" aria-hidden="true"></span><span>局域网直连</span></label>
+        <label class="default-proxy-switch clash-bypass-switch"><input id="clash-bypass-china" type="checkbox" role="switch" checked><span class="switch-track" aria-hidden="true"></span><span>国内直连</span></label>
         <label class="field refresh-interval-field"><span class="visually-hidden">自动刷新</span><select id="clash-refresh-interval" aria-label="自动刷新间隔"><option value="30">自动刷新 30 分钟</option><option value="60" selected>自动刷新 1 小时</option><option value="180">自动刷新 3 小时</option><option value="360">自动刷新 6 小时</option><option value="1440">自动刷新 1 天</option><option value="0">自动刷新 从不</option></select></label>
         <button type="button" class="button secondary compact icon-only" aria-label="延迟测试" data-tooltip="延迟测试" data-clash-action="delay"><svg class="icon" aria-hidden="true"><use href="#icon-delay"></use></svg></button>
         <button type="button" class="button secondary compact icon-only" aria-label="速度测试" data-tooltip="速度测试" data-clash-action="speed"><svg class="icon" aria-hidden="true"><use href="#icon-speed"></use></svg></button>
@@ -146,8 +148,10 @@
           <label class="field full"><span>Tab 名称</span><input id="clash-import-name" required maxlength="40" placeholder="例如：机场 A"></label>
           <label class="field full"><span>订阅地址</span><input id="clash-import-url" required type="url" placeholder="https://example.com/clash.yaml"><small>支持 Clash / Mihomo YAML，或 base64 后的 YAML。名称会显示为网络代理页的 Tab。</small></label>
           <label class="field full"><span>自动刷新</span><select id="clash-import-refresh"><option value="30">30 分钟</option><option value="60" selected>1 小时</option><option value="180">3 小时</option><option value="360">6 小时</option><option value="1440">1 天</option><option value="0">从不</option></select><small>到期后会自动重新拉取节点列表，之后也可以在订阅工具栏里修改。</small></label>
+          <label class="check-field full"><input id="clash-import-bypass-private" type="checkbox" checked><span>局域网与私有地址直连（不走代理）</span></label>
+          <label class="check-field full"><input id="clash-import-bypass-china" type="checkbox" checked><span>中国大陆 IP 直连（国外 IP 走代理）</span></label>
         </div>
-        <p class="share-note">导入后可在对应 Tab 中选择节点启动本地 SOCKS5。启动节点需要把 mihomo 放到 Lite 同一目录，或设置 EASY_NET_MIHOMO。</p>
+        <p class="share-note">导入后可在对应 Tab 中选择节点启动本地 SOCKS5。发布包已将 mihomo 放在专用子目录；手动部署时也可设置 EASY_NET_MIHOMO。</p>
         <p class="form-error" id="clash-import-error" role="alert" hidden></p>
       </div>
       <div class="dialog-actions"><button type="button" class="button secondary" id="cancel-clash-import-dialog">取消</button><button type="submit" class="button primary" id="import-clash-subscription">导入订阅</button></div>

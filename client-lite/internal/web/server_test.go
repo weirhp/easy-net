@@ -886,7 +886,7 @@ type testClashRunner struct {
 	running map[string]bool
 }
 
-func (r *testClashRunner) Start(subscriptionID string, listenPort int, proxy map[string]any) error {
+func (r *testClashRunner) Start(subscriptionID string, listenPort int, proxy map[string]any, _, _ bool) error {
 	_ = listenPort
 	_ = proxy
 	r.mu.Lock()
@@ -983,8 +983,23 @@ func TestClashSubscriptionAPI(t *testing.T) {
 	}
 
 	state = getState(t, server.URL)
-	if len(state.Subscriptions) != 1 || state.Subscriptions[0].Name != "机场 A" || len(state.Subscriptions[0].Nodes) != 2 || state.Subscriptions[0].RefreshMinutes != model.DefaultClashRefreshMinutes {
+	if len(state.Subscriptions) != 1 || state.Subscriptions[0].Name != "机场 A" || len(state.Subscriptions[0].Nodes) != 2 || state.Subscriptions[0].RefreshMinutes != model.DefaultClashRefreshMinutes || !state.Subscriptions[0].BypassPrivate || !state.Subscriptions[0].BypassChina {
 		t.Fatalf("unexpected subscriptions: %#v", state.Subscriptions)
+	}
+	bypassReq, _ := http.NewRequest(http.MethodPost, server.URL+"/api/subscriptions/"+imported.ID+"/bypass", strings.NewReader(`{"bypassPrivate":false,"bypassChina":true}`))
+	bypassReq.Header.Set("Content-Type", "application/json")
+	bypassReq.Header.Set("X-Easy-Net-Token", state.Token)
+	bypassResp, err := http.DefaultClient.Do(bypassReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = bypassResp.Body.Close()
+	if bypassResp.StatusCode != http.StatusOK {
+		t.Fatalf("bypass failed: %d", bypassResp.StatusCode)
+	}
+	state = getState(t, server.URL)
+	if state.Subscriptions[0].BypassPrivate || !state.Subscriptions[0].BypassChina {
+		t.Fatalf("expected bypass private off, got %#v", state.Subscriptions[0])
 	}
 	intervalReq, _ := http.NewRequest(http.MethodPost, server.URL+"/api/subscriptions/"+imported.ID+"/interval", strings.NewReader(`{"refreshMinutes":30}`))
 	intervalReq.Header.Set("Content-Type", "application/json")

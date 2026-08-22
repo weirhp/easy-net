@@ -15,7 +15,7 @@ import (
 )
 
 type Runner interface {
-	Start(subscriptionID string, listenPort int, proxy map[string]any) error
+	Start(subscriptionID string, listenPort int, proxy map[string]any, bypassPrivate, bypassChina bool) error
 	Stop(subscriptionID string) error
 	Running(subscriptionID string) bool
 }
@@ -48,7 +48,7 @@ func DefaultRunner(configDir string) Runner {
 	return &mihomoRunner{configDir: configDir, commands: map[string]*managedMihomo{}}
 }
 
-func (r *mihomoRunner) Start(subscriptionID string, listenPort int, proxy map[string]any) error {
+func (r *mihomoRunner) Start(subscriptionID string, listenPort int, proxy map[string]any, bypassPrivate, bypassChina bool) error {
 	r.opMu.Lock()
 	defer r.opMu.Unlock()
 	exe, err := findMihomo(r.configDir)
@@ -66,7 +66,7 @@ func (r *mihomoRunner) Start(subscriptionID string, listenPort int, proxy map[st
 	_ = listener.Close()
 	workDir := filepath.Join(r.configDir, "clash", subscriptionID)
 	configPath := filepath.Join(workDir, "config.yaml")
-	if err := WriteMihomoConfig(configPath, listenPort, proxy); err != nil {
+	if err := WriteMihomoConfig(configPath, listenPort, proxy, bypassPrivate, bypassChina); err != nil {
 		return err
 	}
 	logFile, err := os.OpenFile(filepath.Join(workDir, "mihomo.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)

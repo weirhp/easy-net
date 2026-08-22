@@ -9,11 +9,14 @@ import (
 )
 
 type fakeRunner struct {
-	mu      sync.Mutex
-	running map[string]map[string]any
+	mu            sync.Mutex
+	running       map[string]map[string]any
+	starts        int
+	bypassPrivate bool
+	bypassChina   bool
 }
 
-func (r *fakeRunner) Start(subscriptionID string, listenPort int, proxy map[string]any) error {
+func (r *fakeRunner) Start(subscriptionID string, listenPort int, proxy map[string]any, bypassPrivate, bypassChina bool) error {
 	if listenPort < 1 {
 		return fmt.Errorf("invalid port")
 	}
@@ -23,6 +26,9 @@ func (r *fakeRunner) Start(subscriptionID string, listenPort int, proxy map[stri
 		r.running = map[string]map[string]any{}
 	}
 	r.running[subscriptionID] = proxy
+	r.starts++
+	r.bypassPrivate = bypassPrivate
+	r.bypassChina = bypassChina
 	return nil
 }
 
@@ -47,11 +53,11 @@ func TestManagerImportStartAndRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager.SetFetcher(func(string) ([]byte, error) { return []byte(sampleYAML), nil })
-	sub, err := manager.Import("机场 A", "https://example.com/clash.yaml", 17890, model.DefaultClashRefreshMinutes)
+	sub, err := manager.Import("机场 A", "https://example.com/clash.yaml", 17890, model.DefaultClashRefreshMinutes, true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sub.Name != "机场 A" || len(sub.Nodes) != 2 || ProfileID(sub.ID) != "clash-"+sub.ID || sub.RefreshMinutes != model.DefaultClashRefreshMinutes {
+	if sub.Name != "机场 A" || len(sub.Nodes) != 2 || ProfileID(sub.ID) != "clash-"+sub.ID || sub.RefreshMinutes != model.DefaultClashRefreshMinutes || !sub.BypassPrivate || !sub.BypassChina {
 		t.Fatalf("unexpected subscription: %#v", sub)
 	}
 	if err := manager.StartNode(sub.ID, "日本 2"); err != nil {
@@ -74,7 +80,7 @@ func TestManagerImportStartAndRefresh(t *testing.T) {
 	if err := manager.StartNode(sub.ID, "日本 2"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Import("机场 A", "https://example.com/other.yaml", 17891, 0); err == nil {
+	if _, err := manager.Import("机场 A", "https://example.com/other.yaml", 17891, 0, true, true); err == nil {
 		t.Fatal("expected duplicate tab name to fail")
 	}
 	refreshed, err := manager.Refresh(sub.ID)
@@ -98,7 +104,7 @@ func TestSetRefreshInterval(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager.SetFetcher(func(string) ([]byte, error) { return []byte(sampleYAML), nil })
-	sub, err := manager.Import("机场 B", "https://example.com/clash.yaml", 17890, 0)
+	sub, err := manager.Import("机场 B", "https://example.com/clash.yaml", 17890, 0, true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,5 +117,34 @@ func TestSetRefreshInterval(t *testing.T) {
 	}
 	if _, err := manager.SetRefreshInterval("missing", 60); err == nil {
 		t.Fatal("expected missing subscription")
+	}
+}
+
+func TestSetBypassRestartsRunningNode(t *testing.T) {
+	runner := &fakeRunner{}
+	manager, err := New(t.TempDir(), runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.SetFetcher(func(string) ([]byte, error) { return []byte(sampleYAML), nil })
+	sub, err := manager.Import("机场 C", "https://example.com/clash.yaml", 17890, 60, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.StartNode(sub.ID, "日本 2"); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := manager.SetBypass(sub.ID, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.BypassPrivate || !updated.BypassChina {
+		t.Fatalf("unexpected bypass settings: %#v", updated)
+	}
+	runner.mu.Lock()
+	starts, bypassPrivate, bypassChina := runner.starts, runner.bypassPrivate, runner.bypassChina
+	runner.mu.Unlock()
+	if starts != 2 || bypassPrivate || !bypassChina {
+		t.Fatalf("running node was not restarted with new rules: starts=%d private=%v china=%v", starts, bypassPrivate, bypassChina)
 	}
 }

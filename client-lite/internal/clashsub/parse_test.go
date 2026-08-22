@@ -54,7 +54,7 @@ func TestWriteMihomoConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	err := WriteMihomoConfig(path, 17890, map[string]any{
 		"name": "香港 1", "type": "ss", "server": "1.2.3.4", "port": 8388,
-	})
+	}, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,11 +70,41 @@ func TestWriteMihomoConfig(t *testing.T) {
 	}
 }
 
+func TestWriteMihomoConfigDirectRules(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	err := WriteMihomoConfig(path, 17890, map[string]any{
+		"name": "香港 1", "type": "ss", "server": "1.2.3.4", "port": 8388,
+	}, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"IP-CIDR,10.0.0.0/8,DIRECT", "IP-CIDR,100.64.0.0/10,DIRECT", "IP-CIDR6,fc00::/7,DIRECT", "RULE-SET,easy-net-cn,DIRECT", "MATCH,PROXY"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("config missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "GEOIP,") {
+		t.Fatalf("config must not require a downloaded GeoIP database:\n%s", text)
+	}
+	chinaRules, err := os.ReadFile(filepath.Join(filepath.Dir(path), "easy-net-cn.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(chinaRules), "1.0.1.0/24") {
+		t.Fatalf("embedded China IP rules were not written: %s", chinaRules)
+	}
+}
+
 func TestWriteMihomoConfigKeepsRawFingerprintOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	err := WriteMihomoConfig(path, 17890, map[string]any{
 		"name": "日本 07", "type": "trojan", "server": "jp.example.com", "port": 443, "password": "x",
-	})
+	}, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +128,7 @@ func TestWriteMihomoConfigPreservesNodeFingerprint(t *testing.T) {
 	err := WriteMihomoConfig(path, 17890, map[string]any{
 		"name": "日本 07", "type": "trojan", "server": "jp.example.com", "port": 443, "password": "x",
 		"client-fingerprint": "chrome",
-	})
+	}, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}

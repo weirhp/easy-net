@@ -16,7 +16,7 @@ type countingClashRunner struct {
 	starts  int
 }
 
-func (r *countingClashRunner) Start(id string, _ int, _ map[string]any) error {
+func (r *countingClashRunner) Start(id string, _ int, _ map[string]any, _, _ bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.running == nil {
@@ -57,7 +57,7 @@ func TestRefreshClashKeepsUnchangedRunningNode(t *testing.T) {
 	}
 	content := unchanged
 	manager.SetFetcher(func(string) ([]byte, error) { return []byte(content), nil })
-	sub, err := manager.Import("subscription", "https://example.com/subscription.yaml", 17890, model.DefaultClashRefreshMinutes)
+	sub, err := manager.Import("subscription", "https://example.com/subscription.yaml", 17890, model.DefaultClashRefreshMinutes, true, true)
 	if err != nil {
 		t.Fatal(err)
 	}

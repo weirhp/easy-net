@@ -10,6 +10,13 @@ import (
 //go:embed cn_apnic.txt
 var chinaPrefixData string
 
+// ChinaPrefixData returns the embedded APNIC CN prefix list. Callers that
+// delegate routing to an external engine can persist this data into that
+// engine's private runtime directory without adding a network dependency.
+func ChinaPrefixData() string {
+	return chinaPrefixData
+}
+
 type ipTrieNode struct {
 	children [2]*ipTrieNode
 	terminal bool

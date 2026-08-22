@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	CurrentSubscriptionFileVersion = 2
+	CurrentSubscriptionFileVersion = 3
 	MaxClashSubscriptions          = 20
 	MaxClashNodes                  = 800
 )
@@ -25,6 +25,8 @@ type Subscription struct {
 	URL            string      `json:"url"`
 	ListenPort     int         `json:"listenPort"`
 	RefreshMinutes int         `json:"refreshMinutes"`
+	BypassPrivate  bool        `json:"bypassPrivate"`
+	BypassChina    bool        `json:"bypassChina"`
 	SelectedNode   string      `json:"selectedNode,omitempty"`
 	Active         bool        `json:"active,omitempty"`
 	UpdatedAt      time.Time   `json:"updatedAt,omitempty"`

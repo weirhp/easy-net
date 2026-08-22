@@ -31,6 +31,8 @@ func (s *Service) ClashViews() []clashsub.View {
 			ID: sub.ID, Name: sub.Name, URL: sub.URL, SelectedNode: sub.SelectedNode,
 			ListenAddress:  fmt.Sprintf("127.0.0.1:%d", sub.ListenPort),
 			RefreshMinutes: sub.RefreshMinutes,
+			BypassPrivate:  sub.BypassPrivate,
+			BypassChina:    sub.BypassChina,
 			ProfileID:      clashsub.ProfileID(sub.ID), Running: s.clash.Running(sub.ID),
 		}
 		if !sub.UpdatedAt.IsZero() {
@@ -50,11 +52,11 @@ func (s *Service) ClashViews() []clashsub.View {
 	return views
 }
 
-func (s *Service) ImportClash(name, rawURL string, refreshMinutes int) (model.Subscription, error) {
+func (s *Service) ImportClash(name, rawURL string, refreshMinutes int, bypassPrivate, bypassChina bool) (model.Subscription, error) {
 	if s.clash == nil {
 		return model.Subscription{}, fmt.Errorf("Clash 订阅不可用")
 	}
-	sub, err := s.clash.Import(name, rawURL, s.nextAvailablePort(17890), refreshMinutes)
+	sub, err := s.clash.Import(name, rawURL, s.nextAvailablePort(17890), refreshMinutes, bypassPrivate, bypassChina)
 	if err != nil {
 		return model.Subscription{}, err
 	}
@@ -70,6 +72,13 @@ func (s *Service) SetClashRefreshInterval(id string, refreshMinutes int) (model.
 		return model.Subscription{}, fmt.Errorf("Clash 订阅不可用")
 	}
 	return s.clash.SetRefreshInterval(id, refreshMinutes)
+}
+
+func (s *Service) SetClashBypass(id string, bypassPrivate, bypassChina bool) (model.Subscription, error) {
+	if s.clash == nil {
+		return model.Subscription{}, fmt.Errorf("Clash 订阅不可用")
+	}
+	return s.clash.SetBypass(id, bypassPrivate, bypassChina)
 }
 
 func (s *Service) RefreshClash(id string) (model.Subscription, error) {

@@ -6,10 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	easynetproxy "easy-net/client-lite/internal/proxy"
+
 	"gopkg.in/yaml.v3"
 )
 
-func WriteMihomoConfig(path string, listenPort int, proxy map[string]any) error {
+func WriteMihomoConfig(path string, listenPort int, proxy map[string]any, bypassPrivate, bypassChina bool) error {
 	if listenPort < 1 || listenPort > 65535 {
 		return fmt.Errorf("本地端口无效")
 	}
@@ -39,7 +41,14 @@ func WriteMihomoConfig(path string, listenPort int, proxy map[string]any) error 
 		"proxy-groups": []any{
 			map[string]any{"name": "PROXY", "type": "select", "proxies": []any{name}},
 		},
-		"rules": []any{"MATCH,PROXY"},
+		"rules": clashDirectRules(bypassPrivate, bypassChina),
+	}
+	if bypassChina {
+		document["rule-providers"] = map[string]any{
+			"easy-net-cn": map[string]any{
+				"type": "file", "behavior": "ipcidr", "format": "text", "path": "./easy-net-cn.txt",
+			},
+		}
 	}
 	data, err := yaml.Marshal(document)
 	if err != nil {
@@ -48,13 +57,51 @@ func WriteMihomoConfig(path string, listenPort int, proxy map[string]any) error 
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return fmt.Errorf("创建 Clash 运行目录：%w", err)
 	}
-	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, data, 0600); err != nil {
-		return fmt.Errorf("写入 Clash 运行配置：%w", err)
+	chinaPath := filepath.Join(filepath.Dir(path), "easy-net-cn.txt")
+	if bypassChina {
+		if err := replaceConfigFile(chinaPath, []byte(easynetproxy.ChinaPrefixData())); err != nil {
+			return fmt.Errorf("写入中国大陆 IP 规则：%w", err)
+		}
+	} else {
+		_ = os.Remove(chinaPath)
 	}
-	if err := replaceRuntimeFile(temporary, path); err != nil {
-		_ = os.Remove(temporary)
+	if err := replaceConfigFile(path, data); err != nil {
 		return fmt.Errorf("替换 Clash 运行配置：%w", err)
 	}
 	return nil
+}
+
+func replaceConfigFile(path string, data []byte) error {
+	temporary := path + ".tmp"
+	if err := os.WriteFile(temporary, data, 0600); err != nil {
+		return err
+	}
+	if err := replaceRuntimeFile(temporary, path); err != nil {
+		_ = os.Remove(temporary)
+		return err
+	}
+	return nil
+}
+
+func clashDirectRules(bypassPrivate, bypassChina bool) []any {
+	rules := make([]any, 0, 16)
+	if bypassPrivate {
+		rules = append(rules,
+			"DOMAIN-SUFFIX,local,DIRECT",
+			"IP-CIDR,10.0.0.0/8,DIRECT",
+			"IP-CIDR,100.64.0.0/10,DIRECT",
+			"IP-CIDR,127.0.0.0/8,DIRECT",
+			"IP-CIDR,169.254.0.0/16,DIRECT",
+			"IP-CIDR,172.16.0.0/12,DIRECT",
+			"IP-CIDR,192.168.0.0/16,DIRECT",
+			"IP-CIDR,198.18.0.0/15,DIRECT",
+			"IP-CIDR6,::1/128,DIRECT",
+			"IP-CIDR6,fc00::/7,DIRECT",
+			"IP-CIDR6,fe80::/10,DIRECT",
+		)
+	}
+	if bypassChina {
+		rules = append(rules, "RULE-SET,easy-net-cn,DIRECT")
+	}
+	return append(rules, "MATCH,PROXY")
 }

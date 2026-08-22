@@ -1,10 +1,14 @@
 package service
 
 import (
+	"context"
 	"fmt"
+	"net"
+	"time"
 
 	"easy-net/client-lite/internal/clashsub"
 	"easy-net/client-lite/internal/model"
+	"easy-net/client-lite/internal/proxy"
 )
 
 func (s *Service) TestProfileDelay(id string) ([]clashsub.NodeMetric, error) {
@@ -26,37 +30,58 @@ func (s *Service) TestProfileDelay(id string) ([]clashsub.NodeMetric, error) {
 }
 
 func (s *Service) TestProfileSpeed(id string) ([]clashsub.NodeMetric, error) {
-	addr, profile, err := s.profileTestSOCKS(id)
+	profile, err := s.manualTestProfile(id)
 	if err != nil {
 		return nil, err
 	}
-	mbps, err := clashsub.SOCKSSpeed(addr)
-	metric := clashsub.NodeMetric{Name: profile.Name}
-	if err != nil {
-		metric.Error = "失败"
-		return []clashsub.NodeMetric{metric}, nil
+	var mbps float64
+	if err := s.withProfileSOCKS(profile, func(addr string) error {
+		var measureErr error
+		mbps, measureErr = clashsub.SOCKSSpeed(addr)
+		return measureErr
+	}); err != nil {
+		return []clashsub.NodeMetric{{Name: profile.Name, Error: "失败"}}, nil
 	}
-	metric.SpeedMbps = mbps
-	return []clashsub.NodeMetric{metric}, nil
+	return []clashsub.NodeMetric{{Name: profile.Name, SpeedMbps: mbps}}, nil
 }
 
 func (s *Service) TestProfileAccess(id string) ([]clashsub.NodeMetric, error) {
-	addr, profile, err := s.profileTestSOCKS(id)
+	profile, err := s.manualTestProfile(id)
 	if err != nil {
 		return nil, err
 	}
-	return []clashsub.NodeMetric{{Name: profile.Name, Sites: clashsub.SOCKSAccess(addr)}}, nil
+	var sites []clashsub.SiteResult
+	if err := s.withProfileSOCKS(profile, func(addr string) error {
+		sites = clashsub.SOCKSAccess(addr)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return []clashsub.NodeMetric{{Name: profile.Name, Sites: sites}}, nil
 }
 
-func (s *Service) profileTestSOCKS(id string) (string, model.Profile, error) {
-	profile, err := s.manualTestProfile(id)
+func (s *Service) withProfileSOCKS(profile model.Profile, fn func(string) error) error {
+	if profile.Type == model.ProxyTypeExternal || s.profileRunning(profile.ID) {
+		return fn(profile.ListenAddress())
+	}
+	outbound, err := s.buildTransport(profile)
 	if err != nil {
-		return "", model.Profile{}, err
+		return err
 	}
-	if profile.Type != model.ProxyTypeExternal && !s.profileRunning(id) {
-		return "", profile, fmt.Errorf("请先启动该代理")
+	addr, err := freeLocalSOCKSAddr()
+	if err != nil {
+		return err
 	}
-	return profile.ListenAddress(), profile, nil
+	server := proxy.NewServer(addr, outbound, nil)
+	server.SetBypassPrivate(profile.BypassPrivate)
+	server.SetBypassChina(profile.BypassChina)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := server.Start(ctx); err != nil {
+		return err
+	}
+	defer server.Stop()
+	return fn(addr)
 }
 
 func (s *Service) manualTestProfile(id string) (model.Profile, error) {
@@ -75,4 +100,14 @@ func (s *Service) profileRunning(id string) bool {
 	defer s.mu.Unlock()
 	server := s.instances[id]
 	return server != nil && server.Running()
+}
+
+func freeLocalSOCKSAddr() (string, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", err
+	}
+	addr := listener.Addr().String()
+	_ = listener.Close()
+	return addr, nil
 }

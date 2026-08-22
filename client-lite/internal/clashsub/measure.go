@@ -114,7 +114,7 @@ func (m *Manager) withTempNodeSOCKS(subscriptionID string, node model.ClashNode,
 	}
 	workDir := filepath.Join(m.dir, "clash-test", fmt.Sprintf("%s-%d", subscriptionID, port))
 	configPath := filepath.Join(workDir, "config.yaml")
-	if err := WriteMihomoConfig(configPath, port, node.Raw); err != nil {
+	if err := WriteMihomoConfig(configPath, port, node.Raw, false, false); err != nil {
 		return err
 	}
 	logFile, err := os.OpenFile(filepath.Join(workDir, "mihomo.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)

@@ -33,9 +33,14 @@ func (s *store) Load() (*model.SubscriptionFile, error) {
 	if err := json.Unmarshal(data, &file); err != nil {
 		return nil, fmt.Errorf("解析 Clash 订阅：%w", err)
 	}
+	legacyBypass := file.Version < 3
 	valid := make([]model.Subscription, 0, len(file.Subscriptions))
 	seen := map[string]struct{}{}
 	for _, item := range file.Subscriptions {
+		if legacyBypass {
+			item.BypassPrivate = true
+			item.BypassChina = true
+		}
 		item.Normalize()
 		if item.Validate() != nil {
 			continue

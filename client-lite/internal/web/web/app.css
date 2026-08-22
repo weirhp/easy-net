@@ -163,6 +163,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .live-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: #14b981; box-shadow: 0 0 0 3px rgba(20,185,129,.16); }
 .refresh-interval-field { min-width: 168px; flex: 0 0 auto; gap: 0; }
 .refresh-interval-field select { min-height: 36px; }
+.clash-bypass-switch { flex: 0 0 auto; background: white; }
 .app-avatar { width: 30px; height: 30px; display: grid; place-items: center; margin-right: 2px; border-radius: 8px; color: var(--primary); background: var(--primary-soft); }
 .app-avatar .icon { width: 17px; height: 17px; }
 .badge { min-height: 23px; display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 999px; color: var(--primary); background: var(--primary-soft); font: 650 11px/1.3 ui-monospace, SFMono-Regular, Consolas, monospace; }
@@ -192,9 +193,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .proxy-card .endpoint { margin: 0; padding: 0 16px; }
 .proxy-card .proxy-metrics { margin-top: 6px; padding: 0 16px; }
 .proxy-card-footer { justify-content: space-between; padding: 8px 16px 12px; }
-.app-card-footer { display: flex; flex-wrap: nowrap; justify-content: flex-end; align-items: center; gap: 8px; min-height: 47px; padding: 4px 16px 14px; }
+.app-card-footer { display: flex; flex-wrap: wrap; justify-content: flex-start; align-items: center; gap: 8px; min-height: 47px; padding: 4px 16px 14px; }
+.app-helpers { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; flex: 1 1 auto; }
+.app-helper { display: inline-flex; align-items: center; min-height: 23px; padding: 3px 8px; border-radius: 999px; color: #5a6172; background: #eef1f7; font: 650 11px/1.3 ui-monospace, SFMono-Regular, Consolas, "Microsoft YaHei", monospace; }
 .proxy-card > .error { margin: 0; padding: 0 16px 12px; }
-.app-takeover-switch { min-height: 31px; display: inline-flex; align-items: center; gap: 7px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); background: #fafafe; font-size: 11px; font-weight: 680; cursor: pointer; transition: color .18s ease, border-color .18s ease, background-color .18s ease; }
+.app-takeover-switch { min-height: 31px; display: inline-flex; align-items: center; gap: 7px; margin-left: auto; padding: 5px 8px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); background: #fafafe; font-size: 11px; font-weight: 680; cursor: pointer; transition: color .18s ease, border-color .18s ease, background-color .18s ease; }
 .app-takeover-switch:hover { color: var(--primary); border-color: #c7b5e7; background: white; }
 .app-takeover-switch input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .app-takeover-switch input:checked + .switch-track { background: var(--primary); }

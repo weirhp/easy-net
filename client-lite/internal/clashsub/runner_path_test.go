@@ -21,6 +21,9 @@ func TestFindMihomoRequiresDedicatedDirectory(t *testing.T) {
 	if _, err := findMihomo(directory); err == nil {
 		t.Fatal("root-level mihomo must not be accepted")
 	}
+	if err := os.Remove(rootExecutable); err != nil {
+		t.Fatal(err)
+	}
 
 	dedicated := filepath.Join(directory, "mihomo", name)
 	if err := os.MkdirAll(filepath.Dir(dedicated), 0o700); err != nil {

@@ -730,6 +730,8 @@ func friendlyConnectionError(profile model.Profile, err error) string {
 	}
 	lower := strings.ToLower(message)
 	switch {
+	case strings.Contains(message, "IPV6_UNAVAILABLE"), strings.Contains(message, "EADDRNOTAVAIL"):
+		return "Easy-Net 服务端没有可用的 IPv6 出口；请使用浏览器原生代理/代理端 DNS，或为服务端启用 IPv6"
 	case strings.Contains(message, "等待远端目标连接就绪"):
 		return "Easy-Net 服务端连接目标超时，请检查服务端到目标地址的网络"
 	case strings.Contains(message, "远端目标连接失败"):

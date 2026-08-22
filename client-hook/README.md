@@ -99,7 +99,7 @@ GitHub Actions 还会从 `zero-peak/ZeroOmega` 的最新正式 Release 下载 Ch
 - `--network-debug-log`：临时记录逐连接诊断信息；日志限制为 8 MiB。
 - `--windivert-engine PATH`：指定 `easy-net-windivert.exe`。
 
-`--dns` 不适用于 WinDivert 模式；WinDivert 保留 Windows 的系统 DNS 行为。
+`--dns` 不适用于 WinDivert 模式；WinDivert 保留 Windows/应用自身的 DNS 行为。Chrome/Edge 推荐使用 Lite 创建的原生 SOCKS5 桌面快捷方式，让域名由代理端解析。WinDivert 浏览器接管仍然可用，但在本机 DNS 可能受污染时应启用浏览器“安全 DNS”；WinDivert 位于 IP 层，无法把错误 IP 还原成原域名。
 
 ### 通用 Hook
 

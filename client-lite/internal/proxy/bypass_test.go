@@ -2,8 +2,18 @@ package proxy
 
 import (
 	"context"
+	"net"
 	"testing"
 )
+
+type staticHostResolver struct {
+	addresses []net.IPAddr
+	err       error
+}
+
+func (r staticHostResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, error) {
+	return r.addresses, r.err
+}
 
 func TestResolvePrivateTarget(t *testing.T) {
 	tests := []struct {
@@ -63,6 +73,39 @@ func TestChinaRuleCanCombineWithPrivateRule(t *testing.T) {
 	for _, address := range []string{"192.168.1.1:80", "1.0.1.1:80"} {
 		if _, direct := resolveBypassTarget(context.Background(), address, true, true); !direct {
 			t.Fatalf("%s should match the combined direct rules", address)
+		}
+	}
+}
+
+func TestPublicHostnameRequiresSecureResolverForChinaBypass(t *testing.T) {
+	if resolved, direct := resolveBypassTarget(context.Background(), "example.cn:443", false, true); direct || resolved != "" {
+		t.Fatalf("public hostname must not use system DNS for China routing: %q direct=%v", resolved, direct)
+	}
+
+	resolver := staticHostResolver{addresses: []net.IPAddr{{IP: net.ParseIP("1.0.1.1")}}}
+	resolved, direct := resolveBypassTargetWithResolver(context.Background(), "example.cn:443", false, true, resolver)
+	if !direct || resolved != "1.0.1.1:443" {
+		t.Fatalf("secure CN answer should be direct: %q direct=%v", resolved, direct)
+	}
+}
+
+func TestSecureResolverMixedAnswerStaysProxied(t *testing.T) {
+	resolver := staticHostResolver{addresses: []net.IPAddr{
+		{IP: net.ParseIP("1.0.1.1")},
+		{IP: net.ParseIP("8.8.8.8")},
+	}}
+	if resolved, direct := resolveBypassTargetWithResolver(context.Background(), "mixed.example:443", false, true, resolver); direct || resolved != "" {
+		t.Fatalf("mixed secure answer must stay proxied: %q direct=%v", resolved, direct)
+	}
+}
+
+func TestPublicHostnameIsNotResolvedForPrivateBypass(t *testing.T) {
+	if isLocalStyleHostname("www.google.com") {
+		t.Fatal("public hostname was classified as local-style")
+	}
+	for _, host := range []string{"printer", "printer.local", "service.internal", "localhost"} {
+		if !isLocalStyleHostname(host) {
+			t.Fatalf("%q should be local-style", host)
 		}
 	}
 }

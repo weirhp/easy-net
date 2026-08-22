@@ -63,10 +63,13 @@ func TestWriteMihomoConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{"mixed-port: 17890", "mode: rule", "log-level: warning", "name: 香港 1", "type: ss", "MATCH,PROXY", "redir-host", "proxy-server-nameserver", "tcp://223.5.5.5:53", "https://8.8.8.8/dns-query"} {
+	for _, want := range []string{"mixed-port: 17890", "mode: rule", "log-level: warning", "ipv6: true", "name: 香港 1", "type: ss", "MATCH,PROXY", "redir-host", "proxy-server-nameserver", "use-system-hosts: false", "https://1.1.1.1/dns-query#PROXY", "direct-nameserver"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("config missing %q:\n%s", want, text)
 		}
+	}
+	if !strings.Contains(text, "dns:\n") || !strings.Contains(text, "  ipv6: false") {
+		t.Fatalf("DNS must suppress AAAA answers while the engine keeps literal IPv6 support:\n%s", text)
 	}
 }
 

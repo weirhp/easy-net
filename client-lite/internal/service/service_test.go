@@ -588,3 +588,16 @@ func TestFriendlyConnectionErrorDistinguishesRemoteTargetTimeout(t *testing.T) {
 		t.Fatalf("unexpected websocket timeout classification: %q", got)
 	}
 }
+
+func TestFriendlyConnectionErrorExplainsMissingServerIPv6(t *testing.T) {
+	profile := model.Profile{Type: model.ProxyTypeWebSocket}
+	for _, raw := range []string{
+		"远端目标连接失败：IPV6_UNAVAILABLE",
+		"远端目标连接失败：EADDRNOTAVAIL",
+	} {
+		got := friendlyConnectionError(profile, errors.New(raw))
+		if !strings.Contains(got, "服务端没有可用的 IPv6 出口") {
+			t.Fatalf("unexpected IPv6 error classification for %q: %q", raw, got)
+		}
+	}
+}

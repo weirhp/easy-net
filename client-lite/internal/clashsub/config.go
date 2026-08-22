@@ -21,21 +21,39 @@ func WriteMihomoConfig(path string, listenPort int, proxy map[string]any, bypass
 	node := normalizeMap(proxy)
 	name := asString(node["name"])
 	document := map[string]any{
-		"mixed-port":     listenPort,
-		"bind-address":   "127.0.0.1",
-		"allow-lan":      false,
-		"mode":           "rule",
-		"log-level":      "warning",
-		"ipv6":           false,
+		"mixed-port":   listenPort,
+		"bind-address": "127.0.0.1",
+		"allow-lan":    false,
+		"mode":         "rule",
+		"log-level":    "warning",
+		// Keep the engine capable of forwarding literal IPv6 destinations, but
+		// request only IPv4 DNS answers below. This avoids the previous conflict
+		// where CN IPv6 rules matched addresses that Mihomo itself refused.
+		"ipv6":           true,
 		"tcp-concurrent": false,
 		"dns": map[string]any{
-			"enable":                  true,
-			"ipv6":                    false,
-			"enhanced-mode":           "redir-host",
-			"respect-rules":           true,
-			"default-nameserver":      []any{"tcp://223.5.5.5:53", "tcp://119.29.29.29:53"},
-			"proxy-server-nameserver": []any{"https://223.5.5.5/dns-query", "https://1.12.0.1/dns-query", "tls://223.5.5.5"},
-			"nameserver":              []any{"https://8.8.8.8/dns-query", "tls://8.8.8.8"},
+			"enable":             true,
+			"ipv6":               false,
+			"enhanced-mode":      "redir-host",
+			"respect-rules":      true,
+			"prefer-h3":          false,
+			"use-system-hosts":   false,
+			"default-nameserver": []any{"https://223.5.5.5/dns-query", "https://1.12.12.12/dns-query"},
+			// Node hostnames need a non-circular resolver before the selected
+			// proxy is connected. These are encrypted domestic DoH endpoints.
+			"proxy-server-nameserver": []any{"https://223.5.5.5/dns-query", "https://1.12.12.12/dns-query"},
+			// Public application domains are resolved through the selected node.
+			// A polluted Windows/router DNS response can therefore never decide a
+			// CN direct rule. Mihomo's #PROXY selector is intentional here.
+			"nameserver": []any{
+				"https://1.1.1.1/dns-query#PROXY",
+				"https://1.0.0.1/dns-query#PROXY",
+			},
+			"direct-nameserver": []any{
+				"https://223.5.5.5/dns-query",
+				"https://1.12.12.12/dns-query",
+			},
+			"direct-nameserver-follow-policy": false,
 		},
 		"proxies": []any{node},
 		"proxy-groups": []any{

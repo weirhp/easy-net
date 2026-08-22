@@ -1444,7 +1444,15 @@ wss.on('connection', (ws, req) => {
       cleanupConnection();
     };
 
-    const targetSocket = net.connect(port, host, () => {
+    const targetOptions = { port, host };
+    // Prefer Node's Happy-Eyeballs connection strategy for hostnames. An
+    // IPv4-only VPS can then fall back from an unusable AAAA answer instead of
+    // failing a reachable dual-stack destination.
+    if (net.isIP(host) === 0) {
+      targetOptions.autoSelectFamily = true;
+      targetOptions.autoSelectFamilyAttemptTimeout = 250;
+    }
+    const targetSocket = net.connect(targetOptions, () => {
       logConnection(`[Easy-Net] [连接] 成功与目标建立连接 -> ${host}:${port}`);
       targetSocket.setKeepAlive(true, 30000);
       targetReady = true;
@@ -1498,7 +1506,10 @@ wss.on('connection', (ws, req) => {
       console.error(`[Easy-Net] [错误] 无法连接到目标 ${host}:${port}: ${err.message}`);
       if (protocolV2 && !targetReady && ws.readyState === WebSocket.OPEN) {
         v2TargetErrorPending = true;
-        ws.send(`ERROR ${err.code || 'target connection failed'}`, () => {
+        const errorCode = err.code === 'EADDRNOTAVAIL' && net.isIPv6(host)
+          ? 'IPV6_UNAVAILABLE'
+          : (err.code || 'target connection failed');
+        ws.send(`ERROR ${errorCode}`, () => {
           ws.close();
           cleanupConnection();
         });

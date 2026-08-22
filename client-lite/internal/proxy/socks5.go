@@ -45,21 +45,25 @@ type proxyRequest struct {
 type DialResultHandler func(target string, err error)
 
 type Server struct {
-	address       string
-	transport     transport.Transport
-	onDialResult  DialResultHandler
-	listener      net.Listener
-	cancel        context.CancelFunc
-	running       atomic.Bool
-	bypassPrivate atomic.Bool
-	bypassChina   atomic.Bool
-	mu            sync.Mutex
-	clients       map[net.Conn]struct{}
-	wg            sync.WaitGroup
+	address        string
+	transport      transport.Transport
+	onDialResult   DialResultHandler
+	listener       net.Listener
+	cancel         context.CancelFunc
+	running        atomic.Bool
+	bypassPrivate  atomic.Bool
+	bypassChina    atomic.Bool
+	secureResolver *secureHostResolver
+	mu             sync.Mutex
+	clients        map[net.Conn]struct{}
+	wg             sync.WaitGroup
 }
 
 func NewServer(address string, outbound transport.Transport, handlers ...DialResultHandler) *Server {
-	server := &Server{address: address, transport: outbound, clients: make(map[net.Conn]struct{})}
+	server := &Server{
+		address: address, transport: outbound, clients: make(map[net.Conn]struct{}),
+		secureResolver: newSecureHostResolver(outbound),
+	}
 	if len(handlers) > 0 {
 		server.onDialResult = handlers[0]
 	}
@@ -106,6 +110,9 @@ func (s *Server) Address() string {
 }
 
 func (s *Server) Stop() {
+	if s.secureResolver != nil {
+		s.secureResolver.CloseIdleConnections()
+	}
 	if !s.running.Swap(false) {
 		_ = s.transport.Close()
 		return
@@ -179,7 +186,9 @@ func (s *Server) handle(ctx context.Context, local net.Conn) {
 	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	dialTarget, direct := request.target, false
 	if s.bypassPrivate.Load() || s.bypassChina.Load() {
-		dialTarget, direct = resolveBypassTarget(dialCtx, request.target, s.bypassPrivate.Load(), s.bypassChina.Load())
+		dialTarget, direct = resolveBypassTargetWithResolver(
+			dialCtx, request.target, s.bypassPrivate.Load(), s.bypassChina.Load(), s.secureResolver,
+		)
 	}
 	var remote net.Conn
 	if direct {
@@ -441,7 +450,7 @@ func (s *Server) handleUDPAssociate(ctx context.Context, control net.Conn, reade
 				continue
 			}
 			if bypassPrivate || bypassChina {
-				if directTarget, direct := resolveBypassTarget(associationCtx, destination, bypassPrivate, bypassChina); direct {
+				if directTarget, direct := resolveBypassTargetWithResolver(associationCtx, destination, bypassPrivate, bypassChina, s.secureResolver); direct {
 					destinationAddress, resolveErr := net.ResolveUDPAddr("udp", directTarget)
 					if resolveErr != nil {
 						continue

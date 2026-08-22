@@ -121,6 +121,8 @@ Hook 模式主要覆盖 TCP。外部 UDP 默认阻断；只有明确接受泄漏
 - 通用应用：`%LOCALAPPDATA%\EasyNetHook\WinDivert\Apps\<应用>\`
 - Lite 共享引擎：Lite 配置目录中的 `shared-windivert-status.json` 与 `shared-windivert.log`
 
+WinDivert 日志采用 8 MiB 硬上限，达到上限后截断重写，不会无限增长。Lite 主日志和 mihomo 日志的单组保留量均低于 50 MiB。
+
 查看微信状态：
 
 ```powershell

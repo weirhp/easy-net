@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"easy-net/client-lite/internal/logging"
 	"easy-net/client-lite/internal/model"
 )
 
@@ -117,7 +118,12 @@ func (m *Manager) withTempNodeSOCKS(subscriptionID string, node model.ClashNode,
 	if err := WriteMihomoConfig(configPath, port, node.Raw, false, false); err != nil {
 		return err
 	}
-	logFile, err := os.OpenFile(filepath.Join(workDir, "mihomo.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	logFile, err := logging.NewRotatingFile(
+		workDir,
+		"mihomo.log",
+		logging.DefaultMaxSize,
+		logging.DefaultBackups,
+	)
 	if err != nil {
 		return err
 	}
@@ -148,13 +154,40 @@ func (m *Manager) withTempNodeSOCKS(subscriptionID string, node model.ClashNode,
 		}
 		control.Close()
 		_ = logFile.Close()
-		_ = os.RemoveAll(workDir)
+		removeTestWorkDir(workDir)
 	}()
 	socksAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	if err := waitPort(socksAddr, 8*time.Second); err != nil {
 		return err
 	}
 	return fn(socksAddr)
+}
+
+func cleanupStaleTestDirs(configDir string, cutoff time.Time) {
+	root := filepath.Join(configDir, "clash-test")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		removeTestWorkDir(filepath.Join(root, entry.Name()))
+	}
+}
+
+func removeTestWorkDir(path string) {
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := os.RemoveAll(path); err == nil {
+			return
+		}
+		time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
+	}
 }
 
 func runNodeTests(nodes []model.ClashNode, workers int, fn func(model.ClashNode) NodeMetric) []NodeMetric {

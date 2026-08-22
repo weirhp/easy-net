@@ -2,6 +2,8 @@ package clashsub
 
 import (
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -25,6 +27,32 @@ func TestTCPDelayLocalListener(t *testing.T) {
 	}
 	if delay < 1 {
 		t.Fatalf("expected positive delay, got %d", delay)
+	}
+}
+
+func TestCleanupStaleTestDirs(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "clash-test")
+	oldDir := filepath.Join(root, "old")
+	recentDir := filepath.Join(root, "recent")
+	for _, path := range []string{oldDir, recentDir} {
+		if err := os.MkdirAll(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "mihomo.log"), []byte("log"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldTime := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(oldDir, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	cleanupStaleTestDirs(dir, time.Now().Add(-24*time.Hour))
+	if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
+		t.Fatalf("stale directory was not removed: %v", err)
+	}
+	if _, err := os.Stat(recentDir); err != nil {
+		t.Fatalf("recent directory was removed: %v", err)
 	}
 }
 

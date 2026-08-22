@@ -25,7 +25,7 @@ func WriteMihomoConfig(path string, listenPort int, proxy map[string]any, bypass
 		"bind-address":   "127.0.0.1",
 		"allow-lan":      false,
 		"mode":           "rule",
-		"log-level":      "info",
+		"log-level":      "warning",
 		"ipv6":           false,
 		"tcp-concurrent": false,
 		"dns": map[string]any{

@@ -35,6 +35,7 @@ func New(dir string, runner Runner) (*Manager, error) {
 		return nil, err
 	}
 	manager.file = file
+	cleanupStaleTestDirs(dir, time.Now().Add(-24*time.Hour))
 	return manager, nil
 }
 

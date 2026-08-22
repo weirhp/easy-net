@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"easy-net/client-lite/internal/logging"
 )
 
 type Runner interface {
@@ -69,7 +71,12 @@ func (r *mihomoRunner) Start(subscriptionID string, listenPort int, proxy map[st
 	if err := WriteMihomoConfig(configPath, listenPort, proxy, bypassPrivate, bypassChina); err != nil {
 		return err
 	}
-	logFile, err := os.OpenFile(filepath.Join(workDir, "mihomo.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	logFile, err := logging.NewRotatingFile(
+		workDir,
+		"mihomo.log",
+		logging.DefaultMaxSize,
+		logging.DefaultBackups,
+	)
 	if err != nil {
 		return fmt.Errorf("创建 mihomo 日志：%w", err)
 	}

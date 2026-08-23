@@ -113,6 +113,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .takeover-switch:has(input:disabled) { cursor: wait; opacity: .68; }
 
 .clash-sticky { position: sticky; top: 0; z-index: 20; padding: 8px 0 12px; margin: 0 0 8px; background: var(--background); box-shadow: 0 12px 24px rgba(41, 36, 70, .06); }
+.default-proxy-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 0 0 12px; padding: 10px 14px; border: 1px solid #d8cbf3; border-radius: 12px; color: #4d356f; background: var(--primary-soft); font-size: 13px; }
+.default-proxy-banner.empty { color: var(--muted); border-color: var(--border); background: rgba(255,255,255,.86); }
+.default-proxy-kicker { flex: 0 0 auto; padding: 2px 8px; border-radius: 999px; color: #fff; background: linear-gradient(100deg, #7742ee, #6d18d8); font-size: 11px; font-weight: 800; }
+.default-proxy-banner strong { font-size: 14px; }
+.default-proxy-listen { color: #54596b; font: 500 12px/1.4 ui-monospace, SFMono-Regular, Consolas, "Microsoft YaHei", monospace; }
 .source-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
 .source-tab { min-height: 36px; padding: 7px 14px; border: 1px solid var(--border); border-radius: 999px; color: #4a5061; background: white; font-size: 13px; font-weight: 680; transition: color .18s ease, background-color .18s ease, border-color .18s ease, box-shadow .18s ease; }
 .source-tab:hover:not(:disabled):not(.active) { color: var(--primary); border-color: #c7b5e7; }

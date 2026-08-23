@@ -10,6 +10,7 @@ var knownProcessHelpers = map[string][]string{
 	"antigravity ide.exe": {"language_server_windows_x64.exe"},
 	"claude.exe":          {"claude-code.exe"},
 	"claude-code.exe":     {"claude.exe"},
+	"cockpit-tools.exe":   {"cockpit-cliproxy.exe"},
 }
 
 var genericHelperNames = map[string]struct{}{

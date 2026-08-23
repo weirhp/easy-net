@@ -47,11 +47,12 @@
     </section>
 
     <section class="takeover-panel" id="takeover-panel" hidden aria-labelledby="takeover-title">
-      <div class="takeover-copy"><div class="takeover-heading"><h3 id="takeover-title">自动接管应用网络</h3><span class="status" id="takeover-status">未开启</span></div><p>开启后会启动需要管理员权限的后台网络接管服务。下方列表中的应用，无论已经运行还是稍后启动，其<strong>新建连接</strong>都会按配置走代理；服务异常退出时会自动重启。</p><p class="takeover-comparison"><strong>与桌面快捷方式的区别：</strong>快捷方式只负责以 Hook 或浏览器原生代理参数启动单个应用，不要求本页接管服务常驻；自动接管无需从快捷方式启动。两者可以同时开启，连接到代理服务器的流量会被直连放行，不会形成重复代理。</p><p class="takeover-browser-note"><strong>浏览器建议：</strong>Chrome/Edge 优先使用本页创建的桌面快捷方式，它会让 SOCKS5 在代理端解析域名，可避开本机 DNS 污染。WinDivert 仍可使用，适合接管已运行的窗口；但它工作在 IP 层，若系统 DNS 已返回错误地址，接管本身无法恢复原域名，建议同时启用浏览器“安全 DNS”。</p><p class="takeover-error" id="takeover-error" role="alert" hidden></p></div>
+      <div class="takeover-copy"><div class="takeover-heading"><h3 id="takeover-title">自动接管应用网络</h3><span class="status" id="takeover-status">未开启</span></div><p>开启后会启动需要管理员权限的后台网络接管服务。下方列表中的应用，无论已经运行还是稍后启动，其<strong>新建连接</strong>都会按配置走代理；服务异常退出时会自动重启。</p><p class="takeover-comparison"><strong>与桌面快捷方式的区别：</strong>快捷方式只负责以 Hook 或浏览器原生代理参数启动单个应用，不要求本页接管服务常驻；自动接管无需从快捷方式启动。两者可以同时开启，连接到代理服务器的流量会被直连放行，不会形成重复代理。</p><p class="takeover-browser-note"><strong>浏览器建议：</strong>Chrome/Edge 优先使用本页创建的桌面快捷方式，它会让 SOCKS5 在代理端解析域名，可避开本机 DNS 污染。自动接管仍可使用，适合接管已运行的窗口；但它工作在 IP 层，若系统 DNS 已返回错误地址，接管本身无法恢复原域名，建议同时启用浏览器“安全 DNS”。</p><p class="takeover-error" id="takeover-error" role="alert" hidden></p></div>
       <label class="takeover-switch"><input id="takeover-enabled" type="checkbox" role="switch" aria-describedby="takeover-title"><span class="switch-track" aria-hidden="true"></span><span id="takeover-switch-label">启用接管</span></label>
     </section>
 
     <div class="clash-sticky" id="clash-sticky" hidden>
+      <div class="default-proxy-banner" id="default-proxy-banner" aria-live="polite"></div>
       <nav class="source-tabs" id="source-tabs" aria-label="代理来源"></nav>
       <section class="subscription-toolbar" id="subscription-toolbar" hidden>
         <label class="field node-filter-field"><span class="visually-hidden">筛选节点</span><input id="node-filter" type="search" autocomplete="off" placeholder="筛选节点名称或类型"></label>

@@ -19,6 +19,14 @@ func TestInferProcessHelpersUsesTreeAndPresets(t *testing.T) {
 	}
 }
 
+func TestInferProcessHelpersUsesCockpitToolsPreset(t *testing.T) {
+	selected := ProcessInfo{PID: 40, Name: "cockpit-tools.exe", Path: `D:\soft\Cockpit Tools\cockpit-tools.exe`}
+	got := InferProcessHelpers(selected, []ProcessInfo{selected})
+	if !containsName(got, "cockpit-cliproxy.exe") {
+		t.Fatalf("expected cockpit-cliproxy helper, got %v", got)
+	}
+}
+
 func TestInferProcessHelpersSameDirectory(t *testing.T) {
 	selected := ProcessInfo{PID: 20, Name: "chrome.exe", Path: `C:\Program Files\Google\Chrome\Application\chrome.exe`}
 	all := []ProcessInfo{

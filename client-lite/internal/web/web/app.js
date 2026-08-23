@@ -62,6 +62,7 @@ const commonApplications = [
   { name: "ChatGPT.exe", label: "ChatGPT", mode: "chatgpt", processes: "ChatGPT.exe;codex-code-mode-host.exe;codex.exe" },
   { name: "Antigravity IDE.exe", label: "Antigravity IDE", mode: "antigravity", processes: "Antigravity IDE.exe;language_server_windows_x64.exe" },
   { name: "claude.exe", label: "Claude Code", mode: "claude", processes: "claude.exe;claude-code.exe" },
+  { name: "cockpit-tools.exe", label: "Cockpit Tools", mode: "hook", processes: "cockpit-tools.exe;cockpit-cliproxy.exe" },
   { name: "chrome.exe", label: "Google Chrome", mode: "chrome", processes: "chrome.exe" },
   { name: "msedge.exe", label: "Microsoft Edge", mode: "edge", processes: "msedge.exe" }
 ];
@@ -200,6 +201,39 @@ function proxyDisplayName(profile) {
   return profile.name;
 }
 
+function defaultProxyState() {
+  return (appState.profiles || []).find((item) => item.profile?.default) || null;
+}
+
+function renderDefaultProxyBanner() {
+  const banner = $("#default-proxy-banner");
+  if (!banner) return;
+  if (appState.tab !== "proxies") {
+    banner.hidden = true;
+    return;
+  }
+  banner.hidden = false;
+  const item = defaultProxyState();
+  if (!item) {
+    banner.classList.add("empty");
+    setInnerHTML(banner, `<span class="default-proxy-kicker">默认代理</span><span>尚未设置。在节点上打开「默认」后，未单独指定代理的应用会使用它。</span>`);
+    return;
+  }
+  const profile = item.profile;
+  const type = profile.type === "ssh" ? "SSH" : profile.type === "external" ? "外部" : profile.type === "clash" ? "Clash" : "WS";
+  let name = proxyDisplayName(profile);
+  if (profile.type === "clash" && !profile.clash?.nodeName) {
+    const sub = (appState.subscriptions || []).find((entry) => entry.profileId === profile.id || entry.id === profile.clash?.subscriptionId);
+    if (sub?.selectedNode) name = `${profile.name} · ${sub.selectedNode}`;
+  }
+  const listen = `${profile.listenHost}:${profile.listenPort}`;
+  const running = Boolean(item.running);
+  const statusClass = item.starting ? "busy" : running || profile.type === "external" ? "running" : "";
+  const statusText = item.starting ? "启动中" : running ? "运行中" : profile.type === "external" ? "外部提供" : "未启动";
+  banner.classList.remove("empty");
+  setInnerHTML(banner, `<span class="default-proxy-kicker">默认代理</span>${running ? `<span class="live-dot" title="运行中" aria-hidden="true"></span>` : ""}<strong>${escapeHTML(name)}</strong><span class="badge">${type}</span><span class="default-proxy-listen">${escapeHTML(listen)}</span><span class="status ${statusClass}">${statusText}</span>`);
+}
+
 function renderSourceTabs() {
   const sticky = $("#clash-sticky");
   const tabs = $("#source-tabs");
@@ -208,6 +242,7 @@ function renderSourceTabs() {
   if (sticky) sticky.hidden = !isProxies;
   if (!isProxies) {
     if (toolbar) toolbar.hidden = true;
+    renderDefaultProxyBanner();
     return;
   }
   const subs = appState.subscriptions || [];
@@ -250,6 +285,7 @@ function renderSourceTabs() {
     syncClashBypassSwitch("#clash-bypass-private", Boolean(sub?.bypassPrivate), bypassBusy);
     syncClashBypassSwitch("#clash-bypass-china", Boolean(sub?.bypassChina), bypassBusy);
   }
+  renderDefaultProxyBanner();
 }
 
 function renderProfiles() {

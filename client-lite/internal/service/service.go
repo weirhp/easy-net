@@ -45,18 +45,20 @@ type ProfileState struct {
 }
 
 type Service struct {
-	mu           sync.Mutex
-	configMu     sync.Mutex
-	store        *config.Store
-	secrets      secretstore.Store
-	cfg          *model.Config
-	instances    map[string]*proxy.Server
-	errors       map[string]string
-	starting     map[string]context.CancelFunc
-	profileLocks map[string]*sync.Mutex
-	connections  map[string]connectionHealth
-	revisions    map[string]uint64
-	clash        *clashsub.Manager
+	mu            sync.Mutex
+	configMu      sync.Mutex
+	portMu        sync.Mutex
+	store         *config.Store
+	secrets       secretstore.Store
+	cfg           *model.Config
+	instances     map[string]*proxy.Server
+	errors        map[string]string
+	starting      map[string]context.CancelFunc
+	profileLocks  map[string]*sync.Mutex
+	connections   map[string]connectionHealth
+	revisions     map[string]uint64
+	clash         *clashsub.Manager
+	portAvailable func(int) bool
 }
 
 type connectionHealth struct {
@@ -75,6 +77,7 @@ func New(store *config.Store, secrets secretstore.Store) (*Service, error) {
 		instances: make(map[string]*proxy.Server), errors: make(map[string]string),
 		starting: make(map[string]context.CancelFunc), profileLocks: make(map[string]*sync.Mutex),
 		connections: make(map[string]connectionHealth), revisions: make(map[string]uint64),
+		portAvailable: localTCPPortAvailable,
 	}, nil
 }
 
@@ -207,6 +210,12 @@ func (s *Service) ExportShare(id string) (sharecode.Payload, error) {
 }
 
 func (s *Service) ImportShare(payload sharecode.Payload) (string, error) {
+	s.portMu.Lock()
+	defer s.portMu.Unlock()
+	return s.importShare(payload)
+}
+
+func (s *Service) importShare(payload sharecode.Payload) (string, error) {
 	if err := sharecode.Validate(payload); err != nil {
 		return "", err
 	}
@@ -239,6 +248,8 @@ func (s *Service) ImportOrReuseShare(payload sharecode.Payload) (string, error) 
 	if err := sharecode.Validate(payload); err != nil {
 		return "", err
 	}
+	s.portMu.Lock()
+	defer s.portMu.Unlock()
 	if existing, ok := s.matchingShareProfile(payload); ok {
 		existing.BypassPrivate = payload.BypassPrivate
 		existing.BypassChina = payload.BypassChina
@@ -263,7 +274,7 @@ func (s *Service) ImportOrReuseShare(payload sharecode.Payload) (string, error) 
 		}
 		return existing.ID, nil
 	}
-	return s.ImportShare(payload)
+	return s.importShare(payload)
 }
 
 func (s *Service) matchingShareProfile(payload sharecode.Payload) (model.Profile, bool) {
@@ -302,13 +313,17 @@ func (s *Service) nextAvailablePort(preferred int) int {
 	if preferred < 1 || preferred > 65535 {
 		preferred = 1080
 	}
+	available := s.portAvailable
+	if available == nil {
+		available = localTCPPortAvailable
+	}
 	for port := preferred; port <= 65535; port++ {
-		if _, exists := used[port]; !exists && localTCPPortAvailable(port) {
+		if _, exists := used[port]; !exists && available(port) {
 			return port
 		}
 	}
 	for port := 1080; port < preferred; port++ {
-		if _, exists := used[port]; !exists && localTCPPortAvailable(port) {
+		if _, exists := used[port]; !exists && available(port) {
 			return port
 		}
 	}
@@ -884,7 +899,7 @@ func (s *Service) buildTransport(profile model.Profile) (transport.Transport, er
 	case model.ProxyTypeExternal:
 		return nil, fmt.Errorf("外部 SOCKS5 由其他软件提供，Lite 不会创建本地监听")
 	case model.ProxyTypeClash:
-		return nil, fmt.Errorf("Clash 订阅节点由 mihomo 提供本地监听")
+		return nil, fmt.Errorf("节点订阅由 mihomo 提供本地监听")
 	case model.ProxyTypeWebSocket:
 		secret, err := s.getSecret(profile.WebSocket.SecretRef, "WebSocket 密钥")
 		if err != nil {

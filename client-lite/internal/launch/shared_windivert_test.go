@@ -341,3 +341,36 @@ func TestTakeoverSettingPersists(t *testing.T) {
 		t.Fatal("takeover setting was not persisted")
 	}
 }
+
+func TestStopTakeoverRuntimeKeepsPreferenceAndWritesEmptyRules(t *testing.T) {
+	dir := t.TempDir()
+	launches, err := New(dir, testService(t, dir), &fakeRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := launches.Upsert(model.LaunchEntry{
+		Name: "app", Mode: model.LaunchModeWinDivert, Proxy: "127.0.0.1:1082", Path: `D:\App\app.exe`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := launches.SetTakeoverEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := launches.StopTakeoverRuntime(); err != nil {
+		t.Fatal(err)
+	}
+	if !launches.TakeoverEnabled() {
+		t.Fatal("runtime shutdown changed the persisted takeover preference")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "shared-windivert.pbprofile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var profile bridgeProfile
+	if err := json.Unmarshal(data, &profile); err != nil {
+		t.Fatal(err)
+	}
+	if len(profile.ProxyRules) != 0 || len(profile.ProxyConfigs) != 0 {
+		t.Fatalf("runtime shutdown did not clear active rules: %#v", profile)
+	}
+}

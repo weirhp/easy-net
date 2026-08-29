@@ -48,3 +48,28 @@ func TestStoreKeepsCurrentBypassSettings(t *testing.T) {
 		t.Fatalf("current subscription settings changed unexpectedly: %#v", file.Subscriptions)
 	}
 }
+
+func TestStoreAddsRealityFingerprintToExistingSubscription(t *testing.T) {
+	dir := t.TempDir()
+	current := `{
+  "version": 3,
+  "subscriptions": [{
+    "id": "reality", "name": "Reality", "url": "https://example.com/sub",
+    "listenPort": 17890, "refreshMinutes": 60,
+    "nodes": [{
+      "name": "node", "type": "vless", "server": "example.com", "port": 443,
+      "raw": {"name":"node","type":"vless","server":"example.com","port":443,"reality-opts":{"public-key":"test"}}
+    }]
+  }]
+}`
+	if err := os.WriteFile(filepath.Join(dir, "subscriptions.json"), []byte(current), 0600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := newStore(dir).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := file.Subscriptions[0].Nodes[0].Raw["client-fingerprint"]; got != "chrome" {
+		t.Fatalf("existing Reality node did not receive compatible fingerprint: %v", got)
+	}
+}

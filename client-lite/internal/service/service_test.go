@@ -157,6 +157,9 @@ func TestShareExportImportRoundTripAvoidsPortConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Port selection is a policy in this test. Do not depend on unrelated
+	// processes listening on the developer or CI machine.
+	svc.portAvailable = func(int) bool { return true }
 	profile := model.Profile{ID: "source", Name: "shared ws", Type: model.ProxyTypeWebSocket, ListenHost: "127.0.0.1", ListenPort: 1080, AutoStart: true, BypassPrivate: true, BypassChina: true, WebSocket: &model.WebSocketConfig{URL: "wss://example.com"}}
 	if err := svc.Upsert(profile, SecretValues{WebSocketSecret: "shared-secret"}); err != nil {
 		t.Fatal(err)
@@ -236,6 +239,54 @@ func TestImportOrReuseShareUpdatesExistingEndpoint(t *testing.T) {
 	}
 	if len(svc.States()) != 2 {
 		t.Fatalf("expected a second profile, got %#v", svc.States())
+	}
+}
+
+func TestConcurrentImportOrReuseShareCreatesOneProfile(t *testing.T) {
+	svc, err := New(config.NewStoreAt(filepath.Join(t.TempDir(), "config.json")),
+		&memorySecrets{values: map[string]string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.portAvailable = func(int) bool { return true }
+	payload := sharecode.Payload{
+		Version: sharecode.CurrentVersion, Name: "并发配置", Type: model.ProxyTypeWebSocket,
+		PreferredPort: 1080, WebSocket: &sharecode.WebSocketConfig{
+			URL: "wss://example.com/concurrent", Secret: "secret",
+		},
+	}
+	const workers = 8
+	ids := make(chan string, workers)
+	errors := make(chan error, workers)
+	var group sync.WaitGroup
+	for range workers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			id, importErr := svc.ImportOrReuseShare(payload)
+			ids <- id
+			errors <- importErr
+		}()
+	}
+	group.Wait()
+	close(ids)
+	close(errors)
+	for importErr := range errors {
+		if importErr != nil {
+			t.Fatal(importErr)
+		}
+	}
+	var expected string
+	for id := range ids {
+		if expected == "" {
+			expected = id
+		}
+		if id != expected {
+			t.Fatalf("concurrent reuse returned different ids: %q and %q", expected, id)
+		}
+	}
+	if states := svc.States(); len(states) != 1 {
+		t.Fatalf("expected one imported profile, got %d", len(states))
 	}
 }
 

@@ -3,6 +3,7 @@ package clashsub
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -21,6 +22,11 @@ func Parse(data []byte) ([]model.ClashNode, error) {
 	if err == nil && len(nodes) > 0 {
 		return nodes, nil
 	}
+	if linkNodes, linkErr := parseShareLinks(payload); linkErr == nil {
+		return linkNodes, nil
+	} else if !errors.Is(linkErr, errNotShareLinkSubscription) {
+		return nil, linkErr
+	}
 	decoded, decodeErr := decodeMaybeBase64(payload)
 	if decodeErr != nil {
 		if err != nil {
@@ -29,16 +35,18 @@ func Parse(data []byte) ([]model.ClashNode, error) {
 		return nil, fmt.Errorf("订阅中没有可用的 Clash 节点")
 	}
 	nodes, yamlErr := parseYAML(decoded)
+	if yamlErr == nil && len(nodes) > 0 {
+		return nodes, nil
+	}
+	if linkNodes, linkErr := parseShareLinks(decoded); linkErr == nil {
+		return linkNodes, nil
+	} else if !errors.Is(linkErr, errNotShareLinkSubscription) {
+		return nil, linkErr
+	}
 	if yamlErr != nil {
-		if err != nil {
-			return nil, err
-		}
 		return nil, yamlErr
 	}
-	if len(nodes) == 0 {
-		return nil, fmt.Errorf("订阅中没有可用的 Clash 节点")
-	}
-	return nodes, nil
+	return nil, fmt.Errorf("订阅中没有可用的 Clash 或 v2rayN 节点")
 }
 
 func parseYAML(data []byte) ([]model.ClashNode, error) {
@@ -79,13 +87,30 @@ func clashNodeFromMap(proxy map[string]any) (model.ClashNode, bool) {
 	if kind == "direct" || kind == "reject" || kind == "selector" || kind == "url-test" || kind == "fallback" || kind == "load-balance" || kind == "relay" {
 		return model.ClashNode{}, false
 	}
+	raw := normalizeMap(proxy)
+	applyNodeRuntimeDefaults(raw)
 	return model.ClashNode{
 		Name:   name,
 		Type:   kind,
 		Server: strings.TrimSpace(asString(proxy["server"])),
 		Port:   asInt(proxy["port"]),
-		Raw:    normalizeMap(proxy),
+		Raw:    raw,
 	}, true
+}
+
+// Xray supplies a browser-like uTLS fingerprint when a Reality link omits fp.
+// Mihomo does not make the same compatible choice for all Reality servers, and
+// those servers commonly close the first proxied TLS stream with EOF. Keep the
+// subscription portable by applying an explicit, conservative default.
+func applyNodeRuntimeDefaults(raw map[string]any) {
+	if !strings.EqualFold(strings.TrimSpace(asString(raw["type"])), "vless") {
+		return
+	}
+	reality, _ := raw["reality-opts"].(map[string]any)
+	if len(reality) == 0 || strings.TrimSpace(asString(raw["client-fingerprint"])) != "" {
+		return
+	}
+	raw["client-fingerprint"] = "chrome"
 }
 
 func decodeMaybeBase64(data []byte) ([]byte, error) {
@@ -102,6 +127,9 @@ func decodeMaybeBase64(data []byte) ([]byte, error) {
 	}
 	if err != nil {
 		decoded, err = base64.RawStdEncoding.DecodeString(text)
+	}
+	if err != nil {
+		decoded, err = base64.RawURLEncoding.DecodeString(text)
 	}
 	if err != nil {
 		return nil, err

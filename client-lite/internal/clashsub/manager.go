@@ -17,12 +17,15 @@ type Fetcher func(url string) ([]byte, error)
 
 type Manager struct {
 	mu          sync.Mutex
+	opMu        sync.Mutex
 	dir         string
 	store       *store
 	file        *model.SubscriptionFile
 	runner      Runner
 	fetch       Fetcher
 	refreshHook func(id string) error
+	refreshing  map[string]bool
+	refreshWG   sync.WaitGroup
 }
 
 func New(dir string, runner Runner) (*Manager, error) {
@@ -41,7 +44,9 @@ func New(dir string, runner Runner) (*Manager, error) {
 
 func (m *Manager) SetFetcher(fetch Fetcher) {
 	if fetch != nil {
+		m.mu.Lock()
 		m.fetch = fetch
+		m.mu.Unlock()
 	}
 }
 
@@ -87,7 +92,7 @@ func (m *Manager) Import(name, rawURL string, listenPort, refreshMinutes int, by
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.file.Subscriptions) >= model.MaxClashSubscriptions {
-		return model.Subscription{}, fmt.Errorf("Clash 订阅最多 %d 个", model.MaxClashSubscriptions)
+		return model.Subscription{}, fmt.Errorf("节点订阅最多 %d 个", model.MaxClashSubscriptions)
 	}
 	for _, existing := range m.file.Subscriptions {
 		if strings.EqualFold(existing.Name, name) {
@@ -115,31 +120,40 @@ func (m *Manager) Import(name, rawURL string, listenPort, refreshMinutes int, by
 }
 
 func (m *Manager) Refresh(id string) (model.Subscription, error) {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
 	sub, ok := m.Get(id)
 	if !ok {
-		return model.Subscription{}, fmt.Errorf("Clash 订阅不存在")
+		return model.Subscription{}, fmt.Errorf("节点订阅不存在")
 	}
 	nodes, err := m.downloadNodes(sub.URL)
 	if err != nil {
 		return model.Subscription{}, err
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	index := m.indexLocked(id)
 	if index < 0 {
-		return model.Subscription{}, fmt.Errorf("Clash 订阅不存在")
+		m.mu.Unlock()
+		return model.Subscription{}, fmt.Errorf("节点订阅不存在")
 	}
 	current := m.file.Subscriptions[index]
 	current.Nodes = nodes
 	current.UpdatedAt = time.Now()
 	current.Normalize()
+	shouldStop := current.SelectedNode == ""
 	if current.SelectedNode == "" {
-		_ = m.runner.Stop(current.ID)
 		current.Active = false
 	}
 	m.file.Subscriptions[index] = current
 	if err := m.store.Save(m.file); err != nil {
+		m.mu.Unlock()
 		return model.Subscription{}, err
+	}
+	m.mu.Unlock()
+	if shouldStop {
+		if err := m.runner.Stop(current.ID); err != nil {
+			return current.Clone(), fmt.Errorf("订阅已更新，但停止已失效的节点失败：%w", err)
+		}
 	}
 	return current.Clone(), nil
 }
@@ -149,7 +163,7 @@ func (m *Manager) SetRefreshInterval(id string, refreshMinutes int) (model.Subsc
 	defer m.mu.Unlock()
 	index := m.indexLocked(id)
 	if index < 0 {
-		return model.Subscription{}, fmt.Errorf("Clash 订阅不存在")
+		return model.Subscription{}, fmt.Errorf("节点订阅不存在")
 	}
 	m.file.Subscriptions[index].RefreshMinutes = model.NormalizeRefreshMinutes(refreshMinutes)
 	if err := m.store.Save(m.file); err != nil {
@@ -163,7 +177,7 @@ func (m *Manager) SetBypass(id string, bypassPrivate, bypassChina bool) (model.S
 	index := m.indexLocked(id)
 	if index < 0 {
 		m.mu.Unlock()
-		return model.Subscription{}, fmt.Errorf("Clash 订阅不存在")
+		return model.Subscription{}, fmt.Errorf("节点订阅不存在")
 	}
 	m.file.Subscriptions[index].BypassPrivate = bypassPrivate
 	m.file.Subscriptions[index].BypassChina = bypassChina
@@ -183,21 +197,38 @@ func (m *Manager) SetBypass(id string, bypassPrivate, bypassChina bool) (model.S
 }
 
 func (m *Manager) Delete(id string) error {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	index := m.indexLocked(id)
 	if index < 0 {
-		return fmt.Errorf("Clash 订阅不存在")
+		m.mu.Unlock()
+		return fmt.Errorf("节点订阅不存在")
 	}
-	_ = m.runner.Stop(id)
+	m.mu.Unlock()
+	if err := m.runner.Stop(id); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	index = m.indexLocked(id)
+	if index < 0 {
+		return nil
+	}
 	m.file.Subscriptions = append(m.file.Subscriptions[:index], m.file.Subscriptions[index+1:]...)
 	return m.store.Save(m.file)
 }
 
 func (m *Manager) StartNode(id, nodeName string) error {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	return m.startNode(id, nodeName)
+}
+
+func (m *Manager) startNode(id, nodeName string) error {
 	sub, ok := m.Get(id)
 	if !ok {
-		return fmt.Errorf("Clash 订阅不存在")
+		return fmt.Errorf("节点订阅不存在")
 	}
 	node, ok := sub.Node(nodeName)
 	if !ok {
@@ -207,14 +238,17 @@ func (m *Manager) StartNode(id, nodeName string) error {
 		return err
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	index := m.indexLocked(id)
 	if index < 0 {
-		return fmt.Errorf("Clash 订阅不存在")
+		m.mu.Unlock()
+		_ = m.runner.Stop(id)
+		return fmt.Errorf("节点订阅不存在")
 	}
 	m.file.Subscriptions[index].SelectedNode = node.Name
 	m.file.Subscriptions[index].Active = true
-	if err := m.store.Save(m.file); err != nil {
+	err := m.store.Save(m.file)
+	m.mu.Unlock()
+	if err != nil {
 		_ = m.runner.Stop(id)
 		return err
 	}
@@ -222,6 +256,8 @@ func (m *Manager) StartNode(id, nodeName string) error {
 }
 
 func (m *Manager) Stop(id string) error {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
 	id = strings.TrimPrefix(strings.TrimSpace(id), "clash-")
 	if err := m.runner.Stop(id); err != nil {
 		return err
@@ -243,8 +279,13 @@ func (m *Manager) Running(id string) bool {
 // StartMonitor restores nodes that were active before Lite restarted and
 // restarts a node if its owned mihomo process exits unexpectedly. Manual Stop
 // clears Active, so it is never mistaken for a crash.
-func (m *Manager) StartMonitor(ctx context.Context, report func(string, ...any)) {
+func (m *Manager) StartMonitor(ctx context.Context, report func(string, ...any)) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer func() {
+			m.refreshWG.Wait()
+			close(done)
+		}()
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		lastAttempt := make(map[string]time.Time)
@@ -280,6 +321,7 @@ func (m *Manager) StartMonitor(ctx context.Context, report func(string, ...any))
 			}
 		}
 	}()
+	return done
 }
 
 func (m *Manager) maybeAutoRefresh(sub model.Subscription, lastAttempt map[string]time.Time, report func(string, ...any)) {
@@ -290,13 +332,30 @@ func (m *Manager) maybeAutoRefresh(sub model.Subscription, lastAttempt map[strin
 		return
 	}
 	m.mu.Lock()
+	if m.refreshing == nil {
+		m.refreshing = make(map[string]bool)
+	}
+	if m.refreshing[sub.ID] {
+		m.mu.Unlock()
+		return
+	}
 	hook := m.refreshHook
+	if hook != nil {
+		m.refreshing[sub.ID] = true
+	}
 	m.mu.Unlock()
 	if hook == nil {
 		return
 	}
 	lastAttempt[sub.ID] = time.Now()
+	m.refreshWG.Add(1)
 	go func(id, name string) {
+		defer func() {
+			m.mu.Lock()
+			delete(m.refreshing, id)
+			m.mu.Unlock()
+			m.refreshWG.Done()
+		}()
 		if err := hook(id); err != nil && report != nil {
 			report("[Easy-Net Lite] 自动刷新订阅 %s 失败：%v", name, err)
 		}
@@ -304,7 +363,9 @@ func (m *Manager) maybeAutoRefresh(sub model.Subscription, lastAttempt map[strin
 }
 
 func (m *Manager) downloadNodes(rawURL string) ([]model.ClashNode, error) {
+	m.mu.Lock()
 	fetch := m.fetch
+	m.mu.Unlock()
 	if fetch == nil {
 		fetch = Fetch
 	}

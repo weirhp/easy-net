@@ -19,6 +19,7 @@ import (
 	"time"
 	"unicode"
 
+	"easy-net/client-lite/internal/autostart"
 	"easy-net/client-lite/internal/clashsub"
 	"easy-net/client-lite/internal/launch"
 	"easy-net/client-lite/internal/model"
@@ -29,18 +30,25 @@ import (
 
 const listenAddress = "127.0.0.1:18081"
 
-//go:embed web/index.html web/app.css web/app.js
+//go:embed web/index.html web/app.css web/app.js web/favicon.ico
 var assets embed.FS
 
 type Options struct {
 	ListenAddress string
 	StatusFile    string
 	Launches      *launch.Service
+	AutoStart     AutoStartManager
+}
+
+type AutoStartManager interface {
+	Status() autostart.Status
+	SetEnabled(bool) error
 }
 
 type Server struct {
 	service       *service.Service
 	launches      *launch.Service
+	autoStart     AutoStartManager
 	http          *http.Server
 	listener      net.Listener
 	token         string
@@ -54,6 +62,7 @@ type stateResponse struct {
 	Subscriptions []clashsub.View        `json:"subscriptions,omitempty"`
 	Launches      []launch.View          `json:"launches,omitempty"`
 	Takeover      *launch.TakeoverStatus `json:"takeover,omitempty"`
+	AutoStart     autostart.Status       `json:"autoStart"`
 	Features      featuresView           `json:"features"`
 	ConfigPath    string                 `json:"configPath"`
 	Token         string                 `json:"token"`
@@ -165,7 +174,7 @@ func NewWithOptions(svc *service.Service, onQuit func(), options Options) (*Serv
 		listen = listenAddress
 	}
 	s := &Server{
-		service: svc, launches: options.Launches, token: hex.EncodeToString(tokenBytes), onQuit: onQuit,
+		service: svc, launches: options.Launches, autoStart: options.AutoStart, token: hex.EncodeToString(tokenBytes), onQuit: onQuit,
 		listenAddress: listen, statusFile: strings.TrimSpace(options.StatusFile),
 	}
 	mux := http.NewServeMux()
@@ -179,6 +188,7 @@ func NewWithOptions(svc *service.Service, onQuit func(), options Options) (*Serv
 	mux.HandleFunc("/api/launches/bulk", s.handleLaunchBulk)
 	mux.HandleFunc("/api/launches/", s.handleLaunchAction)
 	mux.HandleFunc("/api/app-takeover", s.handleAppTakeover)
+	mux.HandleFunc("/api/app-autostart", s.handleAppAutoStart)
 	mux.HandleFunc("/api/processes", s.handleProcesses)
 	mux.HandleFunc("/api/application-files/pick", s.handleApplicationFilePick)
 	mux.HandleFunc("/api/export", s.handleExport)
@@ -282,6 +292,9 @@ func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 	case "/app.js":
 		path = "web/app.js"
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	case "/favicon.ico":
+		path = "web/favicon.ico"
+		w.Header().Set("Content-Type", "image/x-icon")
 	default:
 		http.NotFound(w, r)
 		return
@@ -309,6 +322,9 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		Profiles: profiles, Subscriptions: s.service.ClashViews(), Features: s.features(), ConfigPath: s.service.ConfigPath(),
 		Token: s.token, Version: version.Value, Warnings: s.service.ConfigWarnings(),
 	}
+	if s.autoStart != nil {
+		response.AutoStart = s.autoStart.Status()
+	}
 	if response.Subscriptions == nil {
 		response.Subscriptions = []clashsub.View{}
 	}
@@ -321,6 +337,33 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleAppAutoStart(w http.ResponseWriter, r *http.Request) {
+	if s.autoStart == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.authorized(r) {
+		writeError(w, http.StatusForbidden, "本地管理令牌无效，请刷新页面")
+		return
+	}
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.autoStart.SetEnabled(body.Enabled); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "autoStart": s.autoStart.Status()})
 }
 
 func (s *Server) handleAppTakeover(w http.ResponseWriter, r *http.Request) {
@@ -391,7 +434,7 @@ func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.Profile.Type == model.ProxyTypeClash {
-		writeError(w, http.StatusBadRequest, "Clash 订阅请使用订阅导入，不能当作普通配置保存")
+		writeError(w, http.StatusBadRequest, "节点订阅请使用订阅导入，不能当作普通配置保存")
 		return
 	}
 	err := s.service.Upsert(request.Profile.modelProfile(), service.SecretValues{

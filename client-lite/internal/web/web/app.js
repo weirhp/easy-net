@@ -5,10 +5,11 @@ const appState = {
   subscriptions: [],
   launches: [],
 	takeover: { enabled: false, state: "stopped", message: "" },
+  autoStart: { supported: false, enabled: false, current: false, error: "" },
   runningProcesses: [],
   commonPaths: new Map(),
   features: { appLaunches: false },
-  tab: location.hash === "#apps" ? "apps" : "proxies",
+  tab: location.hash === "#apps" ? "apps" : location.hash === "#settings" ? "settings" : "proxies",
   proxySource: "manual",
   nodeFilter: "",
   token: "",
@@ -138,6 +139,7 @@ async function loadState(silent = false) {
     appState.subscriptions = data.subscriptions || [];
     appState.launches = data.launches || [];
 	appState.takeover = data.takeover || { enabled: false, state: "stopped", message: "" };
+    appState.autoStart = data.autoStart || { supported: false, enabled: false, current: false, error: "" };
     appState.features = data.features || { appLaunches: false };
     appState.token = data.token;
 	setText($("#app-version"), `v${data.version || "dev"}`);
@@ -148,6 +150,7 @@ async function loadState(silent = false) {
     renderProfiles();
     renderLaunches();
 	renderTakeover();
+	renderSettings();
 	if (appState.initialized) notifyConnectionFailures(previousProfiles, appState.profiles);
 	if (appState.initialized && appState.takeover.state === "error") {
 		const message = appState.takeover.message || "应用网络接管服务异常，正在自动恢复";
@@ -304,9 +307,9 @@ function renderProfiles() {
   setText($("#page-eyebrow"), "LOCAL PROXY");
   setText($("#page-title"), "网络代理管理");
   setText($("#notice-title"), "使用说明");
-  setText($("#overview-note"), "配置并启动代理后，本机流量会通过加密通道传输。关闭此窗口不会停止代理运行，你可以在系统托盘中继续管理。Clash 订阅请用上方 Tab 切换。");
+  setText($("#overview-note"), "配置并启动代理后，本机流量会通过加密通道传输。关闭此窗口不会停止代理运行，你可以在系统托盘中继续管理。Clash / v2rayN 订阅请用上方 Tab 切换。");
   if (!profiles.length) {
-    setInnerHTML(profilesElement, `<div class="empty-state"><h2>还没有代理配置</h2><p>使用右上角按钮添加 WebSocket、SSH、外部 SOCKS5，或导入 Clash 订阅。</p></div>`);
+    setInnerHTML(profilesElement, `<div class="empty-state"><h2>还没有代理配置</h2><p>使用右上角按钮添加 WebSocket、SSH、外部 SOCKS5，或导入 Clash / v2rayN 订阅。</p></div>`);
     updateSelectionToolbar();
     return;
   }
@@ -371,13 +374,13 @@ function renderClashNodes() {
   const sub = currentSubscription();
   profilesElement.classList.remove("app-grid");
   profilesElement.classList.add("node-grid");
-  setText($("#page-eyebrow"), "CLASH SUBSCRIPTION");
-  setText($("#page-title"), sub ? sub.name : "Clash 订阅");
+  setText($("#page-eyebrow"), "NODE SUBSCRIPTION");
+  setText($("#page-title"), sub ? sub.name : "节点订阅");
   setText($("#notice-title"), "订阅节点");
   setText($("#overview-note"), "选择一个节点启动本地 SOCKS5。设为默认后，未单独指定代理的应用会使用该节点。同一订阅同时只运行一个节点。");
   if (!sub) {
     setText($("#summary"), "订阅不存在");
-    setInnerHTML(profilesElement, `<div class="empty-state"><h2>找不到这个订阅</h2><p>请切换回「手动添加」，或重新导入 Clash 订阅。</p></div>`);
+    setInnerHTML(profilesElement, `<div class="empty-state"><h2>找不到这个订阅</h2><p>请切换回「手动添加」，或重新导入节点订阅。</p></div>`);
     updateSelectionToolbar();
     return;
   }
@@ -470,15 +473,51 @@ function syncTabs() {
   });
   profilesElement.hidden = appState.tab !== "proxies";
   launchesElement.hidden = appState.tab !== "apps";
+	$("#settings-panel").hidden = appState.tab !== "settings";
 	$("#takeover-panel").hidden = appState.tab !== "apps";
   renderSourceTabs();
   updateSelectionToolbar();
-  if (appState.tab === "apps") {
-    const hash = "#apps";
+  if (appState.tab === "apps" || appState.tab === "settings") {
+    const hash = `#${appState.tab}`;
     if (location.hash !== hash) history.replaceState(null, "", hash);
-  } else if (location.hash === "#apps") {
+  } else if (location.hash === "#apps" || location.hash === "#settings") {
     history.replaceState(null, "", location.pathname + location.search);
   }
+}
+
+function renderSettings() {
+	if (appState.tab !== "settings") return;
+	setText($("#page-eyebrow"), "APPLICATION SETTINGS");
+	setText($("#page-title"), "程序设置");
+	setText($("#summary"), "管理 Easy-Net Lite 的运行方式");
+	setText($("#notice-title"), "开机启动说明");
+	setText($("#overview-note"), "开机启动只负责让 Lite 在登录后进入系统托盘。需要自动连接的代理，请另外打开对应代理配置中的“程序启动后自动运行”。");
+	const status = appState.autoStart || {};
+	const checkbox = $("#autostart-enabled");
+	checkbox.checked = Boolean(status.enabled);
+	checkbox.disabled = !status.supported || appState.busy.has("autostart");
+	setText($("#autostart-switch-label"), status.enabled ? "已启用" : status.supported ? "开机启动" : "当前系统不支持");
+	const error = $("#autostart-error");
+	const message = status.error || (status.enabled && !status.current ? "启动路径需要修复，请关闭后重新开启此选项。" : "");
+	error.hidden = !message;
+	setText(error, message ? `错误：${message}` : "");
+}
+
+async function toggleAutoStart(enabled) {
+	if (appState.busy.has("autostart")) return;
+	appState.busy.add("autostart");
+	renderSettings();
+	try {
+		const data = await api("/api/app-autostart", { method: "POST", body: JSON.stringify({ enabled }) });
+		appState.autoStart = data.autoStart || { supported: true, enabled, current: enabled, error: "" };
+		showToast(enabled ? "已启用开机启动；下次登录 Windows 时 Lite 会在托盘后台运行" : "已关闭开机启动");
+	} catch (error) {
+		showToast(error.message, true);
+		await loadState(true);
+	} finally {
+		appState.busy.delete("autostart");
+		renderSettings();
+	}
 }
 
 function renderTakeover() {
@@ -517,11 +556,12 @@ async function toggleTakeover(enabled) {
 }
 
 function setTab(tab) {
-  appState.tab = tab === "apps" && appState.features.appLaunches ? "apps" : "proxies";
+  appState.tab = tab === "settings" ? "settings" : tab === "apps" && appState.features.appLaunches ? "apps" : "proxies";
   setNavigationOpen(false);
   syncTabs();
   renderProfiles();
   renderLaunches();
+  renderSettings();
 }
 
 function setNavigationOpen(open) {
@@ -1530,7 +1570,7 @@ async function clashSubscriptionAction(action, id) {
   if (action === "delete") {
     const confirmed = await showConfirmModal({
       kind: "删除订阅",
-      title: "删除这个 Clash 订阅？",
+      title: "删除这个节点订阅？",
       message: `「${sub?.name || "订阅"}」及其节点列表会从 Lite 中移除。`,
       details: "正在运行的 mihomo 节点也会停止。此操作无法撤销。",
       confirmText: "删除订阅",
@@ -1544,7 +1584,7 @@ async function clashSubscriptionAction(action, id) {
     if (action === "delete") {
       await api(`/api/subscriptions/${encodeURIComponent(id)}`, { method: "DELETE" });
       appState.proxySource = "manual";
-      showToast("Clash 订阅已删除");
+      showToast("节点订阅已删除");
     } else if (action === "refresh") {
       const data = await api(`/api/subscriptions/${encodeURIComponent(id)}/refresh`, { method: "POST" });
       showToast(`订阅已更新，共 ${data.nodes || 0} 个节点`);
@@ -1874,6 +1914,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("change", (event) => {
+	if (event.target.id === "autostart-enabled") { toggleAutoStart(event.target.checked); return; }
 	if (event.target.id === "takeover-enabled") { toggleTakeover(event.target.checked); return; }
 	const launchTakeover = event.target.closest("[data-launch-takeover]");
 	if (launchTakeover) { toggleLaunchTakeover(launchTakeover.dataset.launchTakeover, launchTakeover.checked); return; }
@@ -1977,14 +2018,11 @@ document.querySelectorAll("[data-close-process]").forEach((button) => button.add
 document.querySelectorAll("[data-close-common]").forEach((button) => button.addEventListener("click", closeCommonDialog));
 $("#close-launch-dialog").addEventListener("click", closeLaunchDialog);
 $("#cancel-launch-dialog").addEventListener("click", closeLaunchDialog);
-launchDialogElement.addEventListener("click", (event) => { if (event.target === launchDialogElement) closeLaunchDialog(); });
-launchDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); closeLaunchDialog(); });
 window.addEventListener("hashchange", () => {
   if (location.hash === "#apps") setTab("apps");
-  else if (appState.tab === "apps") setTab("proxies");
+  else if (location.hash === "#settings") setTab("settings");
+  else if (appState.tab === "apps" || appState.tab === "settings") setTab("proxies");
 });
-dialogElement.addEventListener("click", (event) => { if (event.target === dialogElement) dialogElement.close(); });
-actionDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); finishActionDialog(false); });
 actionDialogElement.addEventListener("close", () => {
   if (actionDialogResolver) {
     const resolve = actionDialogResolver;
@@ -1992,17 +2030,11 @@ actionDialogElement.addEventListener("close", () => {
     resolve(false);
   }
 });
-actionDialogElement.addEventListener("click", (event) => { if (event.target === actionDialogElement) finishActionDialog(false); });
-shareDialogElement.addEventListener("click", (event) => { if (event.target === shareDialogElement) closeShareDialog(); });
-importDialogElement.addEventListener("click", (event) => { if (event.target === importDialogElement) closeImportDialog(); });
-clashImportDialogElement.addEventListener("click", (event) => { if (event.target === clashImportDialogElement) closeClashImportDialog(); });
-processDialogElement.addEventListener("click", (event) => { if (event.target === processDialogElement) closeProcessDialog(); });
-commonDialogElement.addEventListener("click", (event) => { if (event.target === commonDialogElement) closeCommonDialog(); });
-shareDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); closeShareDialog(); });
-importDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); closeImportDialog(); });
-clashImportDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); closeClashImportDialog(); });
-processDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); closeProcessDialog(); });
-commonDialogElement.addEventListener("cancel", (event) => { event.preventDefault(); closeCommonDialog(); });
+// Dialogs are intentionally modal: clicking the backdrop or pressing Escape
+// must not discard edits or dismiss a confirmation accidentally.
+document.querySelectorAll("dialog").forEach((dialog) => {
+  dialog.addEventListener("cancel", (event) => event.preventDefault());
+});
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loadState(true); });
 
 loadState();

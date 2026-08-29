@@ -5,6 +5,7 @@
 #include <detours.h>
 #include <shobjidl.h>
 #include <shellapi.h>
+#include <sddl.h>
 #include <tlhelp32.h>
 #include <winternl.h>
 
@@ -493,6 +494,21 @@ public:
 private:
     HANDLE handle_;
 };
+
+ScopedHandle CreateKillOnCloseJob(HANDLE process) {
+    ScopedHandle job(CreateJobObjectW(nullptr, nullptr));
+    if (job.get() == nullptr) {
+        return ScopedHandle();
+    }
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation, &limits,
+                                 sizeof(limits)) ||
+        !AssignProcessToJobObject(job.get(), process)) {
+        return ScopedHandle();
+    }
+    return job;
+}
 
 std::optional<std::wstring> EnvironmentValue(const wchar_t* name) {
     const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
@@ -1179,12 +1195,22 @@ int WatchWeChat(DWORD root_process_id, DWORD engine_process_id, HANDLE log_pipe,
                 const std::filesystem::path& log_path,
                 const WeChatSupervisorConfig& supervisor) {
     ScopedHandle root(OpenProcess(SYNCHRONIZE, FALSE, root_process_id));
-    ScopedHandle engine(OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, engine_process_id));
+    ScopedHandle engine(OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_SET_QUOTA,
+                                    FALSE, engine_process_id));
     if (root.get() == nullptr || engine.get() == nullptr) {
         if (log_pipe != nullptr && log_pipe != INVALID_HANDLE_VALUE) {
             CloseHandle(log_pipe);
         }
         return 2;
+    }
+    ScopedHandle engine_job = CreateKillOnCloseJob(engine.get());
+    if (engine_job.get() == nullptr) {
+        TerminateProcess(engine.get(), 5);
+        WaitForSingleObject(engine.get(), 5000);
+        if (log_pipe != nullptr && log_pipe != INVALID_HANDLE_VALUE) {
+            CloseHandle(log_pipe);
+        }
+        return 5;
     }
     const auto target_running = [&]() {
         if (supervisor.monitor_wechat_family) {
@@ -1249,14 +1275,23 @@ int WatchWeChat(DWORD root_process_id, DWORD engine_process_id, HANDLE log_pipe,
             return false;
         }
         CloseHandle(process.hThread);
+        ScopedHandle started_process(process.hProcess);
+        ScopedHandle started_job = CreateKillOnCloseJob(started_process.get());
+        if (started_job.get() == nullptr) {
+            TerminateProcess(started_process.get(), 5);
+            WaitForSingleObject(started_process.get(), 5000);
+            return false;
+        }
         SetHandleInformation(write_pipe.get(), HANDLE_FLAG_INHERIT, 0);
         CloseHandle(write_pipe.release());
-        engine = ScopedHandle(process.hProcess);
+        engine = std::move(started_process);
+        engine_job = std::move(started_job);
         status.engine_pid = process.dwProcessId;
         log_relay = std::thread(RelayBoundedNetworkLog, read_pipe.release(), log_path);
         if (WaitForSingleObject(engine.get(), 1500) == WAIT_OBJECT_0) {
             finish_log_relay();
             engine = ScopedHandle();
+            engine_job = ScopedHandle();
             status.engine_pid = 0;
             return false;
         }
@@ -1287,6 +1322,7 @@ int WatchWeChat(DWORD root_process_id, DWORD engine_process_id, HANDLE log_pipe,
         if (engine.get() == nullptr || WaitForSingleObject(engine.get(), 0) != WAIT_TIMEOUT) {
             finish_log_relay();
             engine = ScopedHandle();
+            engine_job = ScopedHandle();
             status.engine_pid = 0;
             if (supervisor.engine_path.empty() || supervisor.config_path.empty()) {
                 update_status(easy_net::wechat::HealthState::stopped,
@@ -1474,16 +1510,19 @@ void WriteSharedWinDivertStatus(const std::filesystem::path& path,
         ticks.QuadPart > kUnixEpochTicks ? (ticks.QuadPart - kUnixEpochTicks) / 10000ULL : 0;
     std::ostringstream json;
     json << "{\n"
-         << "  \"State\": \"" << state << "\",\n"
-         << "  \"Message\": \"" << message << "\",\n"
+         << "  \"State\": " << easy_net::network::JsonString(state) << ",\n"
+         << "  \"Message\": " << easy_net::network::JsonString(message) << ",\n"
          << "  \"RestartCount\": " << restart_count << ",\n"
          << "  \"ProcessId\": " << GetCurrentProcessId() << ",\n"
          << "  \"UpdatedAtUnixMs\": " << unix_ms << "\n"
          << "}\n";
     const std::filesystem::path temporary = path.wstring() + L".tmp";
     if (WriteUtf8File(temporary, json.str())) {
-        MoveFileExW(temporary.c_str(), path.c_str(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+        if (!MoveFileExW(temporary.c_str(), path.c_str(),
+                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            std::error_code ignored;
+            std::filesystem::remove(temporary, ignored);
+        }
     }
 }
 
@@ -1509,6 +1548,7 @@ int WatchSharedWinDivert(DWORD root_process_id,
     std::filesystem::remove(ready_path, ignored);
 
     ScopedHandle engine;
+    ScopedHandle engine_job;
     std::thread log_relay;
     std::optional<std::string> active_revision;
 	std::wstring cursor_node_proxy;
@@ -1528,6 +1568,7 @@ int WatchSharedWinDivert(DWORD root_process_id,
             log_relay.join();
         }
         engine = ScopedHandle();
+        engine_job = ScopedHandle();
     };
     const auto start_engine = [&]() -> bool {
         const auto revision = SharedProfileRevision(config_path);
@@ -1554,8 +1595,19 @@ int WatchSharedWinDivert(DWORD root_process_id,
             return false;
         }
         CloseHandle(process.hThread);
+        ScopedHandle started_process(process.hProcess);
+        ScopedHandle started_job = CreateKillOnCloseJob(started_process.get());
+        if (started_job.get() == nullptr) {
+            TerminateProcess(started_process.get(), 5);
+            WaitForSingleObject(started_process.get(), 5000);
+            WriteSharedWinDivertStatus(status_path, "error",
+                                      "Unable to supervise the application proxy engine; retrying",
+                                      total_restarts);
+            return false;
+        }
         CloseHandle(write_pipe.release());
-        engine = ScopedHandle(process.hProcess);
+        engine = std::move(started_process);
+        engine_job = std::move(started_job);
         log_relay = std::thread(RelayBoundedNetworkLog, read_pipe.release(), log_path);
         if (WaitForSingleObject(engine.get(), 1500) == WAIT_OBJECT_0) {
             finish_engine();
@@ -3005,6 +3057,32 @@ std::optional<ScopedHandle> CreateConfigMapping(DWORD process_id, const Options&
     return mapping;
 }
 
+void CloseRemoteHandle(HANDLE process, HANDLE remote_handle) {
+    if (remote_handle == nullptr) {
+        return;
+    }
+    HANDLE local_copy = nullptr;
+    if (DuplicateHandle(process, remote_handle, GetCurrentProcess(), &local_copy, 0, FALSE,
+                        DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE)) {
+        CloseHandle(local_copy);
+    }
+}
+
+ScopedHandle CreateHookReadyEvent(const std::wstring& name) {
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    // Live takeover commonly runs elevated while the target application runs at medium
+    // integrity. Grant only EVENT_MODIFY_STATE and permit the lower-integrity target to signal.
+    constexpr wchar_t security[] = L"D:(A;;0x0002;;;WD)S:(ML;;NW;;;LW)";
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            security, SDDL_REVISION_1, &descriptor, nullptr)) {
+        return ScopedHandle();
+    }
+    SECURITY_ATTRIBUTES attributes{sizeof(attributes), descriptor, FALSE};
+    ScopedHandle event(CreateEventW(&attributes, TRUE, FALSE, name.c_str()));
+    LocalFree(descriptor);
+    return event;
+}
+
 bool InjectRunningProcess(DWORD process_id,
                           const std::filesystem::path& dll_path,
                           const Options& options) {
@@ -3025,7 +3103,7 @@ bool InjectRunningProcess(DWORD process_id,
 
     constexpr DWORD access = PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
                              PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ |
-                             SYNCHRONIZE;
+                             PROCESS_DUP_HANDLE | SYNCHRONIZE;
     ScopedHandle process(OpenProcess(access, FALSE, process_id));
     if (process.get() == nullptr) {
         std::wcerr << L"Cannot open PID " << process_id << L" (error " << GetLastError()
@@ -3042,16 +3120,34 @@ bool InjectRunningProcess(DWORD process_id,
     if (!mapping) {
         return false;
     }
+    HANDLE remote_mapping = nullptr;
+    if (!DuplicateHandle(GetCurrentProcess(), mapping->get(), process.get(), &remote_mapping, 0,
+                         FALSE, DUPLICATE_SAME_ACCESS)) {
+        std::wcerr << L"Cannot retain the hook configuration in PID " << process_id
+                   << L" (error " << GetLastError() << L").\n";
+        return false;
+    }
+    const std::wstring ready_name = easy_net::ipc::HookReadyEventName(process_id);
+    ScopedHandle ready_event = CreateHookReadyEvent(ready_name);
+    if (ready_event.get() == nullptr) {
+        std::wcerr << L"Cannot create the hook readiness event (error " << GetLastError()
+                   << L").\n";
+        CloseRemoteHandle(process.get(), remote_mapping);
+        return false;
+    }
+    ResetEvent(ready_event.get());
 
     const std::wstring dll = dll_path.wstring();
     const SIZE_T bytes = (dll.size() + 1) * sizeof(wchar_t);
     void* remote_path = VirtualAllocEx(process.get(), nullptr, bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (remote_path == nullptr) {
         std::wcerr << L"Cannot allocate target memory (error " << GetLastError() << L").\n";
+        CloseRemoteHandle(process.get(), remote_mapping);
         return false;
     }
     bool success = false;
     bool remote_path_can_be_freed = true;
+    bool keep_remote_mapping = false;
     do {
         SIZE_T written = 0;
         if (!WriteProcessMemory(process.get(), remote_path, dll.c_str(), bytes, &written) ||
@@ -3105,10 +3201,23 @@ bool InjectRunningProcess(DWORD process_id,
             std::wcerr << L"The target did not load the hook DLL. Windows may have blocked injection.\n";
             break;
         }
+        const DWORD ready_wait = WaitForSingleObject(ready_event.get(), 15000);
+        if (ready_wait != WAIT_OBJECT_0) {
+            // The initialization worker may still be blocked behind another loader operation.
+            // Keep the target-side mapping handle alive so a delayed worker cannot read an
+            // already-destroyed named mapping.
+            keep_remote_mapping = true;
+            std::wcerr << L"The hook DLL loaded, but initialization did not finish within 15 seconds"
+                       << L" (wait=" << ready_wait << L").\n";
+            break;
+        }
         success = true;
     } while (false);
     if (remote_path_can_be_freed) {
         VirtualFreeEx(process.get(), remote_path, 0, MEM_RELEASE);
+    }
+    if (!keep_remote_mapping) {
+        CloseRemoteHandle(process.get(), remote_mapping);
     }
     if (success) {
         std::wcout << L"Attached PID " << process_id << L" through SOCKS5 " << options.proxy << L".\n";

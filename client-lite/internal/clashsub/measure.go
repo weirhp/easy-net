@@ -71,7 +71,7 @@ func (m *Manager) TestSpeed(id, nodeName string) ([]NodeMetric, error) {
 func (m *Manager) nodesForTest(id, nodeName string) ([]model.ClashNode, error) {
 	sub, ok := m.Get(id)
 	if !ok {
-		return nil, fmt.Errorf("Clash 订阅不存在")
+		return nil, fmt.Errorf("节点订阅不存在")
 	}
 	nodeName = strings.TrimSpace(nodeName)
 	if nodeName == "" {
@@ -148,13 +148,25 @@ func (m *Manager) withTempNodeSOCKS(subscriptionID string, node model.ClashNode,
 	go func() { exited <- cmd.Wait() }()
 	defer func() {
 		_ = control.Terminate()
+		exitedCleanly := false
 		select {
 		case <-exited:
+			exitedCleanly = true
 		case <-time.After(5 * time.Second):
+			// A retained process handle should normally terminate mihomo. Keep a
+			// final direct kill as a bounded fallback before giving up cleanup.
+			_ = cmd.Process.Kill()
+			select {
+			case <-exited:
+				exitedCleanly = true
+			case <-time.After(2 * time.Second):
+			}
 		}
 		control.Close()
 		_ = logFile.Close()
-		removeTestWorkDir(workDir)
+		if exitedCleanly {
+			removeTestWorkDir(workDir)
+		}
 	}()
 	socksAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	if err := waitPort(socksAddr, 8*time.Second); err != nil {

@@ -15,3 +15,5 @@ func replaceRuntimeFile(source, destination string) error {
 	}
 	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
 }
+
+func syncRuntimeFileDirectory(string) {}

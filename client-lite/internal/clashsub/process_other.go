@@ -47,11 +47,6 @@ func sameExecutablePath(left, right string) bool {
 	return a == b
 }
 
-func ownedProcessRunning(pid int, executable string) bool {
-	target, err := os.Readlink(filepath.Join("/proc", fmt.Sprint(pid), "exe"))
-	return err == nil && sameExecutablePath(target, executable)
-}
-
 func terminateOwnedProcess(pid int, executable string) error {
 	if !ownedProcessRunning(pid, executable) {
 		return nil

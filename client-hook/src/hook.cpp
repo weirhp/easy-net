@@ -67,6 +67,7 @@ struct ProxiedPeer {
 SRWLOCK g_proxied_peer_lock = SRWLOCK_INIT;
 std::unordered_map<SOCKET, ProxiedPeer> g_proxied_peers;
 SRWLOCK g_address_info_lock = SRWLOCK_INIT;
+SRWLOCK g_service_lookup_lock = SRWLOCK_INIT;
 std::unordered_set<PADDRINFOA> g_custom_address_info_a;
 std::unordered_set<PADDRINFOW> g_custom_address_info_w;
 PVOID volatile g_fallback_connect_ex = nullptr;
@@ -367,11 +368,14 @@ int ResolveServicePort(const char* service,
     }
 
     const char* protocol = variants.empty() || variants.front().protocol == IPPROTO_TCP ? "tcp" : "udp";
+    AcquireSRWLockExclusive(&g_service_lookup_lock);
     const servent* entry = getservbyname(service, protocol);
     if (entry == nullptr) {
+        ReleaseSRWLockExclusive(&g_service_lookup_lock);
         return WSATYPE_NOT_FOUND;
     }
     port = ntohs(static_cast<u_short>(entry->s_port));
+    ReleaseSRWLockExclusive(&g_service_lookup_lock);
     return 0;
 }
 
@@ -846,7 +850,11 @@ bool SendAll(SOCKET socket, const std::uint8_t* data, std::size_t size) {
     while (sent < size) {
         const int chunk = RealSend(socket, reinterpret_cast<const char*>(data + sent),
                                    static_cast<int>(size - sent), 0);
-        if (chunk == SOCKET_ERROR || chunk == 0) {
+        if (chunk == SOCKET_ERROR) {
+            return false;
+        }
+        if (chunk == 0) {
+            WSASetLastError(WSAECONNRESET);
             return false;
         }
         sent += static_cast<std::size_t>(chunk);
@@ -859,7 +867,11 @@ bool ReceiveExact(SOCKET socket, std::uint8_t* data, std::size_t size) {
     while (received < size) {
         const int chunk = RealRecv(socket, reinterpret_cast<char*>(data + received),
                                    static_cast<int>(size - received), 0);
-        if (chunk == SOCKET_ERROR || chunk == 0) {
+        if (chunk == SOCKET_ERROR) {
+            return false;
+        }
+        if (chunk == 0) {
+            WSASetLastError(WSAECONNRESET);
             return false;
         }
         received += static_cast<std::size_t>(chunk);
@@ -867,18 +879,64 @@ bool ReceiveExact(SOCKET socket, std::uint8_t* data, std::size_t size) {
     return true;
 }
 
+class ScopedSocketTimeouts {
+public:
+    explicit ScopedSocketTimeouts(SOCKET socket) : socket_(socket) {
+        int length = sizeof(receive_timeout_);
+        have_receive_timeout_ =
+            getsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO,
+                       reinterpret_cast<char*>(&receive_timeout_), &length) == 0;
+        length = sizeof(send_timeout_);
+        have_send_timeout_ =
+            getsockopt(socket_, SOL_SOCKET, SO_SNDTIMEO,
+                       reinterpret_cast<char*>(&send_timeout_), &length) == 0;
+        constexpr DWORD timeout_ms = 15000;
+        setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO,
+                   reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+        setsockopt(socket_, SOL_SOCKET, SO_SNDTIMEO,
+                   reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+    }
+
+    ~ScopedSocketTimeouts() {
+        if (have_receive_timeout_) {
+            setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO,
+                       reinterpret_cast<const char*>(&receive_timeout_),
+                       sizeof(receive_timeout_));
+        }
+        if (have_send_timeout_) {
+            setsockopt(socket_, SOL_SOCKET, SO_SNDTIMEO,
+                       reinterpret_cast<const char*>(&send_timeout_), sizeof(send_timeout_));
+        }
+    }
+
+private:
+    SOCKET socket_ = INVALID_SOCKET;
+    DWORD receive_timeout_ = 0;
+    DWORD send_timeout_ = 0;
+    bool have_receive_timeout_ = false;
+    bool have_send_timeout_ = false;
+};
+
+int SocksTransferError() {
+    const int error = WSAGetLastError();
+    return error == WSAETIMEDOUT ? WSAETIMEDOUT : WSAECONNABORTED;
+}
+
 int NegotiateSocks5(SOCKET socket, const sockaddr* destination, int destination_length) {
+    ScopedSocketTimeouts timeouts(socket);
     const Config& config = GetConfig();
     const bool authenticate = !config.username.empty() || !config.password.empty();
     const std::array<std::uint8_t, 3> greeting{
         0x05, 0x01, static_cast<std::uint8_t>(authenticate ? 0x02 : 0x00)};
     if (!SendAll(socket, greeting.data(), greeting.size())) {
-        return WSAECONNABORTED;
+        return SocksTransferError();
     }
 
     std::array<std::uint8_t, 2> selection{};
-    if (!ReceiveExact(socket, selection.data(), selection.size()) || selection[0] != 0x05 ||
-        selection[1] == 0xff || selection[1] != greeting[2]) {
+    if (!ReceiveExact(socket, selection.data(), selection.size())) {
+        return SocksTransferError();
+    }
+    if (selection[0] != 0x05 || selection[1] == 0xff || selection[1] != greeting[2]) {
         return WSAEACCES;
     }
 
@@ -892,8 +950,10 @@ int NegotiateSocks5(SOCKET socket, const sockaddr* destination, int destination_
         auth.insert(auth.end(), config.password.begin(), config.password.end());
         std::array<std::uint8_t, 2> auth_reply{};
         if (!SendAll(socket, auth.data(), auth.size()) ||
-            !ReceiveExact(socket, auth_reply.data(), auth_reply.size()) ||
-            auth_reply[0] != 0x01 || auth_reply[1] != 0x00) {
+            !ReceiveExact(socket, auth_reply.data(), auth_reply.size())) {
+            return SocksTransferError();
+        }
+        if (auth_reply[0] != 0x01 || auth_reply[1] != 0x00) {
             return WSAEACCES;
         }
     }
@@ -903,12 +963,12 @@ int NegotiateSocks5(SOCKET socket, const sockaddr* destination, int destination_
         return WSAEAFNOSUPPORT;
     }
     if (!SendAll(socket, request.data(), request.size())) {
-        return WSAECONNABORTED;
+        return SocksTransferError();
     }
 
     std::array<std::uint8_t, 4> reply{};
     if (!ReceiveExact(socket, reply.data(), reply.size()) || reply[0] != 0x05) {
-        return WSAECONNABORTED;
+        return SocksTransferError();
     }
     if (reply[1] != 0x00) {
         return easy_net::socks5::ReplyToWsaError(reply[1]);
@@ -922,14 +982,14 @@ int NegotiateSocks5(SOCKET socket, const sockaddr* destination, int destination_
     } else if (reply[3] == 0x03) {
         std::uint8_t domain_length = 0;
         if (!ReceiveExact(socket, &domain_length, 1)) {
-            return WSAECONNABORTED;
+            return SocksTransferError();
         }
         remaining = static_cast<std::size_t>(domain_length) + 2;
     } else {
         return WSAECONNABORTED;
     }
     std::vector<std::uint8_t> ignored(remaining);
-    return ReceiveExact(socket, ignored.data(), ignored.size()) ? 0 : WSAECONNABORTED;
+    return ReceiveExact(socket, ignored.data(), ignored.size()) ? 0 : SocksTransferError();
 }
 
 void RememberProxiedPeer(SOCKET socket,
@@ -1050,9 +1110,16 @@ void PumpRelay(SOCKET application, SOCKET proxy) {
 unsigned __stdcall RelayThread(void* parameter) {
     auto* context = static_cast<RelayContext*>(parameter);
     const SOCKET listener = context->listener.load();
-    const SOCKET application = listener == INVALID_SOCKET
-                                   ? INVALID_SOCKET
-                                   : accept(listener, nullptr, nullptr);
+    SOCKET application = INVALID_SOCKET;
+    if (listener != INVALID_SOCKET) {
+        fd_set readable;
+        FD_ZERO(&readable);
+        FD_SET(listener, &readable);
+        timeval timeout{30, 0};
+        if (select(0, &readable, nullptr, nullptr, &timeout) > 0) {
+            application = accept(listener, nullptr, nullptr);
+        }
+    }
     CloseRelayListener(context);
     if (application == INVALID_SOCKET) {
         ReleaseRelayContext(context);
@@ -1478,10 +1545,21 @@ int WSAAPI HookedWSAAsyncSelect(SOCKET socket, HWND window, unsigned int message
 
 int WSAAPI HookedCloseSocket(SOCKET socket) {
     SetSocketNonblocking(socket, false);
+    RelayContext* context = nullptr;
+    AcquireSRWLockExclusive(&g_proxied_peer_lock);
     const int result = RealCloseSocket(socket);
     const int error = result == SOCKET_ERROR ? WSAGetLastError() : 0;
     if (result == 0) {
-        ForgetProxiedPeer(socket);
+        const auto iterator = g_proxied_peers.find(socket);
+        if (iterator != g_proxied_peers.end()) {
+            context = iterator->second.relay_context;
+            g_proxied_peers.erase(iterator);
+        }
+    }
+    ReleaseSRWLockExclusive(&g_proxied_peer_lock);
+    if (context != nullptr) {
+        CloseRelayListener(context);
+        ReleaseRelayContext(context);
     }
     if (result == SOCKET_ERROR) {
         WSASetLastError(error);
@@ -1553,14 +1631,17 @@ BOOL WINAPI HookedCreateProcessA(LPCSTR application_name,
                                          current_directory, startup, process, g_dll_path, RealCreateProcessA);
 }
 
-void UpdateProcessThreadsForDetour(std::vector<HANDLE>& opened_threads) {
-    DetourUpdateThread(GetCurrentThread());
+bool UpdateProcessThreadsForDetour(std::vector<HANDLE>& opened_threads) {
+    if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR) {
+        return false;
+    }
     const DWORD current_process_id = GetCurrentProcessId();
     const DWORD current_thread_id = GetCurrentThreadId();
     const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
     if (snapshot == INVALID_HANDLE_VALUE) {
-        return;
+        return false;
     }
+    bool success = true;
     THREADENTRY32 entry{};
     entry.dwSize = sizeof(entry);
     if (Thread32First(snapshot, &entry)) {
@@ -1579,10 +1660,12 @@ void UpdateProcessThreadsForDetour(std::vector<HANDLE>& opened_threads) {
                 opened_threads.push_back(thread);
             } else {
                 CloseHandle(thread);
+                success = false;
             }
         } while (Thread32Next(snapshot, &entry));
     }
     CloseHandle(snapshot);
+    return success;
 }
 
 void CloseDetourThreadHandles(std::vector<HANDLE>& threads) {
@@ -1621,7 +1704,15 @@ Function ResolveExtensionFunction(const GUID& identifier, int socket_type, int p
     return result;
 }
 
+void PinHookModule() {
+    HMODULE pinned = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_PIN,
+                       reinterpret_cast<LPCSTR>(&PinHookModule), &pinned);
+}
+
 DWORD WINAPI InstallExtensionHooks(void*) {
+    PinHookModule();
     RealConnectEx = ResolveExtensionFunction<LPFN_CONNECTEX>(WSAID_CONNECTEX,
                                                              SOCK_STREAM, IPPROTO_TCP);
     RealWSASendMsg = ResolveExtensionFunction<LPFN_WSASENDMSG>(WSAID_WSASENDMSG,
@@ -1630,16 +1721,24 @@ DWORD WINAPI InstallExtensionHooks(void*) {
         return 0;
     }
 
-    DetourTransactionBegin();
+    LONG error = DetourTransactionBegin();
     std::vector<HANDLE> threads;
-    UpdateProcessThreadsForDetour(threads);
-    if (RealConnectEx != nullptr) {
-        DetourAttach(reinterpret_cast<PVOID*>(&RealConnectEx), reinterpret_cast<PVOID>(HookedConnectEx));
+    if (error == NO_ERROR && !UpdateProcessThreadsForDetour(threads)) {
+        error = ERROR_INVALID_OPERATION;
     }
-    if (RealWSASendMsg != nullptr) {
-        DetourAttach(reinterpret_cast<PVOID*>(&RealWSASendMsg), reinterpret_cast<PVOID>(HookedWSASendMsg));
+    if (error == NO_ERROR && RealConnectEx != nullptr) {
+        error = DetourAttach(reinterpret_cast<PVOID*>(&RealConnectEx),
+                             reinterpret_cast<PVOID>(HookedConnectEx));
     }
-    const LONG error = DetourTransactionCommit();
+    if (error == NO_ERROR && RealWSASendMsg != nullptr) {
+        error = DetourAttach(reinterpret_cast<PVOID*>(&RealWSASendMsg),
+                             reinterpret_cast<PVOID>(HookedWSASendMsg));
+    }
+    if (error == NO_ERROR) {
+        error = DetourTransactionCommit();
+    } else {
+        DetourTransactionAbort();
+    }
     CloseDetourThreadHandles(threads);
     if (error == NO_ERROR) {
         g_connect_ex_hook_attached.store(RealConnectEx != nullptr);
@@ -1650,33 +1749,88 @@ DWORD WINAPI InstallExtensionHooks(void*) {
     return 0;
 }
 
-void AttachHooks() {
-    DetourTransactionBegin();
-    DetourUpdateThread(GetCurrentThread());
-    DetourAttach(reinterpret_cast<PVOID*>(&RealConnect), reinterpret_cast<PVOID>(HookedConnect));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealWSAConnect), reinterpret_cast<PVOID>(HookedWSAConnect));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealSendTo), reinterpret_cast<PVOID>(HookedSendTo));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealWSASendTo), reinterpret_cast<PVOID>(HookedWSASendTo));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealSend), reinterpret_cast<PVOID>(HookedSend));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealWSASend), reinterpret_cast<PVOID>(HookedWSASend));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealWSAIoctl), reinterpret_cast<PVOID>(HookedWSAIoctl));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealIoctlSocket), reinterpret_cast<PVOID>(HookedIoctlSocket));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealWSAEventSelect), reinterpret_cast<PVOID>(HookedWSAEventSelect));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealWSAAsyncSelect), reinterpret_cast<PVOID>(HookedWSAAsyncSelect));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealCloseSocket), reinterpret_cast<PVOID>(HookedCloseSocket));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealGetPeerName), reinterpret_cast<PVOID>(HookedGetPeerName));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealGetAddrInfoA), reinterpret_cast<PVOID>(HookedGetAddrInfoA));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealFreeAddrInfoA), reinterpret_cast<PVOID>(HookedFreeAddrInfoA));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealGetAddrInfoW), reinterpret_cast<PVOID>(HookedGetAddrInfoW));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealFreeAddrInfoW), reinterpret_cast<PVOID>(HookedFreeAddrInfoW));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealGetAddrInfoExA), reinterpret_cast<PVOID>(HookedGetAddrInfoExA));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealGetAddrInfoExW), reinterpret_cast<PVOID>(HookedGetAddrInfoExW));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealCreateProcessW), reinterpret_cast<PVOID>(HookedCreateProcessW));
-    DetourAttach(reinterpret_cast<PVOID*>(&RealCreateProcessA), reinterpret_cast<PVOID>(HookedCreateProcessA));
-    const LONG error = DetourTransactionCommit();
+bool AttachHooks(bool update_all_threads) {
+    LONG error = DetourTransactionBegin();
+    std::vector<HANDLE> threads;
+    if (error == NO_ERROR) {
+        if (update_all_threads) {
+            if (!UpdateProcessThreadsForDetour(threads)) {
+                error = ERROR_INVALID_OPERATION;
+            }
+        } else {
+            error = DetourUpdateThread(GetCurrentThread());
+        }
+    }
+    const auto attach = [&](PVOID* target, PVOID hook) {
+        if (error == NO_ERROR) {
+            error = DetourAttach(target, hook);
+        }
+    };
+    attach(reinterpret_cast<PVOID*>(&RealConnect), reinterpret_cast<PVOID>(HookedConnect));
+    attach(reinterpret_cast<PVOID*>(&RealWSAConnect), reinterpret_cast<PVOID>(HookedWSAConnect));
+    attach(reinterpret_cast<PVOID*>(&RealSendTo), reinterpret_cast<PVOID>(HookedSendTo));
+    attach(reinterpret_cast<PVOID*>(&RealWSASendTo), reinterpret_cast<PVOID>(HookedWSASendTo));
+    attach(reinterpret_cast<PVOID*>(&RealSend), reinterpret_cast<PVOID>(HookedSend));
+    attach(reinterpret_cast<PVOID*>(&RealWSASend), reinterpret_cast<PVOID>(HookedWSASend));
+    attach(reinterpret_cast<PVOID*>(&RealWSAIoctl), reinterpret_cast<PVOID>(HookedWSAIoctl));
+    attach(reinterpret_cast<PVOID*>(&RealIoctlSocket), reinterpret_cast<PVOID>(HookedIoctlSocket));
+    attach(reinterpret_cast<PVOID*>(&RealWSAEventSelect), reinterpret_cast<PVOID>(HookedWSAEventSelect));
+    attach(reinterpret_cast<PVOID*>(&RealWSAAsyncSelect), reinterpret_cast<PVOID>(HookedWSAAsyncSelect));
+    attach(reinterpret_cast<PVOID*>(&RealCloseSocket), reinterpret_cast<PVOID>(HookedCloseSocket));
+    attach(reinterpret_cast<PVOID*>(&RealGetPeerName), reinterpret_cast<PVOID>(HookedGetPeerName));
+    attach(reinterpret_cast<PVOID*>(&RealGetAddrInfoA), reinterpret_cast<PVOID>(HookedGetAddrInfoA));
+    attach(reinterpret_cast<PVOID*>(&RealFreeAddrInfoA), reinterpret_cast<PVOID>(HookedFreeAddrInfoA));
+    attach(reinterpret_cast<PVOID*>(&RealGetAddrInfoW), reinterpret_cast<PVOID>(HookedGetAddrInfoW));
+    attach(reinterpret_cast<PVOID*>(&RealFreeAddrInfoW), reinterpret_cast<PVOID>(HookedFreeAddrInfoW));
+    attach(reinterpret_cast<PVOID*>(&RealGetAddrInfoExA), reinterpret_cast<PVOID>(HookedGetAddrInfoExA));
+    attach(reinterpret_cast<PVOID*>(&RealGetAddrInfoExW), reinterpret_cast<PVOID>(HookedGetAddrInfoExW));
+    attach(reinterpret_cast<PVOID*>(&RealCreateProcessW), reinterpret_cast<PVOID>(HookedCreateProcessW));
+    attach(reinterpret_cast<PVOID*>(&RealCreateProcessA), reinterpret_cast<PVOID>(HookedCreateProcessA));
+    if (error == NO_ERROR) {
+        error = DetourTransactionCommit();
+    } else {
+        DetourTransactionAbort();
+    }
+    CloseDetourThreadHandles(threads);
     if (error != NO_ERROR) {
         OutputDebugStringW(L"[Easy-Net Hook] Failed to attach one or more hooks.\n");
+        return false;
     }
+    return true;
+}
+
+void SignalHookReady() {
+    const std::wstring event_name = easy_net::ipc::HookReadyEventName(GetCurrentProcessId());
+    const HANDLE ready = OpenEventW(EVENT_MODIFY_STATE, FALSE, event_name.c_str());
+    if (ready != nullptr) {
+        SetEvent(ready);
+        CloseHandle(ready);
+    }
+}
+
+DWORD WINAPI InitializeHooks(void*) {
+    PinHookModule();
+    GetConfig();
+    if (!AttachHooks(true)) {
+        return 1;
+    }
+    InstallExtensionHooks(nullptr);
+    SignalHookReady();
+    return 0;
+}
+
+bool HasInjectedConfigMapping() {
+    wchar_t name[96]{};
+    if (_snwprintf_s(name, std::size(name), _TRUNCATE,
+                     L"Local\\EasyNetHookConfig-%lu", GetCurrentProcessId()) < 0) {
+        return false;
+    }
+    const HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
+    if (mapping == nullptr) {
+        return false;
+    }
+    CloseHandle(mapping);
+    return true;
 }
 
 void DetachHooks() {
@@ -1721,14 +1875,26 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
         DetourRestoreAfterWith();
         DisableThreadLibraryCalls(module);
         GetModuleFileNameA(module, g_dll_path, static_cast<DWORD>(std::size(g_dll_path)));
-        GetConfig();
-        AttachHooks();
-        // CreateThread will not execute the entry point until DLL initialization completes.
-        // Avoid invoking CRT thread startup while the loader lock is held.
-        const HANDLE extension_thread =
-            CreateThread(nullptr, 0, InstallExtensionHooks, nullptr, 0, nullptr);
-        if (extension_thread != nullptr) {
-            CloseHandle(extension_thread);
+        if (HasInjectedConfigMapping()) {
+            // Live injection targets may already have many active threads. The worker cannot
+            // execute until DLL initialization releases the loader lock, so it can safely
+            // enumerate them and perform the Detours transaction outside DllMain.
+            const HANDLE initialize_thread =
+                CreateThread(nullptr, 0, InitializeHooks, nullptr, 0, nullptr);
+            if (initialize_thread != nullptr) {
+                CloseHandle(initialize_thread);
+            }
+        } else {
+            // Detours-created child processes must be hooked before their entry point can run;
+            // attaching only the current startup thread preserves that no-leak guarantee.
+            GetConfig();
+            if (AttachHooks(false)) {
+                const HANDLE extension_thread =
+                    CreateThread(nullptr, 0, InstallExtensionHooks, nullptr, 0, nullptr);
+                if (extension_thread != nullptr) {
+                    CloseHandle(extension_thread);
+                }
+            }
         }
     } else if (reason == DLL_PROCESS_DETACH && reserved == nullptr) {
         DetachHooks();

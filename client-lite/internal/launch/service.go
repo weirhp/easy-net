@@ -209,8 +209,10 @@ func (s *Service) TakeoverStatus() TakeoverStatus {
 	return local
 }
 
-func (s *Service) StartTakeoverMonitor(ctx context.Context, report func(string, ...any)) {
+func (s *Service) StartTakeoverMonitor(ctx context.Context, report func(string, ...any)) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()
 		failures := 0
@@ -255,6 +257,7 @@ func (s *Service) StartTakeoverMonitor(ctx context.Context, report func(string, 
 			}
 		}
 	}()
+	return done
 }
 
 func (s *Service) setTakeoverStatus(status TakeoverStatus) {
@@ -573,6 +576,19 @@ func (s *Service) ApplySharedRules() error {
 		s.setTakeoverStatus(TakeoverStatus{Enabled: true, State: "error", Message: err.Error(), UpdatedAt: time.Now().Format(time.RFC3339)})
 	}
 	return err
+}
+
+// StopTakeoverRuntime stops the current shared WinDivert supervisor without
+// changing the user's persisted takeover preference. The next Lite start will
+// rebuild the configured rules normally.
+func (s *Service) StopTakeoverRuntime() error {
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
+	if _, err := s.writeSharedWinDivertProfileEntries(nil); err != nil {
+		return err
+	}
+	s.setTakeoverStatus(TakeoverStatus{Enabled: s.TakeoverEnabled(), State: "stopped", Message: "Easy-Net Lite 正在退出；应用网络接管已停止", UpdatedAt: time.Now().Format(time.RFC3339)})
+	return nil
 }
 
 func (s *Service) applySharedRulesLocked() error {

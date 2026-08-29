@@ -80,13 +80,35 @@ func (s *store) Save(file *model.LaunchFile) error {
 		return fmt.Errorf("序列化启动入口：%w", err)
 	}
 	data = append(data, '\n')
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
+	tmpFile, err := os.CreateTemp(filepath.Dir(s.path), "launches.json.tmp-*")
+	if err != nil {
 		return fmt.Errorf("写入启动入口：%w", err)
 	}
-	if err := os.Rename(tmp, s.path); err != nil {
+	tmp := tmpFile.Name()
+	cleanup := func() {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmp)
+	}
+	if err := tmpFile.Chmod(0600); err != nil {
+		cleanup()
+		return fmt.Errorf("保护启动入口：%w", err)
+	}
+	if _, err := tmpFile.Write(data); err != nil {
+		cleanup()
+		return fmt.Errorf("写入启动入口：%w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		cleanup()
+		return fmt.Errorf("同步启动入口：%w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("关闭启动入口：%w", err)
+	}
+	if err := replaceFile(tmp, s.path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("保存启动入口：%w", err)
 	}
+	syncFileDirectory(s.path)
 	return nil
 }

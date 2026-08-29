@@ -12,7 +12,8 @@ Easy-Net Lite 是一个使用本地网页管理界面、常驻系统托盘的轻
 - 每个配置可选“中国大陆 IP 直连”，按内置 APNIC CN 地址表让国内目标走本机网络、其他目标走代理。
 - 独立“测试连接”、本地监听状态与最近远端连接结果。
 - 加密分享码，可复制分享并快速导入 WebSocket 或 SSH 配置。
-- Windows 上可把 Lite 自建的 WebSocket/SSH 代理、已运行的 Clash/v2rayN 外部 SOCKS5，以及导入的 Clash 订阅节点，统一放在「网络代理管理」，并设置唯一默认代理。
+- Windows 上可把 Lite 自建的 WebSocket/SSH 代理、已运行的 Clash/v2rayN 外部 SOCKS5，以及导入的 Clash 或 v2rayN 订阅节点，统一放在「网络代理管理」，并设置唯一默认代理。
+- Windows 可在「程序设置」中启用当前用户级开机启动；登录后 Lite 会以 `--background` 模式进入系统托盘，不自动打开管理页面，也不需要管理员权限。
 - 可导入 Clash / Mihomo 订阅：每个订阅一个 Tab，选中节点后由本机 `mihomo` 启动本地 SOCKS5，并可设为默认代理供应用继承。
 - 「应用代理管理」维护共享 WinDivert 接管规则，可从运行进程批量添加，或快速导入 Cursor、ChatGPT、Antigravity、Claude Code、Chrome、Edge。
 - 启动后自动打开 `http://127.0.0.1:18081` 管理页面。
@@ -27,7 +28,7 @@ Easy-Net Lite 是一个使用本地网页管理界面、常驻系统托盘的轻
 
 可以把浏览器或其它应用的 SOCKS5 或 HTTP 代理设置成该地址。默认情况下，SOCKS5 域名和 HTTP CONNECT 目标主机会原样交给远端解析。WebSocket 配置同时接受 SOCKS5 UDP；SSH 配置的公网代理仍然只有 TCP，因为标准 SSH 动态转发没有 UDP 通道。
 
-网络代理页用内层 Tab 区分来源。默认 Tab「手动添加」继续管理 WebSocket、SSH 和外部 SOCKS5。点击「导入 Clash 订阅」填写名称和 URL 后，会新增一个同名 Tab，列出订阅里的节点。启动某个节点会在本机拉起 `mihomo`，监听该订阅自己的回环端口；同一订阅同时只运行一个节点。节点也可以设为全局唯一的默认代理，未单独指定代理的应用会继承它。
+网络代理页用内层 Tab 区分来源。默认 Tab「手动添加」继续管理 WebSocket、SSH 和外部 SOCKS5。点击「导入节点订阅」填写名称和 URL 后，会新增一个同名 Tab，列出订阅里的节点。支持 Clash/Mihomo YAML（包括 Base64 YAML），也支持 v2rayN 的 VMess、VLESS 分享链接列表及其 Base64 形式。启动某个节点会在本机拉起 `mihomo`，监听该订阅自己的回环端口；同一订阅同时只运行一个节点。节点也可以设为全局唯一的默认代理，未单独指定代理的应用会继承它。
 
 Lite 不会自动下载 `mihomo`。请把 `mihomo.exe`（macOS 为 `mihomo`）放到 Easy-Net Lite 同一目录、`mihomo` 子目录，或配置目录下的 `mihomo` 子目录；也可以设置环境变量 `EASY_NET_MIHOMO` 指向完整路径。找不到程序时，启动节点会给出明确错误。订阅内容保存在同一配置目录的 `subscriptions.json`。
 
@@ -53,7 +54,7 @@ Windows 管理页有「代理」和「应用」两个标签。代理页继续管
 - 「从运行进程添加」会列出当前可访问的 EXE，并支持多选；应用名称直接使用进程文件名。保存后会自动刷新共享规则，让已运行和以后启动的同名进程的新连接生效。
 - 「通用 WinDivert」按进程名覆盖 TCP+UDP，需要完整 x64 包和管理员授权。如果程序由辅助 EXE 发起网络，需在入口中补充这些进程名。同名的全部进程都会匹配，已建立连接不会迁移，需要重新打开页面或让应用重新连接。WinDivert 仍可接管已经运行的 Chrome/Edge，但它工作在 IP 层，无法从污染后的 IP 还原域名；这种用法应在浏览器中启用安全 DNS，看到证书域名不匹配时不要继续访问。
 - Lite 可以保持普通用户权限；首次保存接管规则时会单独弹出 Windows UAC。Lite 会等待授权和引擎就绪，用户取消授权或驱动启动失败时会在管理页显示“配置已保存但接管未刷新”。
-- 应用没有单独指定代理时会实时继承网络代理页的默认代理；切换默认代理会同步刷新共享规则。外部代理只由 Lite 引用，Lite 不会启动或关闭 Clash、v2rayN。导入的 Clash 订阅节点由 Lite 通过 `mihomo` 启停，设为默认后同样可被应用继承。
+- 应用没有单独指定代理时会实时继承网络代理页的默认代理；切换默认代理会同步刷新共享规则。外部代理只由 Lite 引用，Lite 不会启动或关闭 Clash、v2rayN。导入的 Clash / v2rayN 订阅节点由 Lite 通过 `mihomo` 启停，设为默认后同样可被应用继承。
 - 应用列表不再直接启动程序。「桌面快捷方式」指向 `Easy-Net-Lite.exe --launch-entry <ID>` 并内嵌一份不含密码的恢复快照；入口被误删后仍可自动恢复。ChatGPT/Cursor/Antigravity/Chrome/Edge 使用各自的原生 SOCKS5 启动方式，Claude Code 和普通程序使用 Hook；共享 WinDivert 会显式直连该应用所用的 SOCKS5 服务器端点，防止快捷启动流量被二次代理。启动前仍会检查代理可用性。
 - 请把 `easy-net-hook.exe`、Hook DLL、`windivert` 和 `mihomo` 目录与 Lite 保持在发布包原有结构中，或设置环境变量 `EASY_NET_HOOK`。
 - macOS 不显示「应用」标签。首次在 Windows 上打开 Lite 时，如果存在旧的 `%LOCALAPPDATA%\EasyNetHook\launcher-entries.tsv`，会按本地监听地址匹配并导入到 `%AppData%\Easy-Net Lite\launches.json`。
@@ -67,7 +68,7 @@ Windows 管理页有「代理」和「应用」两个标签。代理页继续管
 - Windows：`%AppData%\Easy-Net Lite\config.json`
 - macOS：`~/Library/Application Support/Easy-Net Lite/config.json`
 
-Windows 应用启动入口保存在同一目录的 `launches.json`。Clash 订阅保存在同一目录的 `subscriptions.json`。运行日志保存在同一目录的 `easy-net-lite.log`。
+Windows 应用启动入口保存在同一目录的 `launches.json`。节点订阅保存在同一目录的 `subscriptions.json`。运行日志保存在同一目录的 `easy-net-lite.log`。
 
 Lite 主日志和每个 Clash 节点的 `mihomo.log` 均采用受限轮转：单文件最多 10 MiB，保留当前文件和 3 份历史，单组最多约 40 MiB，不允许配置超过 50 MiB。mihomo 默认只记录警告和错误；Clash 测速产生的临时目录会在结束时删除，并在下次启动时清理超过 24 小时的残留。
 

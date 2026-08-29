@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"easy-net/client-lite/internal/autostart"
 	"easy-net/client-lite/internal/clashsub"
 	"easy-net/client-lite/internal/config"
 	"easy-net/client-lite/internal/launch"
@@ -29,6 +30,22 @@ import (
 type memorySecrets struct {
 	mu     sync.Mutex
 	values map[string]string
+}
+
+type memoryAutoStart struct {
+	status autostart.Status
+	err    error
+}
+
+func (m *memoryAutoStart) Status() autostart.Status { return m.status }
+
+func (m *memoryAutoStart) SetEnabled(enabled bool) error {
+	if m.err != nil {
+		return m.err
+	}
+	m.status.Enabled = enabled
+	m.status.Current = enabled
+	return nil
 }
 
 func (m *memorySecrets) Get(ref string) (string, error) {
@@ -78,13 +95,43 @@ func TestManagementPageAndProfileAPI(t *testing.T) {
 	if !strings.Contains(string(page), `data-tab="apps"`) || !strings.Contains(string(page), "添加被代理应用") {
 		t.Fatal("management page is missing the apps tab markup")
 	}
-	for _, marker := range []string{`id="batch-export"`, `id="select-all-profiles"`, `id="test-profile"`, `id="process-filter"`, `data-process-launch`, "粘贴一个或多个分享码", `data-import-clash`, `id="source-tabs"`, "导入 Clash 订阅"} {
+	if !strings.Contains(string(page), `rel="icon" href="/favicon.ico"`) {
+		t.Fatal("management page is missing the favicon link")
+	}
+	faviconResponse, err := http.Get(server.URL + "/favicon.ico")
+	if err != nil {
+		t.Fatal(err)
+	}
+	favicon, err := io.ReadAll(faviconResponse.Body)
+	_ = faviconResponse.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if faviconResponse.StatusCode != http.StatusOK || faviconResponse.Header.Get("Content-Type") != "image/x-icon" || len(favicon) < 100 {
+		t.Fatalf("unexpected favicon response: status=%d type=%q bytes=%d", faviconResponse.StatusCode, faviconResponse.Header.Get("Content-Type"), len(favicon))
+	}
+	for _, marker := range []string{`id="batch-export"`, `id="select-all-profiles"`, `id="test-profile"`, `id="process-filter"`, `data-process-launch`, "粘贴一个或多个分享码", `data-import-clash`, `id="source-tabs"`, "导入节点订阅", `id="tab-settings"`, `id="autostart-enabled"`} {
 		if !strings.Contains(string(page), marker) {
 			t.Fatalf("management page is missing redesigned control %q", marker)
 		}
 	}
 	if !strings.Contains(response.Header.Get("Content-Security-Policy"), "default-src 'self'") {
 		t.Fatal("missing content security policy")
+	}
+	scriptResponse, err := http.Get(server.URL + "/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := io.ReadAll(scriptResponse.Body)
+	_ = scriptResponse.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(script), "event.target ===") {
+		t.Fatal("dialogs must not close when their backdrop is clicked")
+	}
+	if !strings.Contains(string(script), `document.querySelectorAll("dialog").forEach`) {
+		t.Fatal("dialogs must explicitly prevent Escape from dismissing them")
 	}
 
 	state := getState(t, server.URL)
@@ -286,6 +333,41 @@ func TestRejectsDNSRebindingAndCrossOriginRequests(t *testing.T) {
 	manager.Handler().ServeHTTP(crossOriginResponse, crossOrigin)
 	if crossOriginResponse.Code != http.StatusForbidden {
 		t.Fatalf("expected cross-origin rejection, got %d", crossOriginResponse.Code)
+	}
+}
+
+func TestApplicationAutoStartEndpoint(t *testing.T) {
+	secrets := &memorySecrets{values: map[string]string{}}
+	svc, err := service.New(config.NewStoreAt(filepath.Join(t.TempDir(), "config.json")), secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	autoStart := &memoryAutoStart{status: autostart.Status{Supported: true}}
+	manager, err := NewWithOptions(svc, func() {}, Options{AutoStart: autoStart})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(manager.Handler())
+	defer server.Close()
+	state := getState(t, server.URL)
+	if !state.AutoStart.Supported || state.AutoStart.Enabled {
+		t.Fatalf("unexpected initial startup state: %#v", state.AutoStart)
+	}
+	body, _ := json.Marshal(map[string]bool{"enabled": true})
+	request, _ := http.NewRequest(http.MethodPost, server.URL+"/api/app-autostart", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Easy-Net-Token", state.Token)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(response.Body)
+		t.Fatalf("enable startup status=%d body=%s", response.StatusCode, data)
+	}
+	if !autoStart.status.Enabled || !autoStart.status.Current {
+		t.Fatalf("startup was not enabled: %#v", autoStart.status)
 	}
 }
 

@@ -57,6 +57,10 @@ func (s *Service) writeSharedWinDivertProfile() (string, error) {
 	if !s.TakeoverEnabled() {
 		entries = nil
 	}
+	return s.writeSharedWinDivertProfileEntries(entries)
+}
+
+func (s *Service) writeSharedWinDivertProfileEntries(entries []model.LaunchEntry) (string, error) {
 	profile := bridgeProfile{
 		Version: "1.0", ProxyConfigs: []bridgeProxyConfig{}, ProxyRules: []bridgeProxyRule{},
 	}

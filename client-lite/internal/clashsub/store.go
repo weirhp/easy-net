@@ -27,11 +27,11 @@ func (s *store) Load() (*model.SubscriptionFile, error) {
 		if os.IsNotExist(err) {
 			return &model.SubscriptionFile{Version: model.CurrentSubscriptionFileVersion}, nil
 		}
-		return nil, fmt.Errorf("读取 Clash 订阅：%w", err)
+		return nil, fmt.Errorf("读取节点订阅：%w", err)
 	}
 	var file model.SubscriptionFile
 	if err := json.Unmarshal(data, &file); err != nil {
-		return nil, fmt.Errorf("解析 Clash 订阅：%w", err)
+		return nil, fmt.Errorf("解析节点订阅：%w", err)
 	}
 	legacyBypass := file.Version < 3
 	valid := make([]model.Subscription, 0, len(file.Subscriptions))
@@ -42,6 +42,11 @@ func (s *store) Load() (*model.SubscriptionFile, error) {
 			item.BypassChina = true
 		}
 		item.Normalize()
+		for index := range item.Nodes {
+			raw := normalizeMap(item.Nodes[index].Raw)
+			applyNodeRuntimeDefaults(raw)
+			item.Nodes[index].Raw = raw
+		}
 		if item.Validate() != nil {
 			continue
 		}
@@ -71,16 +76,38 @@ func (s *store) Save(file *model.SubscriptionFile) error {
 	}
 	data, err := json.MarshalIndent(copyFile, "", "  ")
 	if err != nil {
-		return fmt.Errorf("序列化 Clash 订阅：%w", err)
+		return fmt.Errorf("序列化节点订阅：%w", err)
 	}
 	data = append(data, '\n')
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return fmt.Errorf("写入 Clash 订阅：%w", err)
+	tmpFile, err := os.CreateTemp(filepath.Dir(s.path), "subscriptions.json.tmp-*")
+	if err != nil {
+		return fmt.Errorf("写入节点订阅：%w", err)
 	}
-	if err := os.Rename(tmp, s.path); err != nil {
+	tmp := tmpFile.Name()
+	cleanup := func() {
+		_ = tmpFile.Close()
 		_ = os.Remove(tmp)
-		return fmt.Errorf("保存 Clash 订阅：%w", err)
 	}
+	if err := tmpFile.Chmod(0600); err != nil {
+		cleanup()
+		return fmt.Errorf("保护节点订阅：%w", err)
+	}
+	if _, err := tmpFile.Write(data); err != nil {
+		cleanup()
+		return fmt.Errorf("写入节点订阅：%w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		cleanup()
+		return fmt.Errorf("同步节点订阅：%w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("关闭节点订阅：%w", err)
+	}
+	if err := replaceRuntimeFile(tmp, s.path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("保存节点订阅：%w", err)
+	}
+	syncRuntimeFileDirectory(s.path)
 	return nil
 }

@@ -54,8 +54,10 @@ func (s *Service) ClashViews() []clashsub.View {
 
 func (s *Service) ImportClash(name, rawURL string, refreshMinutes int, bypassPrivate, bypassChina bool) (model.Subscription, error) {
 	if s.clash == nil {
-		return model.Subscription{}, fmt.Errorf("Clash 订阅不可用")
+		return model.Subscription{}, fmt.Errorf("节点订阅不可用")
 	}
+	s.portMu.Lock()
+	defer s.portMu.Unlock()
 	sub, err := s.clash.Import(name, rawURL, s.nextAvailablePort(17890), refreshMinutes, bypassPrivate, bypassChina)
 	if err != nil {
 		return model.Subscription{}, err
@@ -69,21 +71,21 @@ func (s *Service) ImportClash(name, rawURL string, refreshMinutes int, bypassPri
 
 func (s *Service) SetClashRefreshInterval(id string, refreshMinutes int) (model.Subscription, error) {
 	if s.clash == nil {
-		return model.Subscription{}, fmt.Errorf("Clash 订阅不可用")
+		return model.Subscription{}, fmt.Errorf("节点订阅不可用")
 	}
 	return s.clash.SetRefreshInterval(id, refreshMinutes)
 }
 
 func (s *Service) SetClashBypass(id string, bypassPrivate, bypassChina bool) (model.Subscription, error) {
 	if s.clash == nil {
-		return model.Subscription{}, fmt.Errorf("Clash 订阅不可用")
+		return model.Subscription{}, fmt.Errorf("节点订阅不可用")
 	}
 	return s.clash.SetBypass(id, bypassPrivate, bypassChina)
 }
 
 func (s *Service) RefreshClash(id string) (model.Subscription, error) {
 	if s.clash == nil {
-		return model.Subscription{}, fmt.Errorf("Clash 订阅不可用")
+		return model.Subscription{}, fmt.Errorf("节点订阅不可用")
 	}
 	previous, hadPrevious := s.clash.Get(id)
 	previousNode, hadPreviousNode := previous.Node(previous.SelectedNode)
@@ -111,7 +113,7 @@ func (s *Service) RefreshClash(id string) (model.Subscription, error) {
 
 func (s *Service) DeleteClash(id string) error {
 	if s.clash == nil {
-		return fmt.Errorf("Clash 订阅不可用")
+		return fmt.Errorf("节点订阅不可用")
 	}
 	if err := s.clash.Delete(id); err != nil {
 		return err
@@ -122,28 +124,28 @@ func (s *Service) DeleteClash(id string) error {
 
 func (s *Service) TestClashDelay(id, nodeName string) ([]clashsub.NodeMetric, error) {
 	if s.clash == nil {
-		return nil, fmt.Errorf("Clash 订阅不可用")
+		return nil, fmt.Errorf("节点订阅不可用")
 	}
 	return s.clash.TestDelay(id, nodeName)
 }
 
 func (s *Service) TestClashSpeed(id, nodeName string) ([]clashsub.NodeMetric, error) {
 	if s.clash == nil {
-		return nil, fmt.Errorf("Clash 订阅不可用")
+		return nil, fmt.Errorf("节点订阅不可用")
 	}
 	return s.clash.TestSpeed(id, nodeName)
 }
 
 func (s *Service) TestClashAccess(id, nodeName string) ([]clashsub.NodeMetric, error) {
 	if s.clash == nil {
-		return nil, fmt.Errorf("Clash 订阅不可用")
+		return nil, fmt.Errorf("节点订阅不可用")
 	}
 	return s.clash.TestAccess(id, nodeName)
 }
 
 func (s *Service) StartClashNode(id, nodeName string) error {
 	if s.clash == nil {
-		return fmt.Errorf("Clash 订阅不可用")
+		return fmt.Errorf("节点订阅不可用")
 	}
 	profileID := clashsub.ProfileID(id)
 	if err := s.clash.StartNode(id, nodeName); err != nil {
@@ -195,7 +197,7 @@ func (s *Service) clashRunningLocked(profile model.Profile) bool {
 
 func (s *Service) startClash(profile model.Profile) error {
 	if s.clash == nil {
-		return fmt.Errorf("Clash 订阅不可用")
+		return fmt.Errorf("节点订阅不可用")
 	}
 	nodeName := ""
 	if profile.Clash != nil {

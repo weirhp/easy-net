@@ -112,6 +112,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .takeover-switch input:focus-visible + .switch-track { outline: 3px solid rgba(109,24,216,.2); outline-offset: 2px; }
 .takeover-switch:has(input:disabled) { cursor: wait; opacity: .68; }
 
+.settings-panel { display: grid; gap: 12px; }
+.settings-card { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 20px 22px; border: 1px solid #e2dfeb; border-radius: 14px; background: rgba(255,255,255,.93); box-shadow: var(--shadow); }
+.settings-copy { min-width: 0; }
+.settings-copy h3 { margin: 0 0 7px; font-size: 16px; }
+.settings-copy p { margin: 0; max-width: 760px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.settings-copy .settings-error { margin-top: 8px; color: var(--danger); }
+.settings-footnote { margin: 0 4px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+
 .clash-sticky { position: sticky; top: 0; z-index: 20; padding: 8px 0 12px; margin: 0 0 8px; background: var(--background); box-shadow: 0 12px 24px rgba(41, 36, 70, .06); }
 .default-proxy-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 0 0 12px; padding: 10px 14px; border: 1px solid #d8cbf3; border-radius: 12px; color: #4d356f; background: var(--primary-soft); font-size: 13px; }
 .default-proxy-banner.empty { color: var(--muted); border-color: var(--border); background: rgba(255,255,255,.86); }
@@ -353,6 +361,7 @@ dialog::backdrop { background: rgba(28,24,43,.5); backdrop-filter: blur(3px); }
   .header-actions .button { flex: 1 1 calc(50% - 8px); }
   .notice { padding: 16px; }
   .takeover-panel { flex-direction: column; padding: 15px; }
+  .settings-card { flex-direction: column; padding: 17px; }
   .takeover-switch { align-self: stretch; justify-content: center; }
   .selection-toolbar { align-items: flex-start; flex-wrap: wrap; }
   .source-tabs { margin-bottom: 12px; }

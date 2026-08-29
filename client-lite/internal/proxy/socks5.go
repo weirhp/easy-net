@@ -92,17 +92,21 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("监听 %s：%w", s.address, err)
 	}
 	serverCtx, cancel := context.WithCancel(context.Background())
+	s.mu.Lock()
 	s.listener = listener
 	s.cancel = cancel
+	s.mu.Unlock()
 	s.running.Store(true)
 	s.wg.Add(1)
-	go s.acceptLoop(serverCtx)
+	go s.acceptLoop(serverCtx, listener, cancel)
 	return nil
 }
 
 func (s *Server) Running() bool { return s.running.Load() }
 
 func (s *Server) Address() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.listener != nil {
 		return s.listener.Addr().String()
 	}
@@ -117,13 +121,17 @@ func (s *Server) Stop() {
 		_ = s.transport.Close()
 		return
 	}
-	if s.cancel != nil {
-		s.cancel()
-	}
-	if s.listener != nil {
-		_ = s.listener.Close()
-	}
 	s.mu.Lock()
+	cancel := s.cancel
+	listener := s.listener
+	s.cancel = nil
+	s.listener = nil
+	if cancel != nil {
+		cancel()
+	}
+	if listener != nil {
+		_ = listener.Close()
+	}
 	for conn := range s.clients {
 		_ = conn.Close()
 	}
@@ -132,16 +140,14 @@ func (s *Server) Stop() {
 	s.wg.Wait()
 }
 
-func (s *Server) acceptLoop(ctx context.Context) {
+func (s *Server) acceptLoop(ctx context.Context, listener net.Listener, cancel context.CancelFunc) {
 	defer s.wg.Done()
 	for {
-		conn, err := s.listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			if ctx.Err() == nil {
 				s.running.Store(false)
-				if s.cancel != nil {
-					s.cancel()
-				}
+				cancel()
 				_ = s.transport.Close()
 			}
 			return

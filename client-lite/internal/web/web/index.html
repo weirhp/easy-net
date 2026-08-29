@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Easy-Net Lite</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -17,6 +18,7 @@
     <nav class="side-nav" role="tablist" aria-label="管理分区">
       <button type="button" class="side-nav-item active" id="tab-proxies" data-tab="proxies" role="tab" aria-selected="true"><svg class="icon" aria-hidden="true"><use href="#icon-network"></use></svg><span>网络代理管理</span></button>
       <button type="button" class="side-nav-item" id="tab-apps" data-tab="apps" role="tab" aria-selected="false" hidden><svg class="icon" aria-hidden="true"><use href="#icon-apps"></use></svg><span>应用代理管理</span></button>
+      <button type="button" class="side-nav-item" id="tab-settings" data-tab="settings" role="tab" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="#icon-settings"></use></svg><span>程序设置</span></button>
     </nav>
     <div class="sidebar-bottom">
       <p class="sidebar-hint">关闭窗口不会停止代理，Lite 会继续在系统托盘运行。</p>
@@ -29,7 +31,7 @@
     <header class="page-header">
       <div><p class="eyebrow" id="page-eyebrow">LOCAL PROXY</p><h2 id="page-title">网络代理管理</h2><p class="page-subtitle" id="summary">正在读取配置…</p></div>
       <div class="header-actions" data-actions="proxies">
-        <button class="button secondary" type="button" data-import-clash><svg class="icon" aria-hidden="true"><use href="#icon-globe"></use></svg>导入 Clash 订阅</button>
+        <button class="button secondary" type="button" data-import-clash><svg class="icon" aria-hidden="true"><use href="#icon-globe"></use></svg>导入节点订阅</button>
         <button class="button secondary" type="button" data-import><svg class="icon" aria-hidden="true"><use href="#icon-import"></use></svg>导入配置</button>
         <button class="button secondary" type="button" data-command="stop-all"><svg class="icon" aria-hidden="true"><use href="#icon-stop"></use></svg>停止全部</button>
         <button class="button secondary" type="button" data-command="start-all"><svg class="icon" aria-hidden="true"><use href="#icon-play"></use></svg>启动全部</button>
@@ -76,6 +78,13 @@
 
     <section class="profiles" id="profiles" aria-live="polite"><div class="empty-state"><div class="loading" aria-hidden="true"></div><p>正在加载代理配置</p></div></section>
     <section class="profiles app-grid" id="launches" hidden aria-live="polite"></section>
+    <section class="settings-panel" id="settings-panel" hidden aria-live="polite">
+      <article class="settings-card">
+        <div class="settings-copy"><h3>开机自动启动 Easy-Net Lite</h3><p>登录 Windows 后自动在系统托盘后台运行，并恢复已设置为自动运行的代理；不会自动打开管理页面。</p><p class="settings-error" id="autostart-error" role="alert" hidden></p></div>
+        <label class="takeover-switch"><input id="autostart-enabled" type="checkbox" role="switch" aria-describedby="autostart-description"><span class="switch-track" aria-hidden="true"></span><span id="autostart-switch-label">开机启动</span></label>
+      </article>
+      <p class="settings-footnote" id="autostart-description">使用当前 Windows 用户的启动项，不需要管理员权限。移动程序目录后，手动运行一次 Lite 即会更新启动路径。</p>
+    </section>
     <footer class="page-footer"><span id="config-path"></span></footer>
   </main>
 
@@ -143,11 +152,11 @@
 
   <dialog id="clash-import-dialog" aria-labelledby="clash-import-dialog-title">
     <form id="clash-import-form" class="dialog-shell">
-      <div class="dialog-header"><div><p class="eyebrow">Clash 订阅</p><h2 id="clash-import-dialog-title">导入订阅并新增 Tab</h2></div><button type="button" class="icon-button" id="close-clash-import-dialog" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button></div>
+      <div class="dialog-header"><div><p class="eyebrow">CLASH / V2RAYN 订阅</p><h2 id="clash-import-dialog-title">导入订阅并新增 Tab</h2></div><button type="button" class="icon-button" id="close-clash-import-dialog" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button></div>
       <div class="dialog-body">
         <div class="form-grid single-column">
           <label class="field full"><span>Tab 名称</span><input id="clash-import-name" required maxlength="40" placeholder="例如：机场 A"></label>
-          <label class="field full"><span>订阅地址</span><input id="clash-import-url" required type="url" placeholder="https://example.com/clash.yaml"><small>支持 Clash / Mihomo YAML，或 base64 后的 YAML。名称会显示为网络代理页的 Tab。</small></label>
+          <label class="field full"><span>订阅地址</span><input id="clash-import-url" required type="url" placeholder="https://example.com/subscription"><small>支持 Clash / Mihomo YAML，以及 v2rayN 的 VMess、VLESS 分享链接列表（可为 Base64）。名称会显示为网络代理页的 Tab。</small></label>
           <label class="field full"><span>自动刷新</span><select id="clash-import-refresh"><option value="30">30 分钟</option><option value="60" selected>1 小时</option><option value="180">3 小时</option><option value="360">6 小时</option><option value="1440">1 天</option><option value="0">从不</option></select><small>到期后会自动重新拉取节点列表，之后也可以在订阅工具栏里修改。</small></label>
           <label class="check-field full"><input id="clash-import-bypass-private" type="checkbox" checked><span>局域网与私有地址直连（不走代理）</span></label>
           <label class="check-field full"><input id="clash-import-bypass-china" type="checkbox" checked><span>中国大陆 IP 直连（国外 IP 走代理）</span></label>
@@ -181,6 +190,7 @@
     <symbol id="icon-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
     <symbol id="icon-network" viewBox="0 0 24 24"><path d="M12 3v5m0 0H7m5 0h5M7 8v5m10-5v5M4 13h6v6H4zm10 0h6v6h-6zM9 3h6v5H9z"/></symbol>
     <symbol id="icon-apps" viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></symbol>
+    <symbol id="icon-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1z"/></symbol>
     <symbol id="icon-power" viewBox="0 0 24 24"><path d="M12 3v9m5.7-6.7a8 8 0 1 1-11.4 0"/></symbol>
     <symbol id="icon-import" viewBox="0 0 24 24"><path d="M12 3v12m-4-4 4 4 4-4M5 19h14"/></symbol>
     <symbol id="icon-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></symbol>

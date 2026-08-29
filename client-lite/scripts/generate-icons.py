@@ -6,6 +6,7 @@ from PIL import Image, ImageDraw
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "assets"
 TRAY = ROOT / "internal" / "tray"
+WEB = ROOT / "internal" / "web" / "web"
 
 
 def render_icon(size: int = 1024) -> Image.Image:
@@ -40,6 +41,7 @@ def render_icon(size: int = 1024) -> Image.Image:
 def main() -> None:
     ASSETS.mkdir(parents=True, exist_ok=True)
     TRAY.mkdir(parents=True, exist_ok=True)
+    WEB.mkdir(parents=True, exist_ok=True)
     icon = render_icon()
     png = icon.resize((512, 512), Image.Resampling.LANCZOS)
     png.save(ASSETS / "easy-net-lite.png", optimize=True)
@@ -47,6 +49,7 @@ def main() -> None:
     sizes = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
     icon.save(ASSETS / "easy-net-lite.ico", format="ICO", sizes=sizes)
     icon.save(TRAY / "easy-net-lite.ico", format="ICO", sizes=sizes)
+    icon.save(WEB / "favicon.ico", format="ICO", sizes=sizes)
 
 
 if __name__ == "__main__":

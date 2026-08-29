@@ -71,5 +71,5 @@ func Fetch(rawURL string) ([]byte, error) {
 			break
 		}
 	}
-	return nil, fmt.Errorf("下载 Clash 订阅失败（已重试）：%w", last)
+	return nil, fmt.Errorf("下载节点订阅失败（已重试）：%w", last)
 }

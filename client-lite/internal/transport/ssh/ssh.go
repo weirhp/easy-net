@@ -40,12 +40,15 @@ func (e *HostKeyMismatchError) Error() string {
 }
 
 type Transport struct {
-	cfg    Config
-	mu     sync.Mutex
-	client *gossh.Client
-	closed bool
-	stop   chan struct{}
-	once   sync.Once
+	cfg           Config
+	mu            sync.Mutex
+	client        *gossh.Client
+	closed        bool
+	dialing       bool
+	dialDone      chan struct{}
+	stop          chan struct{}
+	closeOnce     sync.Once
+	keepAliveOnce sync.Once
 }
 
 func New(cfg Config) *Transport {
@@ -55,7 +58,7 @@ func New(cfg Config) *Transport {
 func (t *Transport) Start(ctx context.Context) error {
 	_, err := t.ensureClient(ctx)
 	if err == nil {
-		go t.keepAlive()
+		t.keepAliveOnce.Do(func() { go t.keepAlive() })
 	}
 	return err
 }
@@ -85,7 +88,7 @@ func (t *Transport) DialContext(ctx context.Context, network, address string) (n
 }
 
 func (t *Transport) Close() error {
-	t.once.Do(func() { close(t.stop) })
+	t.closeOnce.Do(func() { close(t.stop) })
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.closed = true
@@ -98,14 +101,54 @@ func (t *Transport) Close() error {
 }
 
 func (t *Transport) ensureClient(ctx context.Context) (*gossh.Client, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.closed {
-		return nil, errors.New("SSH 代理已停止")
+	for {
+		t.mu.Lock()
+		if t.closed {
+			t.mu.Unlock()
+			return nil, errors.New("SSH 代理已停止")
+		}
+		if t.client != nil {
+			client := t.client
+			t.mu.Unlock()
+			return client, nil
+		}
+		if t.dialing {
+			done := t.dialDone
+			t.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-done:
+				continue
+			}
+		}
+		t.dialing = true
+		t.dialDone = make(chan struct{})
+		done := t.dialDone
+		t.mu.Unlock()
+
+		client, err := t.dialClient(ctx)
+		t.mu.Lock()
+		if err == nil && !t.closed && t.client == nil {
+			t.client = client
+		} else if client != nil {
+			_ = client.Close()
+		}
+		if t.closed && err == nil {
+			err = errors.New("SSH 代理已停止")
+		}
+		t.dialing = false
+		close(done)
+		result := t.client
+		t.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		return result, nil
 	}
-	if t.client != nil {
-		return t.client, nil
-	}
+}
+
+func (t *Transport) dialClient(ctx context.Context) (*gossh.Client, error) {
 	clientConfig, err := t.clientConfig()
 	if err != nil {
 		return nil, err
@@ -120,8 +163,7 @@ func (t *Transport) ensureClient(ctx context.Context) (*gossh.Client, error) {
 		_ = raw.Close()
 		return nil, fmt.Errorf("SSH 握手或认证失败：%w", err)
 	}
-	t.client = gossh.NewClient(conn, chans, reqs)
-	return t.client, nil
+	return gossh.NewClient(conn, chans, reqs), nil
 }
 
 func (t *Transport) clientConfig() (*gossh.ClientConfig, error) {

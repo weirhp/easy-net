@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"easy-net/client-lite/internal/autostart"
 	"easy-net/client-lite/internal/clashsub"
 	"easy-net/client-lite/internal/config"
 	"easy-net/client-lite/internal/launch"
@@ -49,12 +50,16 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	autoStart := autostart.New()
+	if err := autoStart.RepairIfEnabled(); err != nil {
+		log.Printf("[Easy-Net Lite] 修复开机启动项失败：%v", err)
+	}
 
 	quit := make(chan struct{})
 	var quitOnce sync.Once
 	requestQuit := func() { quitOnce.Do(func() { close(quit) }) }
 	statusPath := filepath.Join(store.Dir(), "status.json")
-	manager, err := web.NewWithOptions(svc, requestQuit, web.Options{Launches: launches, StatusFile: statusPath})
+	manager, err := web.NewWithOptions(svc, requestQuit, web.Options{Launches: launches, AutoStart: autoStart, StatusFile: statusPath})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -82,8 +87,8 @@ func main() {
 	log.Printf("[Easy-Net Lite %s] 管理界面：%s", version.Value, manager.URL())
 	monitorContext, stopTakeoverMonitor := context.WithCancel(context.Background())
 	defer stopTakeoverMonitor()
-	launches.StartTakeoverMonitor(monitorContext, log.Printf)
-	clashMgr.StartMonitor(monitorContext, log.Printf)
+	takeoverMonitorDone := launches.StartTakeoverMonitor(monitorContext, log.Printf)
+	clashMonitorDone := clashMgr.StartMonitor(monitorContext, log.Printf)
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt)
@@ -135,6 +140,15 @@ func main() {
 	shutdownDone := make(chan struct{})
 	go func() {
 		<-quit
+		// Stop both recovery loops before stopping their child processes. Otherwise
+		// a monitor tick can mistake an intentional shutdown for a crash and restart
+		// mihomo or the shared WinDivert supervisor while Lite is exiting.
+		stopTakeoverMonitor()
+		<-takeoverMonitorDone
+		<-clashMonitorDone
+		if err := launches.StopTakeoverRuntime(); err != nil {
+			log.Printf("[Easy-Net Lite] 停止应用网络接管：%v", err)
+		}
 		svc.StopAll()
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()

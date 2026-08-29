@@ -27,6 +27,10 @@ inline std::wstring ConfigMappingName(DWORD process_id) {
     return L"Local\\EasyNetHookConfig-" + std::to_wstring(process_id);
 }
 
+inline std::wstring HookReadyEventName(DWORD process_id) {
+    return L"Local\\EasyNetHookReady-" + std::to_wstring(process_id);
+}
+
 template <std::size_t Size>
 bool CopyString(wchar_t (&destination)[Size], const std::wstring& source) {
     if (source.size() >= Size) {

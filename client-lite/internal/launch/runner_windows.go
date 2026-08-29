@@ -162,6 +162,8 @@ func runElevatedHookProcess(hook string, args []string) error {
 		return &HookStartError{ExitCode: 5, Diagnostics: fmt.Sprintf("等待管理员进程失败：%v", waitErr), Cause: waitErr}
 	}
 	if wait == uint32(windows.WAIT_TIMEOUT) {
+		_ = windows.TerminateProcess(info.Process, 5)
+		_, _ = windows.WaitForSingleObject(info.Process, 5000)
 		return &HookStartError{ExitCode: 5, Diagnostics: "管理员进程启动超时；请查看 shared-windivert.log"}
 	}
 	var exitCode uint32

@@ -106,7 +106,7 @@ chmod +x scripts/build-macos.sh
 
 ## GitHub Release
 
-推送 `client-lite-v<版本号>` 格式的 Git 标签时，GitHub Actions 会构建 Windows x64、macOS arm64 和 macOS x64，校验标签与 `VERSION` 一致，然后自动创建 Release、上传三个程序包和 `SHA256SUMS.txt`。
+推送 `client-lite-v<版本号>` 格式的 Git 标签时，GitHub Actions 会构建 Windows x64、macOS arm64、macOS x64，以及包含 Hook、WinDivert、Mihomo 和 ZeroOmega 的 Windows x64 完整包。校验标签与 `VERSION` 一致后，所有程序包与 `SHA256SUMS.txt` 会在 Release 首次创建时一次性上传，以兼容 GitHub 的不可变 Release。
 
 例如发布 `VERSION` 中的 `0.1.3`：
 

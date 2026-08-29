@@ -80,6 +80,84 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  windows-full:
+    name: Windows x64 full package
+    needs: validate
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: client-lite/go.mod
+          cache-dependency-path: client-lite/go.sum
+
+      - name: Configure Hook
+        shell: pwsh
+        run: cmake -S client-hook -B client-hook/build -A x64
+
+      - name: Build Hook
+        shell: pwsh
+        run: cmake --build client-hook/build --config Release --parallel
+
+      - name: Test Hook
+        shell: pwsh
+        run: ctest --test-dir client-hook/build -C Release --output-on-failure
+
+      - name: Package full Windows application
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $package = "client-hook/package/Easy-Net-Hook-x64"
+          New-Item -ItemType Directory -Force $package | Out-Null
+          Copy-Item client-hook/build/Release/easy-net-hook.exe -Destination $package
+          Copy-Item client-hook/build/Release/easy-net-hook.dll -Destination $package
+          Copy-Item client-hook/build/Release/Easy-Net-Lite.exe -Destination $package
+          Copy-Item client-hook/build/Release/THIRD-PARTY-LICENSES -Destination $package -Recurse
+          Copy-Item client-hook/build/Release/windivert -Destination $package -Recurse
+          Copy-Item client-hook/README.md -Destination $package
+          ./client-hook/scripts/install-mihomo.ps1 -Destination "$package/mihomo"
+          ./client-hook/scripts/install-zeroomega.ps1 -Destination "$package/zeroomega"
+
+          foreach ($required in @(
+            "$package/easy-net-hook.exe",
+            "$package/easy-net-hook.dll",
+            "$package/Easy-Net-Lite.exe",
+            "$package/windivert/easy-net-windivert.exe",
+            "$package/mihomo/mihomo.exe",
+            "$package/mihomo/LICENSE.txt",
+            "$package/mihomo/VERSION.txt",
+            "$package/zeroomega/chromium-release.zip",
+            "$package/zeroomega/chromium-release.zip.sha256",
+            "$package/zeroomega/COPYING.txt",
+            "$package/zeroomega/VERSION.txt"
+          )) {
+            if (-not (Test-Path -LiteralPath $required)) {
+              throw "Required full-package file is missing: $required"
+            }
+          }
+
+          $forbidden = Get-ChildItem -LiteralPath $package -File -Recurse |
+            Where-Object { $_.Name -in @('sing-box.exe', 'libcronet.dll') }
+          if ($forbidden) {
+            throw "Removed TUN files unexpectedly entered the package: $($forbidden.FullName -join ', ')"
+          }
+
+          Compress-Archive -LiteralPath $package `
+            -DestinationPath client-hook/package/Easy-Net-Hook-Windows-x64-Full.zip `
+            -CompressionLevel Optimal -Force
+
+      - name: Upload full Windows package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Easy-Net-Hook-Windows-x64-Full
+          path: client-hook/package/Easy-Net-Hook-Windows-x64-Full.zip
+          if-no-files-found: error
+          retention-days: 14
+
   macos:
     name: macOS ${{ matrix.arch }}
     needs: validate
@@ -127,6 +205,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/client-lite-v')
     needs:
       - windows
+      - windows-full
       - macos
     runs-on: ubuntu-latest
     permissions:
@@ -149,7 +228,7 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
-          pattern: Easy-Net-Lite-*
+          pattern: Easy-Net-*
           path: release-assets
           merge-multiple: true
 

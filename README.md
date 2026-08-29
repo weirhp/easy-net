@@ -18,7 +18,7 @@ Easy-Net 是一套轻量代理与 Windows 应用级网络接管工具。它可�
 
 ### Windows：推荐完整 x64 包
 
-打开 [Build Easy-Net Hook](https://github.com/weirhp/easy-net/actions/workflows/client-hook-build.yml)，进入最新成功构建，在 **Artifacts** 下载 `Easy-Net-Hook-x64`。
+正式版本请在 [Releases](https://github.com/weirhp/easy-net/releases) 下载 `Easy-Net-Hook-Windows-x64-Full.zip`。需要尚未发布的最新测试构建时，可打开 [Build Easy-Net Hook](https://github.com/weirhp/easy-net/actions/workflows/client-hook-build.yml)，进入最新成功构建并在 **Artifacts** 下载 `Easy-Net-Hook-x64`。
 
 完整包包含：
 

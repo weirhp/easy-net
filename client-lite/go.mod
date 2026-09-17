@@ -8,7 +8,7 @@ require (
 	github.com/getlantern/systray v1.2.2
 	github.com/gorilla/websocket v1.5.3
 	github.com/zalando/go-keyring v0.2.8
-	golang.org/x/crypto v0.54.0
+	golang.org/x/crypto v0.56.0
 	golang.org/x/sys v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )

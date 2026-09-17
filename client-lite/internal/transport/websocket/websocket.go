@@ -24,6 +24,7 @@ import (
 const (
 	heartbeatInterval    = 25 * time.Second
 	heartbeatTimeout     = 60 * time.Second
+	controlWriteTimeout  = 5 * time.Second
 	tunnelProtocolHeader = "X-Easy-Net-Protocol"
 	tunnelProtocolV2     = "2"
 	tunnelProtocolV3     = "3"
@@ -32,6 +33,14 @@ const (
 	tunnelReadyMessage   = "READY"
 	tunnelErrorPrefix    = "ERROR "
 )
+
+// Gorilla permits control frames to be written concurrently with data frames.
+// Keeping them behind the data-write mutex can deadlock liveness detection on a
+// slow upload: by the time the upload releases the mutex, the ping deadline may
+// already have expired and the tunnel is closed even though it is still usable.
+func writeControl(conn *websocket.Conn, messageType int, payload []byte) error {
+	return conn.WriteControl(messageType, payload, time.Now().Add(controlWriteTimeout))
+}
 
 type Config struct {
 	URL             string
@@ -375,9 +384,7 @@ func (c *packetConn) heartbeat() {
 				c.close(false)
 				return
 			}
-			c.write.Lock()
-			err := c.conn.WriteControl(websocket.PingMessage, nil, now.Add(5*time.Second))
-			c.write.Unlock()
+			err := writeControl(c.conn, websocket.PingMessage, nil)
 			if err != nil {
 				c.close(false)
 				return
@@ -391,9 +398,7 @@ func (c *packetConn) close(sendControl bool) error {
 	c.closeOnce.Do(func() {
 		close(c.heartbeatDone)
 		if sendControl {
-			c.write.Lock()
-			_ = c.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
-			c.write.Unlock()
+			_ = writeControl(c.conn, websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 		}
 		closeErr = c.conn.Close()
 		if c.onClose != nil {
@@ -470,9 +475,7 @@ func (c *streamConn) heartbeat() {
 				c.close(false)
 				return
 			}
-			c.write.Lock()
-			err := c.conn.WriteControl(websocket.PingMessage, nil, now.Add(5*time.Second))
-			c.write.Unlock()
+			err := writeControl(c.conn, websocket.PingMessage, nil)
 			if err != nil {
 				c.close(false)
 				return
@@ -486,9 +489,7 @@ func (c *streamConn) close(sendControl bool) error {
 	c.closeOnce.Do(func() {
 		close(c.heartbeatDone)
 		if sendControl {
-			c.write.Lock()
-			_ = c.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
-			c.write.Unlock()
+			_ = writeControl(c.conn, websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 		}
 		closeErr = c.conn.Close()
 		if c.onClose != nil {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -43,6 +44,12 @@ type proxyRequest struct {
 }
 
 type DialResultHandler func(target string, err error)
+
+type relayResult struct {
+	direction string
+	bytes     int64
+	err       error
+}
 
 type Server struct {
 	address        string
@@ -214,18 +221,20 @@ func (s *Server) handle(ctx context.Context, local net.Conn) {
 	_ = local.SetDeadline(time.Time{})
 	writeConnectSuccess(local, request.protocol)
 
-	done := make(chan struct{}, 2)
+	done := make(chan relayResult, 2)
 	// 使用同一个 bufio.Reader，确保 CONNECT 请求之后被预读的 TLS 数据不会丢失。
-	go copyAndCloseWrite(remote, reader, done)
-	go copyAndCloseWrite(local, remote, done)
-	<-done
+	go copyAndCloseWrite(remote, reader, "client->remote", done)
+	go copyAndCloseWrite(local, remote, "remote->client", done)
+	first := <-done
+	logRelayFailure(request.target, first)
 
 	// 一侧读到 EOF 只表示该方向已经发送完毕，不代表反方向也没有数据。
 	// 保留连接让剩余响应完成；如果对端一直不结束，再用超时回收连接。
 	timer := time.NewTimer(relayDrainTimeout)
 	defer timer.Stop()
 	select {
-	case <-done:
+	case second := <-done:
+		logRelayFailure(request.target, second)
 	case <-ctx.Done():
 	case <-timer.C:
 	}
@@ -632,10 +641,20 @@ func writeHTTPReply(conn net.Conn, status int) {
 	_, _ = fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\n%sConnection: close\r\nContent-Length: 0\r\n\r\n", status, reason, allow)
 }
 
-func copyAndCloseWrite(dst net.Conn, src io.Reader, done chan<- struct{}) {
-	_, _ = io.Copy(dst, src)
+func copyAndCloseWrite(dst net.Conn, src io.Reader, direction string, done chan<- relayResult) {
+	written, err := io.Copy(dst, src)
 	if closer, ok := dst.(interface{ CloseWrite() error }); ok {
 		_ = closer.CloseWrite()
 	}
-	done <- struct{}{}
+	done <- relayResult{direction: direction, bytes: written, err: err}
+}
+
+func logRelayFailure(target string, result relayResult) {
+	if result.err == nil || errors.Is(result.err, net.ErrClosed) || errors.Is(result.err, context.Canceled) {
+		return
+	}
+	log.Printf(
+		"[Easy-Net Lite] TCP 中继异常：目标=%s 方向=%s 已传输=%d 字节：%v",
+		target, result.direction, result.bytes, result.err,
+	)
 }

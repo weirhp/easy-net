@@ -69,6 +69,8 @@ const runtimeStats = {
   maxWsBufferedAmount: 0,
   pausedTargetReads: 0,
   resumedTargetReads: 0,
+  pausedClientReads: 0,
+  resumedClientReads: 0,
   quotaClosedConnections: 0
 };
 
@@ -395,6 +397,8 @@ const getRuntimeStats = () => ({
     maxWsBufferedAmountSeen: runtimeStats.maxWsBufferedAmount,
     pausedTargetReads: runtimeStats.pausedTargetReads,
     resumedTargetReads: runtimeStats.resumedTargetReads,
+    pausedClientReads: runtimeStats.pausedClientReads,
+    resumedClientReads: runtimeStats.resumedClientReads,
     ...getSocketSummary()
   }
 });
@@ -1406,8 +1410,10 @@ wss.on('connection', (ws, req) => {
   try {
     logConnection(`[Easy-Net] [连接] 用户 [${user.username}] 请求网络连接 -> ${host}:${port}`);
     let targetPausedForBackpressure = false;
+    let clientPausedForBackpressure = false;
     let targetReady = false;
     let v2TargetErrorPending = false;
+    let hasCleaned = false;
 
     const updateWsBackpressureStats = () => {
       const bufferedAmount = ws.bufferedAmount || 0;
@@ -1429,6 +1435,21 @@ wss.on('connection', (ws, req) => {
       targetSocket.resume();
       targetPausedForBackpressure = false;
       runtimeStats.resumedTargetReads++;
+    };
+
+    const pauseClientForBackpressure = () => {
+      if (clientPausedForBackpressure || hasCleaned || ws.readyState !== WebSocket.OPEN) return;
+      ws.pause();
+      clientPausedForBackpressure = true;
+      runtimeStats.backpressureEvents++;
+      runtimeStats.pausedClientReads++;
+    };
+
+    const resumeClientAfterBackpressure = () => {
+      if (!clientPausedForBackpressure || hasCleaned || ws.readyState !== WebSocket.OPEN) return;
+      ws.resume();
+      clientPausedForBackpressure = false;
+      runtimeStats.resumedClientReads++;
     };
 
     runtimeStats.totalConnections++;
@@ -1463,11 +1484,12 @@ wss.on('connection', (ws, req) => {
     // WebSocket 握手完成后客户端可能立即发送首包。必须在等待目标 TCP
     // connect 事件之前注册监听；net.Socket 会安全地缓存连接完成前的 write。
     ws.on('message', data => {
-      if (targetSocket.writable) {
-        targetSocket.write(data);
-        if (!addTraffic(user.id, data.length, 0, user)) closeForQuota();
-      }
+      if (hasCleaned || !targetSocket.writable) return;
+      if (!targetSocket.write(data)) pauseClientForBackpressure();
+      if (!addTraffic(user.id, data.length, 0, user)) closeForQuota();
     });
+
+    targetSocket.on('drain', resumeClientAfterBackpressure);
 
     targetSocket.on('data', data => {
       if (ws.readyState === WebSocket.OPEN) {
@@ -1492,7 +1514,6 @@ wss.on('connection', (ws, req) => {
       ws.isAlive = true;
     });
 
-    let hasCleaned = false;
     function cleanupConnection() {
       if (hasCleaned) return;
       hasCleaned = true;

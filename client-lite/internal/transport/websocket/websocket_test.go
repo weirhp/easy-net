@@ -304,3 +304,70 @@ func TestTransportCloseClosesActiveConnections(t *testing.T) {
 		t.Fatal("write unexpectedly succeeded after transport close")
 	}
 }
+
+func TestControlFrameDoesNotWaitForDataWriteMutex(t *testing.T) {
+	pingReceived := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := (&gorillaws.Upgrader{}).Upgrade(w, r, http.Header{
+			tunnelProtocolHeader: []string{tunnelProtocolV2},
+		})
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if err := conn.WriteMessage(gorillaws.TextMessage, []byte(tunnelReadyMessage)); err != nil {
+			return
+		}
+		conn.SetPingHandler(func(payload string) error {
+			select {
+			case pingReceived <- struct{}{}:
+			default:
+			}
+			return conn.WriteControl(gorillaws.PongMessage, []byte(payload), time.Now().Add(time.Second))
+		})
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	transport, err := New(Config{
+		URL:           "ws" + strings.TrimPrefix(server.URL, "http"),
+		Secret:        "token",
+		AllowInsecure: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := transport.DialContext(context.Background(), "tcp", "example.com:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := connection.(*streamConn)
+	defer stream.Close()
+
+	// Simulate a data frame blocked behind a slow upload. Control frames must
+	// still be written immediately instead of waiting for this mutex.
+	stream.write.Lock()
+	controlDone := make(chan error, 1)
+	go func() {
+		controlDone <- writeControl(stream.conn, gorillaws.PingMessage, []byte("health"))
+	}()
+	select {
+	case err := <-controlDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("control frame waited for the blocked data writer")
+	}
+	stream.write.Unlock()
+
+	select {
+	case <-pingReceived:
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive the concurrent ping")
+	}
+}

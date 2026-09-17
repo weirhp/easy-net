@@ -44,6 +44,34 @@ func (d *directTransport) DialContext(ctx context.Context, network, address stri
 	return (&net.Dialer{}).DialContext(ctx, network, address)
 }
 
+type relayFailConn struct {
+	written int
+	limit   int
+	err     error
+}
+
+func (c *relayFailConn) Read([]byte) (int, error)         { return 0, io.EOF }
+func (c *relayFailConn) Close() error                     { return nil }
+func (c *relayFailConn) LocalAddr() net.Addr              { return nil }
+func (c *relayFailConn) RemoteAddr() net.Addr             { return nil }
+func (c *relayFailConn) SetDeadline(time.Time) error      { return nil }
+func (c *relayFailConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *relayFailConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *relayFailConn) Write(payload []byte) (int, error) {
+	remaining := c.limit - c.written
+	if remaining <= 0 {
+		return 0, c.err
+	}
+	if remaining > len(payload) {
+		remaining = len(payload)
+	}
+	c.written += remaining
+	if remaining < len(payload) {
+		return remaining, c.err
+	}
+	return remaining, nil
+}
+
 type packetEchoTransport struct{}
 
 func (p *packetEchoTransport) Start(context.Context) error { return nil }
@@ -598,6 +626,25 @@ func TestSOCKS5ReportsDialFailure(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("dial result was not reported")
+	}
+}
+
+func TestCopyAndCloseWriteReportsDirectionBytesAndError(t *testing.T) {
+	wantErr := errors.New("forced relay write failure")
+	destination := &relayFailConn{limit: 5, err: wantErr}
+	done := make(chan relayResult, 1)
+
+	copyAndCloseWrite(destination, strings.NewReader("0123456789"), "client->remote", done)
+	result := <-done
+
+	if result.direction != "client->remote" {
+		t.Fatalf("unexpected relay direction: %q", result.direction)
+	}
+	if result.bytes != 5 {
+		t.Fatalf("unexpected relayed byte count: %d", result.bytes)
+	}
+	if !errors.Is(result.err, wantErr) {
+		t.Fatalf("unexpected relay error: %v", result.err)
 	}
 }
 
